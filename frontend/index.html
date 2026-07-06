@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>个性化资源生成与学习多智能体系统</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">智</div>
+          <div>
+            <strong>学习多智能体</strong>
+            <span>个性化资源生成平台</span>
+          </div>
+        </div>
+        <nav class="nav-list" aria-label="主导航">
+          <a class="active" href="#workspace">工作台</a>
+          <a href="#agents">智能体</a>
+          <a href="#result">生成结果</a>
+        </nav>
+        <div class="status-card">
+          <span class="status-dot"></span>
+          <div>
+            <strong id="serviceStatus">正在连接</strong>
+            <p id="modelStatus">检测后端服务状态</p>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <section class="topbar">
+          <div>
+            <p class="eyebrow">Large Model Powered Learning Agents</p>
+            <h1>基于大模型的个性化资源生成与学习多智能体系统</h1>
+          </div>
+          <button id="healthButton" class="ghost-button" type="button">刷新状态</button>
+        </section>
+
+        <section id="workspace" class="workspace-grid">
+          <form id="learningForm" class="panel form-panel">
+            <div class="panel-title">
+              <h2>学习需求</h2>
+              <p>填写学习者信息，系统将协调多个智能体生成学习方案。</p>
+            </div>
+
+            <label>
+              学习主题
+              <input name="topic" value="机器学习基础" autocomplete="off" />
+            </label>
+
+            <label>
+              学习目标
+              <textarea name="goal" rows="3">理解机器学习核心概念，并能完成一个入门预测项目</textarea>
+            </label>
+
+            <div class="two-columns">
+              <label>
+                当前水平
+                <select name="level">
+                  <option>零基础</option>
+                  <option selected>入门</option>
+                  <option>进阶</option>
+                  <option>冲刺竞赛</option>
+                </select>
+              </label>
+
+              <label>
+                学习周期
+                <select name="duration">
+                  <option>3 天</option>
+                  <option selected>2 周</option>
+                  <option>1 个月</option>
+                  <option>3 个月</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="two-columns">
+              <label>
+                学习偏好
+                <select name="style">
+                  <option selected>案例驱动</option>
+                  <option>图文讲解</option>
+                  <option>项目实战</option>
+                  <option>题目训练</option>
+                </select>
+              </label>
+
+              <label>
+                输出类型
+                <select name="outputType">
+                  <option selected>学习计划、资源清单、练习题</option>
+                  <option>只生成学习计划</option>
+                  <option>只生成练习题</option>
+                  <option>生成项目任务书</option>
+                </select>
+              </label>
+            </div>
+
+            <label>
+              薄弱点
+              <textarea name="weaknesses" rows="3">数学基础一般，对模型训练流程和评估指标不熟悉</textarea>
+            </label>
+
+            <button class="primary-button" type="submit">
+              生成个性化学习资源
+            </button>
+          </form>
+
+          <section id="agents" class="panel agent-panel">
+            <div class="panel-title">
+              <h2>多智能体协作</h2>
+              <p>每个智能体承担明确职责，生成结果可解释、可复盘。</p>
+            </div>
+            <div id="agentList" class="agent-list"></div>
+          </section>
+        </section>
+
+        <section id="result" class="result-section">
+          <div class="section-heading">
+            <h2>生成结果</h2>
+            <span id="resultMode">等待生成</span>
+          </div>
+          <div id="resultGrid" class="result-grid empty-state">
+            <p>请先填写学习需求并点击生成按钮。</p>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
