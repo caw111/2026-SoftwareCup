@@ -26,9 +26,9 @@ cmd /c npm run dev
 
 启动后访问：
 
-- 前端：http://127.0.0.1:5173
-- 后端健康检查：http://127.0.0.1:3000/api/health
-- 大模型连通性测试：http://127.0.0.1:3000/api/llm-test
+- 前端：<http://127.0.0.1:5173>
+- 后端健康检查：<http://127.0.0.1:3000/api/health>
+- 大模型连通性测试：<http://127.0.0.1:3000/api/llm-test>
 
 ## 外接大模型配置
 
@@ -44,7 +44,7 @@ copy .env.example .env
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-4.1-mini
 OPENAI_API_KEY=sk-your-api-key
-OPENAI_TIMEOUT_MS=45000
+OPENAI_TIMEOUT_MS=120000
 ```
 
 也可以接入兼容 OpenAI Chat Completions 格式的服务，例如将 `OPENAI_BASE_URL` 改成对应厂商的 `/v1` 地址，并把 `OPENAI_MODEL` 改成该服务支持的模型名。

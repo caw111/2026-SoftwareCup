@@ -2,6 +2,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 
 loadEnvFile();
 
@@ -10,7 +11,8 @@ const MODEL_CONFIG = {
   apiKey: process.env.OPENAI_API_KEY,
   baseUrl: trimTrailingSlash(process.env.OPENAI_BASE_URL || "https://api.openai.com/v1"),
   model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
-  timeoutMs: Number(process.env.OPENAI_TIMEOUT_MS || 45000)
+  wireApi: process.env.OPENAI_WIRE_API || "chat",
+  timeoutMs: Number(process.env.OPENAI_TIMEOUT_MS || 120000)
 };
 
 const agents = [
@@ -122,13 +124,31 @@ function loadEnvFile() {
       continue;
     }
 
-    const key = trimmed.slice(0, separatorIndex).trim();
+    const rawKey = trimmed.slice(0, separatorIndex).trim();
     const rawValue = trimmed.slice(separatorIndex + 1).trim();
     const value = rawValue.replace(/^["']|["']$/g, "");
+    const key = normalizeEnvKey(rawKey);
     if (key && process.env[key] === undefined) {
       process.env[key] = value;
     }
   }
+}
+
+function normalizeEnvKey(key) {
+  const map = {
+    base_url: "OPENAI_BASE_URL",
+    model: "OPENAI_MODEL",
+    wire_api: "OPENAI_WIRE_API",
+    api_key: "OPENAI_API_KEY",
+    openai_api_key: "OPENAI_API_KEY",
+    openai_base_url: "OPENAI_BASE_URL",
+    openai_model: "OPENAI_MODEL",
+    openai_wire_api: "OPENAI_WIRE_API",
+    openai_timeout_ms: "OPENAI_TIMEOUT_MS"
+  };
+
+  const normalized = key.trim();
+  return map[normalized.toLowerCase()] || normalized;
 }
 
 function trimTrailingSlash(value) {
@@ -140,6 +160,7 @@ function publicModelConfig() {
     enabled: Boolean(MODEL_CONFIG.apiKey),
     baseUrl: MODEL_CONFIG.baseUrl,
     model: MODEL_CONFIG.model,
+    wireApi: MODEL_CONFIG.wireApi,
     timeoutMs: MODEL_CONFIG.timeoutMs,
     apiKeyPreview: MODEL_CONFIG.apiKey ? maskApiKey(MODEL_CONFIG.apiKey) : null
   };
@@ -504,11 +525,15 @@ function buildResourcePackage(input, learnerProfile, path, resources, assessment
 }
 
 async function callLargeModel(input, localPlan) {
-  const prompt = `你是一个中文学习多智能体系统总控。请基于输入和本地智能体草案，优化个性化学习资源，输出中文、结构化、可执行建议。\n\n输入：${JSON.stringify(input)}\n\n本地草案：${JSON.stringify(localPlan)}`;
+  const prompt = `你是一个中文学习多智能体系统总控。请基于输入和本地智能体草案，输出一段精炼的个性化优化建议，重点包括：1. 画像是否合理；2. 资源包如何改进；3. 下一轮学习反馈如何更新。请控制在 600 字以内。\n\n输入：${JSON.stringify(input)}\n\n本地草案摘要：${JSON.stringify({
+    learnerProfile: localPlan.learnerProfile,
+    generationLoop: localPlan.generationLoop,
+    resourcePackage: localPlan.resourcePackage
+  })}`;
   return requestChatCompletion([
     { role: "system", content: "你是严谨的个性化学习资源生成专家。" },
     { role: "user", content: prompt }
-  ], { temperature: 0.7 });
+  ], { temperature: 0.7, maxTokens: 900 });
 }
 
 async function testLargeModelConnection() {
@@ -545,21 +570,18 @@ async function testLargeModelConnection() {
 async function requestChatCompletion(messages, options = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), MODEL_CONFIG.timeoutMs);
+  const url = buildModelUrl();
+  const requestBody = buildModelRequestBody(messages, options);
 
   try {
-    const response = await fetch(`${MODEL_CONFIG.baseUrl}/chat/completions`, {
+    const response = await fetch(url, {
     method: "POST",
       signal: controller.signal,
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${MODEL_CONFIG.apiKey}`
     },
-    body: JSON.stringify({
-      model: MODEL_CONFIG.model,
-        messages,
-        temperature: options.temperature ?? 0.7,
-        max_tokens: options.maxTokens
-    })
+      body: JSON.stringify(requestBody)
   });
 
   if (!response.ok) {
@@ -568,13 +590,126 @@ async function requestChatCompletion(messages, options = {}) {
   }
 
   const data = await response.json();
-    return data.choices?.[0]?.message?.content || "大模型未返回有效内容。";
+    return extractModelText(data) || "大模型未返回有效内容。";
   } catch (error) {
     if (error?.name === "AbortError") {
       throw new Error(`大模型接口请求超时：${MODEL_CONFIG.timeoutMs}ms`);
+    }
+    if (process.platform === "win32" && isNetworkResetError(error)) {
+      const data = await requestModelWithPowerShell(url, requestBody);
+      return extractModelText(data) || "大模型未返回有效内容。";
     }
     throw error;
   } finally {
     clearTimeout(timer);
   }
+}
+
+function isNetworkResetError(error) {
+  return error?.message === "fetch failed" || error?.cause?.code === "ECONNRESET";
+}
+
+function requestModelWithPowerShell(url, requestBody) {
+  return new Promise((resolve, reject) => {
+    const script = `
+$ErrorActionPreference = 'Stop'
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$payload = [Console]::In.ReadToEnd()
+$headers = @{
+  Authorization = "Bearer $env:LLM_API_KEY"
+  Accept = "application/json"
+}
+$response = Invoke-RestMethod -Uri $env:LLM_API_URL -Method Post -Headers $headers -Body $payload -ContentType "application/json; charset=utf-8" -TimeoutSec $env:LLM_TIMEOUT_SECONDS
+$response | ConvertTo-Json -Depth 30 -Compress
+`;
+    const child = spawn("powershell.exe", ["-NoProfile", "-Command", script], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        LLM_API_KEY: MODEL_CONFIG.apiKey,
+        LLM_API_URL: url,
+        LLM_TIMEOUT_SECONDS: String(Math.ceil(MODEL_CONFIG.timeoutMs / 1000))
+      }
+    });
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (data) => {
+      stdout += data;
+    });
+    child.stderr.on("data", (data) => {
+      stderr += data;
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`PowerShell 大模型请求失败：${stderr || `退出码 ${code}`}`));
+        return;
+      }
+
+      try {
+        resolve(JSON.parse(stdout));
+      } catch {
+        reject(new Error(`PowerShell 大模型响应不是有效 JSON：${stdout.slice(0, 500)}`));
+      }
+    });
+    child.stdin.end(JSON.stringify(requestBody));
+  });
+}
+
+function extractModelText(data) {
+  if (typeof data.output_text === "string") {
+    return data.output_text;
+  }
+
+  const responseText = data.output
+    ?.flatMap((item) => item.content || [])
+    ?.map((content) => content.text)
+    ?.filter(Boolean)
+    ?.join("\n");
+
+  return responseText || data.choices?.[0]?.message?.content;
+}
+
+function buildModelUrl() {
+  const path = MODEL_CONFIG.wireApi === "responses" ? "/responses" : "/chat/completions";
+  const baseUrl = MODEL_CONFIG.baseUrl.endsWith("/v1")
+    ? MODEL_CONFIG.baseUrl
+    : `${MODEL_CONFIG.baseUrl}/v1`;
+  return `${baseUrl}${path}`;
+}
+
+function buildModelRequestBody(messages, options) {
+  if (MODEL_CONFIG.wireApi === "responses") {
+    const system = messages
+      .filter((message) => message.role === "system")
+      .map((message) => message.content)
+      .join("\n");
+    const input = messages
+      .filter((message) => message.role !== "system")
+      .map((message) => `${message.role}: ${message.content}`)
+      .join("\n\n");
+
+    return removeUndefined({
+      model: MODEL_CONFIG.model,
+      instructions: system || undefined,
+      input,
+      temperature: options.temperature ?? 0.7,
+      max_output_tokens: options.maxTokens
+    });
+  }
+
+  return removeUndefined({
+    model: MODEL_CONFIG.model,
+    messages,
+    temperature: options.temperature ?? 0.7,
+    max_tokens: options.maxTokens
+  });
+}
+
+function removeUndefined(value) {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, item]) => item !== undefined)
+  );
 }

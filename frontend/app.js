@@ -55,7 +55,7 @@ function formatModelStatus(data) {
   if (!data.llmEnabled) {
     return "本地规则模式，可离线演示";
   }
-  return `大模型：${data.llm.model} / ${data.llm.baseUrl}`;
+  return `大模型：${data.llm.model} / ${data.llm.wireApi} / ${data.llm.baseUrl}`;
 }
 
 async function loadAgents() {
