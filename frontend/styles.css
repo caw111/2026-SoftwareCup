@@ -329,6 +329,18 @@ textarea:focus {
   font-size: 18px;
 }
 
+.profile-card p {
+  line-height: 1.7;
+}
+
+.radar-card canvas {
+  display: block;
+  width: 100%;
+  max-width: 420px;
+  height: auto;
+  margin: 0 auto 14px;
+}
+
 .tag-list {
   display: flex;
   flex-wrap: wrap;
@@ -343,6 +355,44 @@ textarea:focus {
   background: #ccfbf1;
   font-size: 12px;
   font-weight: 700;
+}
+
+.signal-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.signal-list span {
+  padding: 9px 10px;
+  border-radius: 8px;
+  color: #334155;
+  background: #f1f5f9;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.mastery-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.mastery-list div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+  font-size: 13px;
+}
+
+.mastery-list strong {
+  color: var(--primary);
+  font-size: 16px;
 }
 
 .item-list {

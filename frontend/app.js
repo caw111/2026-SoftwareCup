@@ -72,11 +72,27 @@ async function generatePlan(event) {
 function renderResult(data) {
   resultGrid.className = "result-grid";
   resultGrid.innerHTML = `
-    <article class="result-card">
-      <h3>学习画像</h3>
-      <p>${escapeHtml(data.profile.summary)}</p>
+    <article class="result-card profile-card">
+      <h3>动态学习者画像</h3>
+      <p>${escapeHtml(data.learnerProfile.summary)}</p>
       <div class="tag-list">
         ${data.profile.tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("")}
+      </div>
+      <div class="signal-list">
+        ${data.learnerProfile.behaviorSignals.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
+      </div>
+    </article>
+
+    <article class="result-card radar-card">
+      <h3>知识点掌握雷达图</h3>
+      <canvas id="masteryRadar" width="360" height="300" aria-label="知识点掌握雷达图"></canvas>
+      <div class="mastery-list">
+        ${data.learnerProfile.mastery.map((item) => `
+          <div>
+            <span>${escapeHtml(item.dimension)}</span>
+            <strong>${item.score}</strong>
+          </div>
+        `).join("")}
       </div>
     </article>
 
@@ -103,7 +119,7 @@ function renderResult(data) {
       <ul class="item-list">
         ${data.resources.map((item) => `
           <li>
-            <strong>${escapeHtml(item.type)}｜${escapeHtml(item.title)}</strong><br />
+            <strong>${escapeHtml(item.type)}：${escapeHtml(item.title)}</strong><br />
             ${escapeHtml(item.content)}
           </li>
         `).join("")}
@@ -127,6 +143,80 @@ function renderResult(data) {
       </article>
     ` : ""}
   `;
+  drawRadar("masteryRadar", data.learnerProfile.mastery);
+}
+
+function drawRadar(canvasId, data) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas || !data?.length) return;
+
+  const ctx = canvas.getContext("2d");
+  const width = canvas.width;
+  const height = canvas.height;
+  const centerX = width / 2;
+  const centerY = height / 2 + 8;
+  const radius = Math.min(width, height) * 0.32;
+  const step = (Math.PI * 2) / data.length;
+
+  ctx.clearRect(0, 0, width, height);
+  ctx.font = "12px Microsoft YaHei, Arial";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  for (let ring = 1; ring <= 4; ring += 1) {
+    const ringRadius = (radius / 4) * ring;
+    ctx.beginPath();
+    data.forEach((_, index) => {
+      const point = radarPoint(centerX, centerY, ringRadius, step, index);
+      if (index === 0) ctx.moveTo(point.x, point.y);
+      else ctx.lineTo(point.x, point.y);
+    });
+    ctx.closePath();
+    ctx.strokeStyle = "#d8e2f0";
+    ctx.stroke();
+  }
+
+  data.forEach((item, index) => {
+    const outer = radarPoint(centerX, centerY, radius, step, index);
+    ctx.beginPath();
+    ctx.moveTo(centerX, centerY);
+    ctx.lineTo(outer.x, outer.y);
+    ctx.strokeStyle = "#e2e8f0";
+    ctx.stroke();
+
+    const label = radarPoint(centerX, centerY, radius + 28, step, index);
+    ctx.fillStyle = "#475569";
+    ctx.fillText(item.dimension, label.x, label.y);
+  });
+
+  ctx.beginPath();
+  data.forEach((item, index) => {
+    const point = radarPoint(centerX, centerY, radius * (item.score / 100), step, index);
+    if (index === 0) ctx.moveTo(point.x, point.y);
+    else ctx.lineTo(point.x, point.y);
+  });
+  ctx.closePath();
+  ctx.fillStyle = "rgba(37, 99, 235, 0.18)";
+  ctx.strokeStyle = "#2563eb";
+  ctx.lineWidth = 2;
+  ctx.fill();
+  ctx.stroke();
+
+  data.forEach((item, index) => {
+    const point = radarPoint(centerX, centerY, radius * (item.score / 100), step, index);
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, 4, 0, Math.PI * 2);
+    ctx.fillStyle = "#0f766e";
+    ctx.fill();
+  });
+}
+
+function radarPoint(centerX, centerY, radius, step, index) {
+  const angle = -Math.PI / 2 + step * index;
+  return {
+    x: centerX + Math.cos(angle) * radius,
+    y: centerY + Math.sin(angle) * radius
+  };
 }
 
 function renderSimpleList(items) {

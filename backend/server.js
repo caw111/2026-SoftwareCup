@@ -10,18 +10,18 @@ const MODEL_CONFIG = {
 const agents = [
   {
     id: "profile-agent",
-    name: "学情分析智能体",
-    role: "分析学习者基础、目标、偏好与薄弱点，形成个性化学习画像。"
+    name: "学习画像智能体",
+    role: "分析学习者基础、目标、偏好、薄弱点和行为轨迹，形成动态学习画像。"
   },
   {
     id: "planner-agent",
     name: "路径规划智能体",
-    role: "把学习目标拆解为阶段任务，规划学习顺序与节奏。"
+    role: "把学习目标拆解为阶段任务，规划学习顺序、节奏和资源组合。"
   },
   {
     id: "resource-agent",
     name: "资源生成智能体",
-    role: "生成讲解、案例、练习、项目任务和拓展资料。"
+    role: "生成讲义、案例、练习、项目任务和拓展资源。"
   },
   {
     id: "assessment-agent",
@@ -111,7 +111,7 @@ function readJson(req) {
 function normalizeInput(body) {
   return {
     topic: clean(body.topic) || "机器学习基础",
-    goal: clean(body.goal) || "系统掌握核心概念并能完成小项目",
+    goal: clean(body.goal) || "系统掌握核心概念并完成一个入门项目",
     level: clean(body.level) || "入门",
     duration: clean(body.duration) || "2 周",
     style: clean(body.style) || "案例驱动",
@@ -158,14 +158,11 @@ async function generateLearningPlan(input) {
 }
 
 function runLocalAgents(input) {
+  const learnerProfile = buildLearnerProfile(input);
   const profile = {
     summary: `${input.level}学习者，目标是${input.goal}。偏好${input.style}，当前薄弱点为：${input.weaknesses}。`,
-    tags: [input.level, input.style, "个性化路径", "阶段反馈"],
-    priority: [
-      `围绕“${input.topic}”建立知识框架`,
-      "用可执行任务替代泛泛阅读",
-      "每个阶段加入自测与反馈"
-    ]
+    tags: learnerProfile.tags,
+    priority: learnerProfile.strategyPriorities
   };
 
   const path = [
@@ -221,10 +218,10 @@ function runLocalAgents(input) {
       `给出一个${input.topic}的实际应用场景，并说明为什么适合使用它。`
     ],
     rubric: [
-      "概念准确：40%",
+      "概念准确：30%",
       "案例合理：30%",
       "表达清晰：20%",
-      "反思可执行：10%"
+      "反思可执行：20%"
     ],
     nextActions: [
       "低于 60 分：回到阶段一，重建知识地图。",
@@ -233,7 +230,74 @@ function runLocalAgents(input) {
     ]
   };
 
-  return { profile, path, resources, assessment };
+  return { profile, learnerProfile, path, resources, assessment };
+}
+
+function buildLearnerProfile(input) {
+  const levelBase = {
+    "零基础": 34,
+    "入门": 48,
+    "进阶": 67,
+    "冲刺竞赛": 78
+  }[input.level] ?? 50;
+  const weakText = input.weaknesses;
+  const weakSignals = [
+    { key: "math", words: ["数学", "公式", "推导", "概率", "线代"] },
+    { key: "practice", words: ["练习", "实战", "项目", "动手", "代码"] },
+    { key: "concept", words: ["概念", "理解", "原理", "流程", "指标"] },
+    { key: "expression", words: ["表达", "总结", "报告", "复盘"] }
+  ];
+  const signalPenalty = Object.fromEntries(
+    weakSignals.map((signal) => [
+      signal.key,
+      signal.words.some((word) => weakText.includes(word)) ? 16 : 0
+    ])
+  );
+
+  const mastery = [
+    { dimension: "先修基础", score: clamp(levelBase - signalPenalty.math + 4) },
+    { dimension: "概念理解", score: clamp(levelBase - signalPenalty.concept + 8) },
+    { dimension: "方法迁移", score: clamp(levelBase - 8 - signalPenalty.practice) },
+    { dimension: "实践应用", score: clamp(levelBase - 12 - signalPenalty.practice) },
+    { dimension: "表达复盘", score: clamp(levelBase - 6 - signalPenalty.expression) },
+    { dimension: "学习自驱", score: clamp(levelBase + (input.duration.includes("3") ? 8 : 2)) }
+  ];
+
+  const weakest = [...mastery].sort((a, b) => a.score - b.score).slice(0, 2);
+  const preferredStrategy = {
+    "案例驱动": "用真实案例牵引概念，先看完整样例再拆步骤。",
+    "图文讲解": "多用图示、表格和流程图降低理解负担。",
+    "项目实战": "用小任务串联知识点，边做边补理论。",
+    "题目训练": "以分层题组推动巩固，及时统计错因。"
+  }[input.style] ?? "采用讲练结合的学习策略。";
+
+  return {
+    version: new Date().toISOString(),
+    summary: `画像显示该学习者在“${weakest.map((item) => item.dimension).join("、")}”上需要优先补强，适合采用“${input.style}”路径。`,
+    mastery,
+    weakestDimensions: weakest,
+    tags: [
+      input.level,
+      input.style,
+      weakest[0].dimension,
+      "动态画像",
+      "知识点掌握度"
+    ],
+    behaviorSignals: [
+      `学习周期：${input.duration}`,
+      `资源偏好：${input.outputType}`,
+      `薄弱点线索：${input.weaknesses}`
+    ],
+    strategyPriorities: [
+      `优先补强“${weakest[0].dimension}”，避免直接进入高难综合任务。`,
+      preferredStrategy,
+      "每轮学习后用测验得分、错题原因和耗时更新画像。"
+    ]
+  };
+}
+
+function clamp(value) {
+  return Math.max(20, Math.min(95, Math.round(value)));
 }
 
 async function callLargeModel(input, localPlan) {
