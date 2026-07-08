@@ -524,6 +524,60 @@ textarea:focus {
   line-height: 1.5;
 }
 
+.package-layout {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 16px;
+}
+
+.deliverable-panel {
+  align-self: start;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.deliverable-panel h4,
+.package-section h4 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.deliverable-panel h4:not(:first-child) {
+  margin-top: 18px;
+}
+
+.package-sections {
+  display: grid;
+  gap: 12px;
+}
+
+.package-section {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.package-section > span {
+  display: inline-block;
+  margin-bottom: 8px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.trace-line {
+  margin-top: 14px;
+  padding: 12px;
+  border-radius: 8px;
+  color: #475569;
+  background: #eef2ff;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .item-list {
   display: grid;
   gap: 12px;
@@ -559,7 +613,8 @@ textarea:focus {
 
   .workspace-grid,
   .result-grid,
-  .loop-timeline {
+  .loop-timeline,
+  .package-layout {
     grid-template-columns: 1fr;
   }
 

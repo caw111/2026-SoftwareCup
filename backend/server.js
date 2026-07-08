@@ -231,8 +231,9 @@ function runLocalAgents(input) {
   };
 
   const generationLoop = buildGenerationLoop(input, learnerProfile, path, resources, assessment);
+  const resourcePackage = buildResourcePackage(input, learnerProfile, path, resources, assessment, generationLoop);
 
-  return { profile, learnerProfile, path, resources, assessment, generationLoop };
+  return { profile, learnerProfile, path, resources, assessment, generationLoop, resourcePackage };
 }
 
 function buildLearnerProfile(input) {
@@ -368,6 +369,74 @@ function buildGenerationLoop(input, learnerProfile, path, resources, assessment)
         "每次生成后记录质量分，作为系统自评审证据。"
       ]
     }
+  };
+}
+
+function buildResourcePackage(input, learnerProfile, path, resources, assessment, generationLoop) {
+  const mainWeakness = learnerProfile.weakestDimensions[0];
+  const secondaryWeakness = learnerProfile.weakestDimensions[1];
+  const practiceTheme = `${input.topic} ${mainWeakness.dimension}专项`;
+
+  return {
+    title: `${input.topic}个性化学习资源包`,
+    audience: `${input.level}学习者 / ${input.style}偏好 / ${input.duration}周期`,
+    packageScore: generationLoop.qualityScore,
+    sections: [
+      {
+        type: "学情诊断报告",
+        title: "当前画像结论",
+        items: [
+          learnerProfile.summary,
+          `首要补强维度：${mainWeakness.dimension}（${mainWeakness.score} 分）`,
+          `次要补强维度：${secondaryWeakness.dimension}（${secondaryWeakness.score} 分）`
+        ]
+      },
+      {
+        type: "补救微讲义",
+        title: `${mainWeakness.dimension}快速补救`,
+        items: [
+          `先用 5 分钟复述${input.topic}的核心概念，暴露理解断点。`,
+          `再用一个生活化例子解释概念，避免只背定义。`,
+          `最后完成 2 道低门槛迁移题，确认能把概念用到新情境。`
+        ]
+      },
+      {
+        type: "分层练习",
+        title: practiceTheme,
+        items: [
+          `基础题：写出${input.topic}的 3 个关键词，并分别解释其作用。`,
+          `应用题：给定一个真实场景，判断应该如何使用${input.topic}解决问题。`,
+          `挑战题：设计一个小任务，说明输入、处理过程、输出和评价指标。`
+        ]
+      },
+      {
+        type: "答案解析与错因提醒",
+        title: "自查清单",
+        items: [
+          "答案必须包含概念、步骤、应用场景三类信息。",
+          `若卡在“${mainWeakness.dimension}”，优先回看微讲义第一步。`,
+          "若答案只有结论没有过程，说明表达复盘还需要继续训练。"
+        ]
+      },
+      {
+        type: "后续学习路径",
+        title: "下一轮行动",
+        items: path.map((item) => `${item.stage}：${item.outcome}`)
+      }
+    ],
+    deliverables: [
+      "一页学情诊断报告",
+      "一份补救微讲义",
+      "一组分层练习题",
+      "一张错因自查清单",
+      "一条下一轮学习路径"
+    ],
+    usageGuide: [
+      "先看学情诊断，确认系统判断是否符合真实情况。",
+      "按补救微讲义学习，再完成分层练习。",
+      "根据答案解析记录错因，把错因反馈给系统生成下一轮资源。"
+    ],
+    sourceTrace: resources.map((item) => `${item.type}：${item.title}`)
   };
 }
 

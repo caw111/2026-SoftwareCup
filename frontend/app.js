@@ -159,6 +159,36 @@ function renderResult(data) {
       </ul>
     </article>
 
+    <article class="result-card full package-card">
+      <div class="card-heading-row">
+        <div>
+          <h3>${escapeHtml(data.resourcePackage.title)}</h3>
+          <p>${escapeHtml(data.resourcePackage.audience)}</p>
+        </div>
+        <span class="score-badge">${data.resourcePackage.packageScore} 分</span>
+      </div>
+      <div class="package-layout">
+        <section class="deliverable-panel">
+          <h4>资源包交付物</h4>
+          ${renderSimpleList(data.resourcePackage.deliverables)}
+          <h4>使用顺序</h4>
+          ${renderSimpleList(data.resourcePackage.usageGuide)}
+        </section>
+        <div class="package-sections">
+          ${data.resourcePackage.sections.map((section) => `
+            <section class="package-section">
+              <span>${escapeHtml(section.type)}</span>
+              <h4>${escapeHtml(section.title)}</h4>
+              ${renderSimpleList(section.items)}
+            </section>
+          `).join("")}
+        </div>
+      </div>
+      <div class="trace-line">
+        <strong>来源追踪：</strong>${data.resourcePackage.sourceTrace.map(escapeHtml).join(" / ")}
+      </div>
+    </article>
+
     <article class="result-card">
       <h3>测评题目</h3>
       ${renderSimpleList(data.assessment.quiz)}
