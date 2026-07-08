@@ -1,10 +1,16 @@
 import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+loadEnvFile();
 
 const PORT = Number(process.env.BACKEND_PORT || 3000);
 const MODEL_CONFIG = {
   apiKey: process.env.OPENAI_API_KEY,
-  baseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
-  model: process.env.OPENAI_MODEL || "gpt-4.1-mini"
+  baseUrl: trimTrailingSlash(process.env.OPENAI_BASE_URL || "https://api.openai.com/v1"),
+  model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
+  timeoutMs: Number(process.env.OPENAI_TIMEOUT_MS || 45000)
 };
 
 const agents = [
@@ -47,8 +53,15 @@ const server = http.createServer(async (req, res) => {
         status: "ok",
         service: "个性化资源生成与学习多智能体后端",
         llmEnabled: Boolean(MODEL_CONFIG.apiKey),
+        llm: publicModelConfig(),
         time: new Date().toISOString()
       });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/llm-test") {
+      const result = await testLargeModelConnection();
+      sendJson(res, result.ok ? 200 : 503, result);
       return;
     }
 
@@ -87,6 +100,56 @@ function setCors(res) {
 function sendJson(res, status, data) {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(data, null, 2));
+}
+
+function loadEnvFile() {
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const envPath = path.resolve(__dirname, "..", ".env");
+
+  if (!fs.existsSync(envPath)) {
+    return;
+  }
+
+  const lines = fs.readFileSync(envPath, "utf8").split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+
+    const separatorIndex = trimmed.indexOf("=");
+    if (separatorIndex === -1) {
+      continue;
+    }
+
+    const key = trimmed.slice(0, separatorIndex).trim();
+    const rawValue = trimmed.slice(separatorIndex + 1).trim();
+    const value = rawValue.replace(/^["']|["']$/g, "");
+    if (key && process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
+
+function trimTrailingSlash(value) {
+  return String(value).replace(/\/+$/, "");
+}
+
+function publicModelConfig() {
+  return {
+    enabled: Boolean(MODEL_CONFIG.apiKey),
+    baseUrl: MODEL_CONFIG.baseUrl,
+    model: MODEL_CONFIG.model,
+    timeoutMs: MODEL_CONFIG.timeoutMs,
+    apiKeyPreview: MODEL_CONFIG.apiKey ? maskApiKey(MODEL_CONFIG.apiKey) : null
+  };
+}
+
+function maskApiKey(apiKey) {
+  if (apiKey.length <= 10) {
+    return "已配置";
+  }
+  return `${apiKey.slice(0, 6)}...${apiKey.slice(-4)}`;
 }
 
 function readJson(req) {
@@ -442,26 +505,76 @@ function buildResourcePackage(input, learnerProfile, path, resources, assessment
 
 async function callLargeModel(input, localPlan) {
   const prompt = `你是一个中文学习多智能体系统总控。请基于输入和本地智能体草案，优化个性化学习资源，输出中文、结构化、可执行建议。\n\n输入：${JSON.stringify(input)}\n\n本地草案：${JSON.stringify(localPlan)}`;
-  const response = await fetch(`${MODEL_CONFIG.baseUrl}/chat/completions`, {
+  return requestChatCompletion([
+    { role: "system", content: "你是严谨的个性化学习资源生成专家。" },
+    { role: "user", content: prompt }
+  ], { temperature: 0.7 });
+}
+
+async function testLargeModelConnection() {
+  if (!MODEL_CONFIG.apiKey) {
+    return {
+      ok: false,
+      message: "未配置 OPENAI_API_KEY，当前仍是本地规则模式。",
+      llm: publicModelConfig()
+    };
+  }
+
+  try {
+    const content = await requestChatCompletion([
+      { role: "system", content: "你是一个接口连通性测试助手。" },
+      { role: "user", content: "请只回复：大模型连接成功" }
+    ], { temperature: 0.1, maxTokens: 32 });
+
+    return {
+      ok: true,
+      message: "大模型接口连接成功。",
+      sample: content,
+      llm: publicModelConfig()
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: "大模型接口连接失败。",
+      detail: error instanceof Error ? error.message : String(error),
+      llm: publicModelConfig()
+    };
+  }
+}
+
+async function requestChatCompletion(messages, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), MODEL_CONFIG.timeoutMs);
+
+  try {
+    const response = await fetch(`${MODEL_CONFIG.baseUrl}/chat/completions`, {
     method: "POST",
+      signal: controller.signal,
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${MODEL_CONFIG.apiKey}`
     },
     body: JSON.stringify({
       model: MODEL_CONFIG.model,
-      messages: [
-        { role: "system", content: "你是严谨的个性化学习资源生成专家。" },
-        { role: "user", content: prompt }
-      ],
-      temperature: 0.7
+        messages,
+        temperature: options.temperature ?? 0.7,
+        max_tokens: options.maxTokens
     })
   });
 
   if (!response.ok) {
-    throw new Error(`大模型接口返回 ${response.status}`);
+      const detail = await response.text();
+      throw new Error(`大模型接口返回 ${response.status}：${detail.slice(0, 500)}`);
   }
 
   const data = await response.json();
-  return data.choices?.[0]?.message?.content || "大模型未返回有效内容。";
+    return data.choices?.[0]?.message?.content || "大模型未返回有效内容。";
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`大模型接口请求超时：${MODEL_CONFIG.timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }

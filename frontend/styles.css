@@ -135,6 +135,13 @@ textarea {
   margin-bottom: 24px;
 }
 
+.topbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
 .eyebrow {
   margin: 0 0 8px;
   color: var(--accent);
@@ -631,6 +638,14 @@ textarea:focus {
   .topbar,
   .section-heading {
     display: grid;
+  }
+
+  .topbar-actions {
+    justify-content: stretch;
+  }
+
+  .topbar-actions .ghost-button {
+    width: 100%;
   }
 
   h1 {

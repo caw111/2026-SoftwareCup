@@ -6,10 +6,12 @@ const resultMode = document.querySelector("#resultMode");
 const serviceStatus = document.querySelector("#serviceStatus");
 const modelStatus = document.querySelector("#modelStatus");
 const healthButton = document.querySelector("#healthButton");
+const llmTestButton = document.querySelector("#llmTestButton");
 const agentList = document.querySelector("#agentList");
 const statusDot = document.querySelector(".status-dot");
 
 healthButton.addEventListener("click", checkHealth);
+llmTestButton.addEventListener("click", testLargeModel);
 form.addEventListener("submit", generatePlan);
 
 loadAgents();
@@ -19,13 +21,41 @@ async function checkHealth() {
   try {
     const data = await request("/api/health");
     serviceStatus.textContent = "后端已连接";
-    modelStatus.textContent = data.llmEnabled ? "已启用大模型接口" : "本地规则模式，可离线演示";
+    modelStatus.textContent = formatModelStatus(data);
     statusDot.classList.add("ok");
   } catch {
     serviceStatus.textContent = "后端未连接";
     modelStatus.textContent = "请先运行 npm run dev";
     statusDot.classList.remove("ok");
   }
+}
+
+async function testLargeModel() {
+  llmTestButton.disabled = true;
+  llmTestButton.textContent = "测试中";
+
+  try {
+    const data = await request("/api/llm-test");
+    serviceStatus.textContent = data.ok ? "大模型已连接" : "大模型未连接";
+    modelStatus.textContent = data.ok
+      ? `${data.llm.model}：${data.sample || data.message}`
+      : `${data.message}${data.detail ? ` ${data.detail}` : ""}`;
+    statusDot.classList.toggle("ok", data.ok);
+  } catch (error) {
+    serviceStatus.textContent = "大模型测试失败";
+    modelStatus.textContent = error.message;
+    statusDot.classList.remove("ok");
+  } finally {
+    llmTestButton.disabled = false;
+    llmTestButton.textContent = "测试大模型";
+  }
+}
+
+function formatModelStatus(data) {
+  if (!data.llmEnabled) {
+    return "本地规则模式，可离线演示";
+  }
+  return `大模型：${data.llm.model} / ${data.llm.baseUrl}`;
 }
 
 async function loadAgents() {
