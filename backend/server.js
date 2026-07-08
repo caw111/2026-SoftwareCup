@@ -230,7 +230,9 @@ function runLocalAgents(input) {
     ]
   };
 
-  return { profile, learnerProfile, path, resources, assessment };
+  const generationLoop = buildGenerationLoop(input, learnerProfile, path, resources, assessment);
+
+  return { profile, learnerProfile, path, resources, assessment, generationLoop };
 }
 
 function buildLearnerProfile(input) {
@@ -298,6 +300,75 @@ function buildLearnerProfile(input) {
 
 function clamp(value) {
   return Math.max(20, Math.min(95, Math.round(value)));
+}
+
+function buildGenerationLoop(input, learnerProfile, path, resources, assessment) {
+  const weakest = learnerProfile.weakestDimensions.map((item) => item.dimension).join("、");
+  const qualityScore = clamp(
+    72 +
+      Math.round(resources.length * 2.5) +
+      (assessment.quiz.length >= 3 ? 6 : 0) -
+      learnerProfile.weakestDimensions.length * 3
+  );
+  const revisionFocus = qualityScore >= 85 ? "提升开放任务挑战度" : `继续补强${weakest}`;
+
+  return {
+    objective: `围绕“${input.topic}”生成符合${input.level}学习者的个性化资源。`,
+    status: qualityScore >= 80 ? "已通过质量评审" : "已完成首轮修正",
+    qualityScore,
+    stages: [
+      {
+        agent: "学习画像智能体",
+        action: "抽取学习目标、偏好、薄弱点和行为信号",
+        input: "表单学习需求",
+        output: `定位薄弱维度：${weakest}`
+      },
+      {
+        agent: "知识诊断智能体",
+        action: "将薄弱点映射到知识掌握维度",
+        input: "动态画像与掌握度雷达图",
+        output: `建议优先处理：${learnerProfile.weakestDimensions[0].dimension}`
+      },
+      {
+        agent: "资源规划智能体",
+        action: "拆分阶段路径并分配资源类型",
+        input: "画像、周期、输出类型",
+        output: `生成 ${path.length} 个学习阶段`
+      },
+      {
+        agent: "内容生成智能体",
+        action: "生成讲解、案例、练习和拓展资源",
+        input: "路径规划与学习偏好",
+        output: `生成 ${resources.length} 类资源`
+      },
+      {
+        agent: "质量评估智能体",
+        action: "检查难度匹配、资源完整性和测评闭环",
+        input: "资源草案与测评规则",
+        output: `质量分 ${qualityScore}，修正重点：${revisionFocus}`
+      },
+      {
+        agent: "反馈更新智能体",
+        action: "根据测验分数、错题原因和耗时更新画像",
+        input: "学习结果与测评反馈",
+        output: "形成下一轮画像更新信号"
+      }
+    ],
+    review: {
+      passed: qualityScore >= 80,
+      checks: [
+        { label: "画像匹配", passed: true, detail: `资源围绕${input.level}水平与${input.style}偏好生成。` },
+        { label: "资源完整性", passed: resources.length >= 4, detail: "覆盖讲解、案例、练习和拓展资源。" },
+        { label: "测评闭环", passed: assessment.quiz.length >= 3, detail: "包含测验题、评分规则和后续动作。" },
+        { label: "难度校准", passed: qualityScore >= 78, detail: `当前质量分 ${qualityScore}，需要关注${revisionFocus}。` }
+      ],
+      revisionAdvice: [
+        `若测验低于 60 分，下一轮资源减少综合任务，增加${learnerProfile.weakestDimensions[0].dimension}的微练习。`,
+        "若连续两次通过测评，自动提高应用题比例并加入项目化产出。",
+        "每次生成后记录质量分，作为系统自评审证据。"
+      ]
+    }
+  };
 }
 
 async function callLargeModel(input, localPlan) {

@@ -101,6 +101,39 @@ function renderResult(data) {
       ${renderSimpleList(data.profile.priority)}
     </article>
 
+    <article class="result-card full loop-card">
+      <div class="card-heading-row">
+        <div>
+          <h3>多智能体资源生成闭环</h3>
+          <p>${escapeHtml(data.generationLoop.objective)}</p>
+        </div>
+        <span class="score-badge">${data.generationLoop.qualityScore} 分</span>
+      </div>
+      <div class="loop-timeline">
+        ${data.generationLoop.stages.map((stage, index) => `
+          <section class="loop-step">
+            <span class="step-index">${index + 1}</span>
+            <div>
+              <strong>${escapeHtml(stage.agent)}</strong>
+              <p>${escapeHtml(stage.action)}</p>
+              <dl>
+                <div><dt>输入</dt><dd>${escapeHtml(stage.input)}</dd></div>
+                <div><dt>输出</dt><dd>${escapeHtml(stage.output)}</dd></div>
+              </dl>
+            </div>
+          </section>
+        `).join("")}
+      </div>
+      <div class="review-grid">
+        ${data.generationLoop.review.checks.map((check) => `
+          <div class="review-item ${check.passed ? "passed" : "pending"}">
+            <strong>${check.passed ? "通过" : "待修正"}：${escapeHtml(check.label)}</strong>
+            <p>${escapeHtml(check.detail)}</p>
+          </div>
+        `).join("")}
+      </div>
+    </article>
+
     <article class="result-card full">
       <h3>个性化学习路径</h3>
       <ul class="item-list">
