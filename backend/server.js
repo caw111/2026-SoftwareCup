@@ -158,9 +158,7 @@ const server = http.createServer(async (req, res) => {
       const plan = body.plan || runLocalAgents(input);
       const progress = body.progress || {};
       const history = ensureArray(body.history, []);
-      const quizResult = await generateAdaptiveQuiz(input, plan, progress, Number(body.variant || 0), history, {
-        includeCode: Boolean(body.judgeReady)
-      });
+      const quizResult = await generateAdaptiveQuiz(input, plan, progress, Number(body.variant || 0), history);
       sendJson(res, 200, { ...quizResult, generatedAt: new Date().toISOString(), source: summarizeProgress(plan, progress) });
       return;
     }
@@ -791,24 +789,48 @@ function buildAssessment(input, learnerProfile, dailyPlan) {
 
 async function generateAdaptiveQuiz(input, plan, progress = {}, variant = 0, history = [], options = {}) {
   const summary = summarizeProgress(plan, progress);
-  const localQuiz = buildProgressQuiz(input, plan, progress, variant, history, options);
+  const quizOptions = {
+    ...options,
+    includeCode: shouldIncludeProgrammingQuestion(input, plan, progress, history)
+  };
+  if (quizOptions.includeCode && JUDGE_AUTO_BOOTSTRAP) {
+    bootstrapJudgeRuntime().catch((error) => {
+      console.warn(`判题沙箱准备失败：${friendlyJudgeError(error)}`);
+    });
+  }
+  const localQuiz = buildProgressQuiz(input, plan, progress, variant, history, quizOptions);
 
   if (!MODEL_CONFIG.apiKey) {
-    return { quiz: localQuiz, mode: "local-bank", llmUsed: false };
+    return { quiz: localQuiz, mode: "local-bank", llmUsed: false, includeCode: quizOptions.includeCode, judge: judgeBootstrapStatus };
   }
 
   try {
-    const llmQuiz = await callLargeModelForQuiz(input, plan, progress, summary, variant, history, options);
-    return { quiz: normalizeGeneratedQuiz(llmQuiz, localQuiz, summary, variant, options), mode: "llm-quiz", llmUsed: true };
+    const llmQuiz = await callLargeModelForQuiz(input, plan, progress, summary, variant, history, quizOptions);
+    return { quiz: normalizeGeneratedQuiz(llmQuiz, localQuiz, summary, variant, quizOptions), mode: "llm-quiz", llmUsed: true, includeCode: quizOptions.includeCode, judge: judgeBootstrapStatus };
   } catch (error) {
     return {
       quiz: localQuiz,
       mode: "local-bank-fallback",
       llmUsed: false,
+      includeCode: quizOptions.includeCode,
+      judge: judgeBootstrapStatus,
       warning: "大模型出题失败，已使用本地专业题库。",
       detail: error instanceof Error ? error.message : String(error)
     };
   }
+}
+
+function shouldIncludeProgrammingQuestion(input, plan, progress, history) {
+  const text = [
+    input.topic,
+    input.goal,
+    input.outputType,
+    input.style,
+    input.weaknesses,
+    ...(plan?.dailyPlan || []).flatMap((day) => [day.title, day.focus, ...(day.tasks || [])]),
+    ...ensureArray(history, []).map((item) => `${item.type || ""} ${item.dimension || ""} ${item.question || ""}`)
+  ].join(" ");
+  return /编程|代码|程序|算法|数据结构|python|javascript|java|c\+\+|机器学习|深度学习|模型|训练|预测|数据处理|特征|评估指标/i.test(text);
 }
 
 async function callLargeModelForQuiz(input, plan, progress, summary, variant, history, options) {
@@ -847,7 +869,7 @@ async function callLargeModelForQuiz(input, plan, progress, summary, variant, hi
 硬性要求：
 1. 生成 4 道题，必须和当前主题 ${input.topic} 的专业知识强相关，不要泛泛学习方法题。
 2. 必须利用 completedDays 和 recentHistory，避免重复 recentHistory 中的题干。
-3. ${options.includeCode ? "题型结构必须严格为：2 道 choice 选择题、1 道 short 简答题、1 道 code Python 编程题；代码题 tests 要可由 Docker 判题运行。" : "当前 Docker 判题未就绪，不要生成代码题；题型结构为 3 道 choice 选择题、1 道 short 简答题。"}
+3. ${options.includeCode ? "当前学习内容适合编程训练，题型结构必须严格为：2 道 choice 选择题、1 道 short 简答题、1 道 code Python 编程题；代码题 tests 要可由服务端判题沙箱运行。" : "当前学习内容暂不适合编程训练，题型结构为 3 道 choice 选择题、1 道 short 简答题。"}
 4. 选择题要有明确干扰项；简答题要给 referenceAnswer 和 keywords；代码题只考一个函数。
 5. 题干中自然体现当前进度或错题薄弱点，但不要机械复制上下文。
 
@@ -859,7 +881,7 @@ ${JSON.stringify({
   weakDimensions: plan?.learnerProfile?.weakestDimensions || [],
   recentHistory,
   variant,
-  judgeReady: options.includeCode
+  includeProgrammingQuestion: options.includeCode
 })}`;
 
   const content = await requestChatCompletion([

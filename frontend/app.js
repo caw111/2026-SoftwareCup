@@ -596,8 +596,7 @@ async function loadQuiz(regenerate) {
         progress: plan.progress,
         history: plan.quizHistory || [],
         regenerate,
-        variant: plan.quizRound,
-        judgeReady: Boolean(state.judgeReady)
+        variant: plan.quizRound
       })
     });
     state.quiz = data.quiz || [];
