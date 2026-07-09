@@ -847,7 +847,7 @@ async function callLargeModelForQuiz(input, plan, progress, summary, variant, hi
 硬性要求：
 1. 生成 4 道题，必须和当前主题 ${input.topic} 的专业知识强相关，不要泛泛学习方法题。
 2. 必须利用 completedDays 和 recentHistory，避免重复 recentHistory 中的题干。
-3. 至少 1 道选择题、1 道简答题。${options.includeCode ? "必须包含 1 道 Python 编程题，tests 要可由 Docker 判题运行。" : "当前 Docker 判题未就绪，不要生成代码题。"}
+3. ${options.includeCode ? "题型结构必须严格为：2 道 choice 选择题、1 道 short 简答题、1 道 code Python 编程题；代码题 tests 要可由 Docker 判题运行。" : "当前 Docker 判题未就绪，不要生成代码题；题型结构为 3 道 choice 选择题、1 道 short 简答题。"}
 4. 选择题要有明确干扰项；简答题要给 referenceAnswer 和 keywords；代码题只考一个函数。
 5. 题干中自然体现当前进度或错题薄弱点，但不要机械复制上下文。
 
@@ -885,10 +885,20 @@ function normalizeGeneratedQuiz(items, fallback, summary, variant, options) {
     .filter((item) => item && ["choice", "short", "code"].includes(item.type))
     .filter((item) => options.includeCode || item.type !== "code")
     .map((item, index) => normalizeQuizItem(item, summary, variant, index));
-  const types = new Set(normalized.map((item) => item.type));
-  if (!types.has("choice") || !types.has("short") || normalized.length < 4) return fallback;
-  if (options.includeCode && !types.has("code")) return fallback;
-  return normalized.slice(0, 4);
+  const structured = pickQuizByStructure(normalized, options.includeCode);
+  return structured || fallback;
+}
+
+function pickQuizByStructure(items, includeCode) {
+  const choices = items.filter((item) => item.type === "choice");
+  const shorts = items.filter((item) => item.type === "short");
+  const codes = items.filter((item) => item.type === "code");
+  if (includeCode) {
+    if (choices.length < 2 || shorts.length < 1 || codes.length < 1) return null;
+    return [choices[0], choices[1], shorts[0], codes[0]];
+  }
+  if (choices.length < 3 || shorts.length < 1) return null;
+  return [choices[0], choices[1], choices[2], shorts[0]];
 }
 
 function normalizeQuizItem(item, summary, variant, index) {
@@ -1142,17 +1152,9 @@ function selectAdaptiveQuizItems(items, offset, history, missedDimensions, optio
   const rotated = prioritized.slice(offset % prioritized.length).concat(prioritized.slice(0, offset % prioritized.length));
   const fresh = rotated.filter((item) => !previousBaseIds.has(item.id));
   const pool = fresh.length >= 4 ? fresh : rotated;
-  const required = ["choice", "short", "code"];
-  const selected = [];
-  for (const type of required) {
-    const item = rotated.find((candidate) => candidate.type === type && !selected.includes(candidate));
-    if (item) selected.push(item);
-  }
-  for (const item of rotated) {
-    if (selected.length >= 4) break;
-    if (!selected.includes(item)) selected.push(item);
-  }
-  return selected.slice(0, 4);
+  const selected = pickQuizByStructure(pool, Boolean(options.includeCode));
+  if (selected) return selected;
+  return pool.slice(0, 4);
 }
 
 function applyQuizContext(item, context) {
