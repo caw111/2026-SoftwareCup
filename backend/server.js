@@ -101,7 +101,7 @@ const server = http.createServer(async (req, res) => {
       const input = normalizeInput(body.input || {});
       const plan = body.plan || runLocalAgents(input);
       const progress = body.progress || {};
-      const quiz = buildProgressQuiz(input, plan, progress, Boolean(body.regenerate));
+      const quiz = buildProgressQuiz(input, plan, progress, Number(body.variant || 0));
       sendJson(res, 200, { quiz, generatedAt: new Date().toISOString(), source: summarizeProgress(plan, progress) });
       return;
     }
@@ -561,7 +561,7 @@ function buildResources(input, learnerProfile, assessment) {
 
 function buildAssessment(input, learnerProfile, dailyPlan) {
   return {
-    quiz: buildProgressQuiz(input, { learnerProfile, dailyPlan }, {}, false),
+    quiz: buildProgressQuiz(input, { learnerProfile, dailyPlan }, {}, 0),
     rubric: ["选择题按标准答案即时评分", "简答题按关键词覆盖、逻辑完整度和表达清晰度评分", "代码题可通过 Docker 沙箱运行测试用例"],
     nextActions: [
       "低于 60 分：回到概念讲义和基础题。",
@@ -571,80 +571,169 @@ function buildAssessment(input, learnerProfile, dailyPlan) {
   };
 }
 
-function buildProgressQuiz(input, plan, progress = {}, regenerate = false) {
+function buildProgressQuiz(input, plan, progress = {}, variant = 0) {
   const summary = summarizeProgress(plan, progress);
   const focus = summary.focus || plan?.learnerProfile?.weakestDimensions?.[0]?.dimension || "概念理解";
-  const seedOffset = regenerate ? 1 : 0;
+  const seedOffset = Math.abs(Number(variant || 0) + summary.done + summary.currentDay) % 3;
   const dayLabel = summary.currentDay ? `第 ${summary.currentDay} 天` : "当前阶段";
   const topic = input.topic || plan?.input?.topic || "当前主题";
   const learnedTask = summary.completedTasks[seedOffset % Math.max(1, summary.completedTasks.length)] || `${topic} 的核心概念`;
+  const bank = selectProfessionalQuizBank(topic, focus, dayLabel, learnedTask);
+  return rotateQuiz(bank, seedOffset).map((item, index) => ({
+    ...item,
+    id: `${item.id}-${summary.currentDay || 1}-${summary.done}-${variant || 0}-${index}`,
+    relatedDay: summary.currentDay || 1,
+    progressContext: {
+      done: summary.done,
+      total: summary.total,
+      learnedTask
+    }
+  }));
+}
+
+function selectProfessionalQuizBank(topic, focus, dayLabel, learnedTask) {
+  if (/机器学习|machine learning|ML/i.test(topic)) {
+    return [
+      {
+        id: "ml-leakage-choice",
+        type: "choice",
+        dimension: "概念理解",
+        question: `${dayLabel}围绕“${learnedTask}”学习后，下面哪种做法最容易造成机器学习评估中的数据泄漏？`,
+        options: [
+          "先在全量数据上做标准化，再划分训练集和测试集",
+          "只用训练集拟合标准化参数，再应用到验证集和测试集",
+          "把数据划分为训练集、验证集、测试集",
+          "在验证集上比较多个超参数组合"
+        ],
+        answerIndex: 0,
+        explanation: "预处理参数如果从全量数据学习，会让测试集信息提前进入训练流程，导致评估虚高。",
+        score: 20
+      },
+      {
+        id: "ml-metric-choice",
+        type: "choice",
+        dimension: "方法迁移",
+        question: "在正负样本极不均衡的二分类任务中，只看 accuracy 可能有什么问题？",
+        options: [
+          "多数类预测会掩盖少数类识别能力，需要结合 precision、recall、F1 或 PR-AUC",
+          "accuracy 一定比 F1 更能反映业务风险",
+          "样本不均衡时不需要划分验证集",
+          "只要训练轮数足够多，accuracy 就不会误导"
+        ],
+        answerIndex: 0,
+        explanation: "不均衡任务里，高 accuracy 可能来自总是预测多数类，不能说明模型真正识别少数类。",
+        score: 20
+      },
+      {
+        id: "ml-gradient-short",
+        type: "short",
+        dimension: focus,
+        question: "简答：用 80 字以内说明梯度下降中“学习率过大”和“学习率过小”分别会造成什么现象。",
+        keywords: ["学习率", "过大", "震荡", "发散", "过小", "收敛", "慢"],
+        referenceAnswer: "学习率过大可能越过最优点，导致损失震荡甚至发散；过小则每步更新太小，收敛很慢，训练成本升高。",
+        explanation: "回答要同时覆盖两种学习率设置对损失曲线和收敛速度的影响。",
+        score: 30
+      },
+      {
+        id: "ml-accuracy-code",
+        type: "code",
+        language: "python",
+        dimension: "实践应用",
+        question: "编程题：请实现 accuracy(y_true, y_pred)，返回预测正确的比例。要求 y_true 和 y_pred 为等长列表。",
+        starterCode: "def accuracy(y_true, y_pred):\n    # 在这里编写代码\n    pass\n",
+        tests: [
+          { function: "accuracy", args: [[1, 0, 1, 1], [1, 1, 1, 0]], expected: 0.5 },
+          { function: "accuracy", args: [["cat", "dog"], ["cat", "dog"]], expected: 1 },
+          { function: "accuracy", args: [[0, 0, 1], [1, 1, 1]], expected: 0.3333333333333333 }
+        ],
+        explanation: "该题检查你是否能把评估指标转成可运行代码。若本机 Docker 可用，后端会在隔离容器中运行测试。",
+        score: 30
+      },
+      {
+        id: "ml-bias-variance-short",
+        type: "short",
+        dimension: "概念理解",
+        question: "简答：模型在训练集表现很好、验证集表现差，通常说明什么问题？你会优先尝试哪两种改进？",
+        keywords: ["过拟合", "正则化", "数据增强", "简化模型", "交叉验证", "更多数据"],
+        referenceAnswer: "通常说明过拟合。可尝试正则化、简化模型、增加数据或数据增强，并用验证集/交叉验证确认改进。",
+        explanation: "重点是判断泛化问题，并给出合理的模型或数据层面修正。",
+        score: 30
+      }
+    ];
+  }
 
   return [
     {
-      id: "q-understanding",
+      id: "general-concept-choice",
       type: "choice",
-      dimension: focus,
-      relatedDay: summary.currentDay || 1,
-      question: `${dayLabel}学习后，最能说明你真正理解“${learnedTask}”的是哪一项？`,
+      dimension: "概念理解",
+      question: `${dayLabel}学习“${learnedTask}”后，哪种表现最能证明你掌握了专业概念？`,
       options: [
-        "能用自己的例子解释它解决了什么问题，并指出适用条件",
-        "能背出教材中的一句定义",
-        "只要看过相关视频就算掌握",
-        "能把所有公式完整抄写一遍"
+        "能给出定义、适用条件、反例和一个可验证例子",
+        "只背出一段定义",
+        "只收藏了资料链接",
+        "只看完视频但没有输出"
       ],
       answerIndex: 0,
-      explanation: "真正掌握不仅是记忆定义，还要能解释问题、条件和使用方式。",
-      score: 25
+      explanation: "专业掌握需要定义、边界、反例和可验证应用，而不只是记忆。",
+      score: 20
     },
     {
-      id: "q-transfer",
+      id: "general-transfer-choice",
       type: "choice",
       dimension: "方法迁移",
-      relatedDay: summary.currentDay || 1,
-      question: `围绕“${topic}”，从已完成任务进入新场景时，第一步最应该做什么？`,
+      question: `把 ${topic} 用到新问题时，最关键的第一步是什么？`,
       options: [
-        "先判断新场景的输入、目标和评价指标是否与原例题一致",
-        "直接套用上一题答案",
-        "跳过分析，先找更复杂的模型",
-        "只关注最终结果，不需要记录过程"
+        "识别新问题的输入、输出、约束和评价标准",
+        "直接复制旧例题答案",
+        "跳过需求分析",
+        "只追求更复杂的工具"
       ],
       answerIndex: 0,
-      explanation: "迁移能力的关键是识别新旧任务之间的相同点和差异点。",
-      score: 25
+      explanation: "专业迁移首先要确认问题结构，而不是套模板。",
+      score: 20
     },
     {
-      id: "q-review",
-      type: "choice",
-      dimension: "表达复盘",
-      relatedDay: summary.currentDay || 1,
-      question: "做错一道练习后，哪种复盘记录最有助于后续个性化出题？",
-      options: [
-        "写清楚错因、正确思路、涉及知识点和下次提醒",
-        "只写“粗心”两个字",
-        "删除错题避免影响心情",
-        "只保存答案，不记录自己的思路"
-      ],
-      answerIndex: 0,
-      explanation: "系统需要错因和知识点信号，才能把下一轮题目对准真实薄弱处。",
-      score: 25
+      id: "general-short",
+      type: "short",
+      dimension: focus,
+      question: `简答：结合今天已完成任务，说明 ${topic} 中一个关键概念的适用条件和一个常见误区。`,
+      keywords: ["适用", "条件", "误区", "例子"],
+      referenceAnswer: "答案应说明概念在什么条件下成立，给出一个具体例子，并指出容易误用或混淆的地方。",
+      explanation: "该题用于检查你是否能说出概念边界。",
+      score: 30
     },
     {
-      id: "q-application",
-      type: "choice",
+      id: "general-code",
+      type: "code",
+      language: "python",
       dimension: "实践应用",
-      relatedDay: summary.currentDay || 1,
-      question: `如果今天任务要求用 ${topic} 完成一个小案例，最合理的完成证据是什么？`,
-      options: [
-        "有可复现步骤、输入输出说明、结果评价和一句反思",
-        "只截图最终页面",
-        "只说自己看懂了",
-        "只复制别人完整代码"
+      question: "编程题：实现 normalize_scores(scores)，把列表映射到 0-1 区间；若最大值等于最小值，返回全 0。",
+      starterCode: "def normalize_scores(scores):\n    # 在这里编写代码\n    pass\n",
+      tests: [
+        { function: "normalize_scores", args: [[2, 4, 6]], expected: [0, 0.5, 1] },
+        { function: "normalize_scores", args: [[5, 5]], expected: [0, 0] },
+        { function: "normalize_scores", args: [[-1, 1]], expected: [0, 1] }
       ],
-      answerIndex: 0,
-      explanation: "实践题需要可复现、可评价和可反思，才能支撑真实掌握度更新。",
-      score: 25
+      explanation: "该题检查你能否把专业数据处理步骤写成可测试函数。",
+      score: 30
     }
   ];
+}
+
+function rotateQuiz(items, offset) {
+  const rotated = items.slice(offset).concat(items.slice(0, offset));
+  const required = ["choice", "short", "code"];
+  const selected = [];
+  for (const type of required) {
+    const item = rotated.find((candidate) => candidate.type === type && !selected.includes(candidate));
+    if (item) selected.push(item);
+  }
+  for (const item of rotated) {
+    if (selected.length >= 4) break;
+    if (!selected.includes(item)) selected.push(item);
+  }
+  return selected.slice(0, 4);
 }
 
 function summarizeProgress(plan, progress = {}) {
@@ -828,18 +917,20 @@ async function evaluateAnswer(body) {
 }
 
 async function evaluateTextAnswer(question, answer) {
+  const maxScore = Number(question.score || 100);
   if (!MODEL_CONFIG.apiKey) {
     const keywords = ensureArray(question.keywords, []).map((item) => String(item).toLowerCase());
     const lower = answer.toLowerCase();
     const hit = keywords.filter((keyword) => lower.includes(keyword)).length;
-    const score = keywords.length ? Math.round((hit / keywords.length) * 100) : Math.min(100, Math.round(answer.length / 2));
+    const percent = keywords.length ? hit / keywords.length : Math.min(1, answer.length / 200);
+    const score = Math.round(percent * maxScore);
     return {
       agent: "测评评分智能体",
       mode: "local-text",
-      correct: score >= 60,
+      correct: score >= maxScore * 0.6,
       score,
-      maxScore: 100,
-      feedback: score >= 60 ? "答案覆盖了主要要点。" : "答案要点不足，建议补充概念、例子和使用条件。",
+      maxScore,
+      feedback: score >= maxScore * 0.6 ? "答案覆盖了主要要点。" : "答案要点不足，建议补充概念、例子和使用条件。",
       dimension: question.dimension
     };
   }
@@ -848,7 +939,17 @@ async function evaluateTextAnswer(question, answer) {
     { role: "system", content: "你是中文学习测评评分智能体。只返回 JSON，不要 Markdown。" },
     { role: "user", content: `题目：${JSON.stringify(question)}\n学生答案：${answer}\n请返回 {"score":0-100,"correct":true/false,"feedback":"","dimension":""}` }
   ], { temperature: 0.2, maxTokens: 500 });
-  return { agent: "测评评分智能体", mode: "llm-text", ...parseJsonFromModel(content) };
+  const parsed = parseJsonFromModel(content);
+  const percentScore = Math.max(0, Math.min(100, Number(parsed.score || 0)));
+  return {
+    agent: "测评评分智能体",
+    mode: "llm-text",
+    ...parsed,
+    score: Math.round((percentScore / 100) * maxScore),
+    maxScore,
+    correct: Boolean(parsed.correct ?? percentScore >= 60),
+    dimension: parsed.dimension || question.dimension
+  };
 }
 
 async function evaluateCodeAnswer(question, code) {

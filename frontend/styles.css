@@ -743,12 +743,27 @@ textarea:focus {
   margin-top: 2px;
 }
 
+.answer-box {
+  margin-bottom: 12px;
+}
+
+.answer-box textarea {
+  font-family: "Cascadia Code", Consolas, "Microsoft YaHei", monospace;
+}
+
 .feedback {
   margin: 12px 0 0;
   padding: 10px;
   border-radius: 8px;
   color: #334155;
   background: #f1f5f9;
+  line-height: 1.6;
+}
+
+.reference-answer {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 13px;
   line-height: 1.6;
 }
 

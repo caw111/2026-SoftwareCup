@@ -432,13 +432,25 @@ function renderPractice() {
 
 function renderQuizItem(item, index) {
   const result = state.quizResults?.[item.id];
+  const answerControl = renderAnswerControl(item, result);
   return `
     <article class="quiz-item">
       <div class="quiz-head">
-        <span>第 ${index + 1} 题 · ${escapeHtml(item.dimension || "综合")}</span>
+        <span>第 ${index + 1} 题 · ${typeLabel(item.type)} · ${escapeHtml(item.dimension || "综合")}</span>
         ${result ? `<strong class="${result.correct ? "ok-text" : "bad-text"}">${result.score}/${result.maxScore}</strong>` : ""}
       </div>
       <h3>${escapeHtml(item.question)}</h3>
+      ${answerControl}
+      <button class="ghost-button" type="button" data-evaluate="${escapeHtml(item.id)}">提交给评分智能体</button>
+      ${result ? `<p class="feedback">${escapeHtml(result.feedback)}</p>` : ""}
+      ${item.referenceAnswer && result ? `<p class="reference-answer">参考答案：${escapeHtml(item.referenceAnswer)}</p>` : ""}
+    </article>
+  `;
+}
+
+function renderAnswerControl(item, result) {
+  if (item.type === "choice") {
+    return `
       <div class="option-list">
         ${(item.options || []).map((option, optionIndex) => `
           <label class="option-item">
@@ -447,10 +459,33 @@ function renderQuizItem(item, index) {
           </label>
         `).join("")}
       </div>
-      <button class="ghost-button" type="button" data-evaluate="${escapeHtml(item.id)}">提交给评分智能体</button>
-      ${result ? `<p class="feedback">${escapeHtml(result.feedback)}</p>` : ""}
-    </article>
+    `;
+  }
+
+  if (item.type === "code") {
+    return `
+      <label class="answer-box">
+        Python 代码
+        <textarea data-answer-for="${escapeHtml(item.id)}" rows="9" spellcheck="false">${escapeHtml(item.lastAnswer || item.starterCode || "")}</textarea>
+      </label>
+      <p class="hint-text">${escapeHtml(item.explanation || "")}</p>
+    `;
+  }
+
+  return `
+    <label class="answer-box">
+      我的答案
+      <textarea data-answer-for="${escapeHtml(item.id)}" rows="5" placeholder="请写出关键概念、判断依据和例子">${escapeHtml(item.lastAnswer || "")}</textarea>
+    </label>
   `;
+}
+
+function typeLabel(type) {
+  return {
+    choice: "选择题",
+    short: "简答题",
+    code: "编程题"
+  }[type] || "综合题";
 }
 
 function renderScoreSummary() {
@@ -475,7 +510,8 @@ async function loadQuiz(regenerate) {
         input: plan.data.input,
         plan: plan.data,
         progress: plan.progress,
-        regenerate
+        regenerate,
+        variant: regenerate ? Date.now() : progressSummaryFor(plan).done
       })
     });
     state.quiz = data.quiz || [];
@@ -489,14 +525,15 @@ async function loadQuiz(regenerate) {
 
 async function evaluateQuiz(questionId) {
   const question = state.quiz.find((item) => item.id === questionId);
-  const selected = els.practicePanel.querySelector(`input[name="${cssEscape(questionId)}"]:checked`);
-  if (!question || !selected) return;
+  const answer = readQuizAnswer(question);
+  if (!question || answer === null || answer === "") return;
+  question.lastAnswer = answer;
 
   try {
     const result = await request("/api/evaluate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, answer: Number(selected.value) })
+      body: JSON.stringify({ question, answer })
     });
     state.quizResults[questionId] = result;
     const plan = getCurrentPlan();
@@ -510,6 +547,15 @@ async function evaluateQuiz(questionId) {
   } catch (error) {
     alert(`评分失败：${error.message}`);
   }
+}
+
+function readQuizAnswer(question) {
+  if (question.type === "choice") {
+    const selected = els.practicePanel.querySelector(`input[name="${cssEscape(question.id)}"]:checked`);
+    return selected ? Number(selected.value) : null;
+  }
+  const textarea = els.practicePanel.querySelector(`[data-answer-for="${cssEscape(question.id)}"]`);
+  return textarea ? textarea.value.trim() : null;
 }
 
 function renderAgents() {
