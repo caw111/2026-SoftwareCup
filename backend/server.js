@@ -1,6 +1,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 
@@ -19,32 +20,32 @@ const agents = [
   {
     id: "profile-agent",
     name: "学习画像智能体",
-    role: "分析目标、基础、偏好、薄弱点和学习反馈，形成可更新的学习画像。"
+    role: "整合用户目标、基础、偏好、每日完成记录和测评表现，维护可更新的学习画像。"
   },
   {
     id: "diagnosis-agent",
     name: "知识诊断智能体",
-    role: "定位知识点掌握度、错因和补救优先级。"
+    role: "把薄弱点、打卡进度、错题原因映射到知识维度，输出下一轮补救优先级。"
   },
   {
     id: "planner-agent",
     name: "路径规划智能体",
-    role: "拆解阶段目标，生成适合日常执行的学习路径和每日任务。"
+    role: "根据画像和诊断结果拆解阶段目标，生成每日任务和复习节奏。"
   },
   {
     id: "resource-agent",
     name: "资源生成智能体",
-    role: "生成讲义、例题、练习、解析、错因提醒和项目化任务。"
+    role: "生成讲义、例题、练习题、解析和项目化任务，并接收规划智能体的约束。"
+  },
+  {
+    id: "assessment-agent",
+    name: "测评评分智能体",
+    role: "根据用户答案自动评分，选择题即时判分，代码题可调用 Docker 沙箱运行测试。"
   },
   {
     id: "coach-agent",
     name: "学习陪练智能体",
-    role: "回答学习追问，给出下一步提示，帮助学生持续推进。"
-  },
-  {
-    id: "assessment-agent",
-    name: "测评反馈智能体",
-    role: "评估练习表现，形成下一轮画像更新建议。"
+    role: "基于当前方案、进度和测评结果回答追问，给出下一步建议。"
   }
 ];
 
@@ -83,9 +84,25 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/api/generate") {
-      const body = await readJson(req);
-      const input = normalizeInput(body);
+      const input = normalizeInput(await readJson(req));
       const result = await generateLearningPlan(input);
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/quiz") {
+      const body = await readJson(req);
+      const input = normalizeInput(body.input || {});
+      const plan = body.plan || runLocalAgents(input);
+      const progress = body.progress || {};
+      const quiz = buildProgressQuiz(input, plan, progress, Boolean(body.regenerate));
+      sendJson(res, 200, { quiz, generatedAt: new Date().toISOString(), source: summarizeProgress(plan, progress) });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/evaluate") {
+      const body = await readJson(req);
+      const result = await evaluateAnswer(body);
       sendJson(res, 200, result);
       return;
     }
@@ -94,7 +111,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const result = await answerTutorQuestion({
         question: clean(body.question, 1000),
-        context: clean(body.context, 4000)
+        context: clean(body.context, 5000)
       });
       sendJson(res, 200, result);
       return;
@@ -133,17 +150,13 @@ function loadEnvFile() {
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("[")) continue;
-
     const separatorIndex = trimmed.indexOf("=");
     if (separatorIndex === -1) continue;
-
     const rawKey = trimmed.slice(0, separatorIndex).trim();
     const rawValue = trimmed.slice(separatorIndex + 1).trim();
-    const value = rawValue.replace(/^["']|["']$/g, "");
     const key = normalizeEnvKey(rawKey);
-    if (key && process.env[key] === undefined) {
-      process.env[key] = value;
-    }
+    const value = rawValue.replace(/^["']|["']$/g, "");
+    if (key && process.env[key] === undefined) process.env[key] = value;
   }
 }
 
@@ -187,9 +200,7 @@ function readJson(req) {
     let data = "";
     req.on("data", (chunk) => {
       data += chunk;
-      if (data.length > 1024 * 1024) {
-        reject(new Error("请求体过大"));
-      }
+      if (data.length > 1024 * 1024) reject(new Error("请求体过大"));
     });
     req.on("end", () => {
       try {
@@ -209,7 +220,7 @@ function normalizeInput(body) {
     duration: clean(body.duration) || "2 周",
     dailyMinutes: clean(body.dailyMinutes) || "45 分钟",
     style: clean(body.style) || "案例驱动",
-    weaknesses: clean(body.weaknesses) || "概念理解不够系统，练习较少",
+    weaknesses: clean(body.weaknesses) || "数学基础一般，对模型训练流程和评估指标不熟悉",
     outputType: clean(body.outputType) || "完整学习方案"
   };
 }
@@ -222,12 +233,7 @@ async function generateLearningPlan(input) {
   const localPlan = runLocalAgents(input);
 
   if (!MODEL_CONFIG.apiKey) {
-    return {
-      mode: "local",
-      input,
-      agents,
-      ...localPlan
-    };
+    return { mode: "local", input, agents, ...localPlan };
   }
 
   try {
@@ -254,11 +260,11 @@ async function generateLearningPlan(input) {
 function runLocalAgents(input) {
   const learnerProfile = buildLearnerProfile(input);
   const path = buildLearningPath(input);
-  const resources = buildResources(input);
-  const assessment = buildAssessment(input);
+  const dailyPlan = buildDailyPlan(input, learnerProfile);
+  const assessment = buildAssessment(input, learnerProfile, dailyPlan);
+  const resources = buildResources(input, learnerProfile, assessment);
   const generationLoop = buildGenerationLoop(input, learnerProfile, path, resources, assessment);
   const resourcePackage = buildResourcePackage(input, learnerProfile, path, resources, assessment, generationLoop);
-  const dailyPlan = buildDailyPlan(input, learnerProfile);
   const tutorCards = buildTutorCards(input, learnerProfile);
   const profile = {
     summary: learnerProfile.summary,
@@ -281,41 +287,40 @@ function runLocalAgents(input) {
 
 function buildLearnerProfile(input) {
   const levelBase = {
-    "零基础": 34,
-    "入门": 48,
-    "进阶": 67,
-    "冲刺竞赛": 78
-  }[input.level] ?? 50;
+    "零基础": 32,
+    "入门": 46,
+    "进阶": 62,
+    "冲刺竞赛": 74
+  }[input.level] ?? 48;
 
   const weakText = input.weaknesses;
-  const weakSignals = [
-    { key: "math", words: ["数学", "公式", "推导", "概率", "线代"] },
-    { key: "practice", words: ["练习", "实战", "项目", "动手", "代码"] },
-    { key: "concept", words: ["概念", "理解", "原理", "流程", "指标"] },
-    { key: "expression", words: ["表达", "总结", "报告", "复盘"] }
+  const dimensions = [
+    { key: "math", dimension: "先修基础", words: ["数学", "公式", "推导", "概率", "线代"] },
+    { key: "concept", dimension: "概念理解", words: ["概念", "理解", "原理", "流程", "指标"] },
+    { key: "transfer", dimension: "方法迁移", words: ["应用", "迁移", "场景", "不会用"] },
+    { key: "practice", dimension: "实践应用", words: ["练习", "实战", "项目", "动手", "代码"] },
+    { key: "review", dimension: "表达复盘", words: ["表达", "总结", "报告", "复盘"] },
+    { key: "selfDrive", dimension: "学习自驱", words: ["拖延", "坚持", "计划", "打卡"] }
   ];
-  const signalPenalty = Object.fromEntries(
-    weakSignals.map((signal) => [
-      signal.key,
-      signal.words.some((word) => weakText.includes(word)) ? 16 : 0
-    ])
-  );
-  const mastery = [
-    { dimension: "先修基础", score: clamp(levelBase - signalPenalty.math + 4) },
-    { dimension: "概念理解", score: clamp(levelBase - signalPenalty.concept + 8) },
-    { dimension: "方法迁移", score: clamp(levelBase - 8 - signalPenalty.practice) },
-    { dimension: "实践应用", score: clamp(levelBase - 12 - signalPenalty.practice) },
-    { dimension: "表达复盘", score: clamp(levelBase - 6 - signalPenalty.expression) },
-    { dimension: "学习自驱", score: clamp(levelBase + (input.duration.includes("3") ? 8 : 2)) }
-  ];
+
+  const mastery = dimensions.map((item, index) => {
+    const penalty = item.words.some((word) => weakText.includes(word)) ? 18 : index * 3;
+    return {
+      key: item.key,
+      dimension: item.dimension,
+      score: clamp(levelBase + 8 - penalty),
+      evidence: "初始分来自用户填写的当前水平和薄弱点，后续会由打卡和测评成绩自动更新。",
+      source: "estimated"
+    };
+  });
   const weakest = [...mastery].sort((a, b) => a.score - b.score).slice(0, 2);
 
   return {
     version: new Date().toISOString(),
-    summary: `画像显示该学习者在“${weakest.map((item) => item.dimension).join("、")}”上需要优先补强，适合采用“${input.style}”路径，每天约 ${input.dailyMinutes} 推进。`,
+    summary: `当前画像仅作为初始预估：系统会优先补强“${weakest.map((item) => item.dimension).join("、")}”，并在用户完成每日打卡、练习测评后重新计算掌握度。`,
     mastery,
     weakestDimensions: weakest,
-    tags: [input.level, input.style, weakest[0].dimension, "动态画像", "日常学习"],
+    tags: [input.level, input.style, weakest[0].dimension, "进度驱动画像", "可测评更新"],
     behaviorSignals: [
       `学习周期：${input.duration}`,
       `每日时间：${input.dailyMinutes}`,
@@ -323,9 +328,9 @@ function buildLearnerProfile(input) {
       `薄弱点线索：${input.weaknesses}`
     ],
     strategyPriorities: [
-      `优先补强“${weakest[0].dimension}”，避免直接进入高难综合任务。`,
-      "每天采用“学习-练习-复盘-反馈”闭环，形成可持续进步记录。",
-      "每轮学习后用测验得分、错题原因和耗时更新画像。"
+      `优先补强“${weakest[0].dimension}”，先用低门槛练习确认是否真的掌握。`,
+      "每天用“任务完成 + 选择题测评 + 错因记录”更新画像，避免雷达图停留在主观估计。",
+      "如果测评低于 60 分，下一轮练习自动回到对应知识点的讲义和基础题。"
     ]
   };
 }
@@ -334,7 +339,7 @@ function buildLearningPath(input) {
   return [
     {
       stage: "阶段一：诊断与概念建模",
-      task: `梳理${input.topic}的核心概念、先修知识和常见误区。`,
+      task: `梳理 ${input.topic} 的核心概念、先修知识和常见误区。`,
       outcome: "形成一页知识地图，明确个人薄弱点。"
     },
     {
@@ -355,86 +360,180 @@ function buildLearningPath(input) {
   ];
 }
 
-function buildResources(input) {
+function buildResources(input, learnerProfile, assessment) {
+  const focus = learnerProfile.weakestDimensions[0].dimension;
   return [
     {
       type: "微讲义",
-      title: `${input.topic}核心概念速通`,
-      content: `按“概念定义-现实类比-关键步骤-易错点”的结构学习${input.topic}，每个概念都要写出自己的例子。`
+      title: `${input.topic} 核心概念速览`,
+      content: `按“概念定义-现实类比-关键步骤-易错点”的结构学习 ${input.topic}，每个概念都写出自己的例子。`
     },
     {
       type: "例题讲解",
-      title: `${input.topic}场景化案例`,
-      content: `选择一个熟悉场景，说明${input.topic}如何解决问题，并画出输入、处理、输出三个环节。`
+      title: `${input.topic} 场景化案例`,
+      content: `选择一个熟悉场景，说明 ${input.topic} 如何解决问题，并标出输入、处理、输出和评估方式。`
     },
     {
-      type: "分层练习",
-      title: "基础到挑战题组",
-      content: "基础题 3 道检查概念，应用题 2 道训练迁移，挑战题 1 道用于综合表达。"
+      type: "进度匹配练习",
+      title: `${focus} 专项选择题组`,
+      content: `练习会优先覆盖已打卡任务和薄弱维度，当前默认生成 ${assessment.quiz.length} 道选择题。`
     },
     {
       type: "复盘模板",
       title: "错因记录表",
-      content: "记录错题、卡点、正确思路、下次提醒和需要补充学习的知识点。"
+      content: "记录错题、卡点、正确思路、下次提醒和需要补学的知识点，用于下一次画像更新。"
     }
   ];
 }
 
-function buildAssessment(input) {
+function buildAssessment(input, learnerProfile, dailyPlan) {
   return {
-    quiz: [
-      {
-        question: `请用 100 字解释${input.topic}最重要的三个概念。`,
-        answer: "答案应包含概念名称、各自作用和它们之间的关系。",
-        hint: "不要只背定义，要说出它解决了什么问题。"
-      },
-      {
-        question: `针对薄弱点“${input.weaknesses}”，设计一个纠错练习。`,
-        answer: "练习应能直接暴露薄弱点，并包含可检查的答案或标准。",
-        hint: "把薄弱点拆成一个可执行的小动作。"
-      },
-      {
-        question: `给出一个${input.topic}的实际应用场景，并说明为什么适合使用它。`,
-        answer: "需要说明输入、处理流程、输出和评价方式。",
-        hint: "如果说不清评价方式，说明还没真正理解应用场景。"
-      }
-    ],
-    rubric: ["概念准确：30%", "案例合理：30%", "表达清晰：20%", "反思可执行：20%"],
+    quiz: buildProgressQuiz(input, { learnerProfile, dailyPlan }, {}, false),
+    rubric: ["选择题按标准答案即时评分", "简答题按关键词覆盖、逻辑完整度和表达清晰度评分", "代码题可通过 Docker 沙箱运行测试用例"],
     nextActions: [
-      "低于 60 分：回到概念建模，减少综合题。",
-      "60-85 分：强化练习和错题复盘。",
-      "高于 85 分：进入项目化学习，增加开放任务。"
+      "低于 60 分：回到概念讲义和基础题。",
+      "60-85 分：继续强化练习和错题复盘。",
+      "高于 85 分：进入项目化学习或更高难度任务。"
     ]
+  };
+}
+
+function buildProgressQuiz(input, plan, progress = {}, regenerate = false) {
+  const summary = summarizeProgress(plan, progress);
+  const focus = summary.focus || plan?.learnerProfile?.weakestDimensions?.[0]?.dimension || "概念理解";
+  const seedOffset = regenerate ? 1 : 0;
+  const dayLabel = summary.currentDay ? `第 ${summary.currentDay} 天` : "当前阶段";
+  const topic = input.topic || plan?.input?.topic || "当前主题";
+  const learnedTask = summary.completedTasks[seedOffset % Math.max(1, summary.completedTasks.length)] || `${topic} 的核心概念`;
+
+  return [
+    {
+      id: "q-understanding",
+      type: "choice",
+      dimension: focus,
+      relatedDay: summary.currentDay || 1,
+      question: `${dayLabel}学习后，最能说明你真正理解“${learnedTask}”的是哪一项？`,
+      options: [
+        "能用自己的例子解释它解决了什么问题，并指出适用条件",
+        "能背出教材中的一句定义",
+        "只要看过相关视频就算掌握",
+        "能把所有公式完整抄写一遍"
+      ],
+      answerIndex: 0,
+      explanation: "真正掌握不仅是记忆定义，还要能解释问题、条件和使用方式。",
+      score: 25
+    },
+    {
+      id: "q-transfer",
+      type: "choice",
+      dimension: "方法迁移",
+      relatedDay: summary.currentDay || 1,
+      question: `围绕“${topic}”，从已完成任务进入新场景时，第一步最应该做什么？`,
+      options: [
+        "先判断新场景的输入、目标和评价指标是否与原例题一致",
+        "直接套用上一题答案",
+        "跳过分析，先找更复杂的模型",
+        "只关注最终结果，不需要记录过程"
+      ],
+      answerIndex: 0,
+      explanation: "迁移能力的关键是识别新旧任务之间的相同点和差异点。",
+      score: 25
+    },
+    {
+      id: "q-review",
+      type: "choice",
+      dimension: "表达复盘",
+      relatedDay: summary.currentDay || 1,
+      question: "做错一道练习后，哪种复盘记录最有助于后续个性化出题？",
+      options: [
+        "写清楚错因、正确思路、涉及知识点和下次提醒",
+        "只写“粗心”两个字",
+        "删除错题避免影响心情",
+        "只保存答案，不记录自己的思路"
+      ],
+      answerIndex: 0,
+      explanation: "系统需要错因和知识点信号，才能把下一轮题目对准真实薄弱处。",
+      score: 25
+    },
+    {
+      id: "q-application",
+      type: "choice",
+      dimension: "实践应用",
+      relatedDay: summary.currentDay || 1,
+      question: `如果今天任务要求用 ${topic} 完成一个小案例，最合理的完成证据是什么？`,
+      options: [
+        "有可复现步骤、输入输出说明、结果评价和一句反思",
+        "只截图最终页面",
+        "只说自己看懂了",
+        "只复制别人完整代码"
+      ],
+      answerIndex: 0,
+      explanation: "实践题需要可复现、可评价和可反思，才能支撑真实掌握度更新。",
+      score: 25
+    }
+  ];
+}
+
+function summarizeProgress(plan, progress = {}) {
+  const dailyPlan = plan?.dailyPlan || [];
+  const completedTasks = [];
+  let done = 0;
+  let total = 0;
+  let currentDay = 1;
+
+  dailyPlan.forEach((day) => {
+    (day.tasks || []).forEach((task, index) => {
+      total += 1;
+      const key = `day-${day.day}-task-${index}`;
+      if (progress[key]) {
+        done += 1;
+        completedTasks.push(task);
+        currentDay = Math.max(currentDay, Number(day.day) || 1);
+      }
+    });
+  });
+
+  return {
+    done,
+    total,
+    percent: total ? Math.round((done / total) * 100) : 0,
+    currentDay,
+    completedTasks,
+    focus: plan?.learnerProfile?.weakestDimensions?.[0]?.dimension
   };
 }
 
 function buildGenerationLoop(input, learnerProfile, path, resources, assessment) {
   const weakest = learnerProfile.weakestDimensions.map((item) => item.dimension).join("、");
-  const qualityScore = clamp(72 + Math.round(resources.length * 2.5) + (assessment.quiz.length >= 3 ? 6 : 0) - 6);
+  const qualityScore = clamp(72 + Math.round(resources.length * 2.5) + (assessment.quiz.length >= 4 ? 8 : 0) - 4);
   return {
-    objective: `围绕“${input.topic}”生成可日常执行的个性化学习方案。`,
+    objective: `围绕“${input.topic}”生成可每日执行、可测评更新的个性化学习方案。`,
     status: qualityScore >= 80 ? "已通过质量评审" : "已完成首轮修正",
     qualityScore,
     stages: [
-      { agent: "学习画像智能体", action: "抽取学习目标、偏好、薄弱点和行为信号", input: "表单学习需求", output: `定位薄弱维度：${weakest}` },
-      { agent: "知识诊断智能体", action: "将薄弱点映射到知识掌握维度", input: "动态画像与雷达图", output: `优先处理：${learnerProfile.weakestDimensions[0].dimension}` },
-      { agent: "资源规划智能体", action: "拆分阶段路径并安排每日任务", input: "画像、周期、每日时间", output: `生成 ${path.length} 个阶段` },
-      { agent: "内容生成智能体", action: "生成讲义、例题、练习和解析", input: "路径规划与学习偏好", output: `生成 ${resources.length} 类资源` },
-      { agent: "质量评估智能体", action: "检查难度匹配、任务可执行性和测评闭环", input: "资源草案与测评规则", output: `质量分 ${qualityScore}` },
-      { agent: "反馈更新智能体", action: "根据完成情况、错因和笔记更新画像", input: "学习结果与反馈", output: "形成下一轮画像更新信号" }
+      { id: "profile-agent", agent: "学习画像智能体", status: "done", action: "读取表单目标、基础、偏好和薄弱点", input: "用户学习需求", output: `初始画像：${weakest}` },
+      { id: "diagnosis-agent", agent: "知识诊断智能体", status: "done", action: "把薄弱点映射到知识维度", input: "画像与薄弱点文本", output: `优先补救：${learnerProfile.weakestDimensions[0].dimension}` },
+      { id: "planner-agent", agent: "路径规划智能体", status: "done", action: "拆分阶段路径和每日任务", input: "诊断结果、周期、每日时间", output: `生成 ${path.length} 个阶段` },
+      { id: "resource-agent", agent: "资源生成智能体", status: "done", action: "生成讲义、例题、练习和解析", input: "路径约束与学习偏好", output: `生成 ${resources.length} 类资源` },
+      { id: "assessment-agent", agent: "测评评分智能体", status: "done", action: "生成选择题并定义评分规则", input: "资源草案与进度信号", output: `生成 ${assessment.quiz.length} 道选择题` },
+      { id: "coach-agent", agent: "学习陪练智能体", status: "done", action: "整合为可追问上下文", input: "方案、资源、测评规则", output: "形成后续答疑上下文" }
+    ],
+    flows: [
+      { from: "用户输入", to: "学习画像智能体", payload: "目标、水平、周期、偏好、薄弱点" },
+      { from: "学习画像智能体", to: "知识诊断智能体", payload: "初始画像、掌握度预估、行为信号" },
+      { from: "知识诊断智能体", to: "路径规划智能体", payload: "薄弱维度和补救优先级" },
+      { from: "路径规划智能体", to: "资源生成智能体", payload: "阶段路径、每日任务约束" },
+      { from: "资源生成智能体", to: "测评评分智能体", payload: "讲义、例题、练习知识点" },
+      { from: "测评评分智能体", to: "学习画像智能体", payload: "得分、错因、维度证据" },
+      { from: "学习画像智能体", to: "学习陪练智能体", payload: "更新后的画像和下一步建议" }
     ],
     review: {
       passed: qualityScore >= 80,
       checks: [
-        { label: "画像匹配", passed: true, detail: `资源围绕${input.level}水平与${input.style}偏好生成。` },
+        { label: "画像可更新", passed: true, detail: "掌握度标注来源，前端会按打卡和测评重新计算。" },
         { label: "每日可执行", passed: true, detail: `任务按每天 ${input.dailyMinutes} 设计。` },
-        { label: "资源完整性", passed: resources.length >= 4, detail: "覆盖讲义、例题、练习、解析和复盘。" },
-        { label: "测评闭环", passed: assessment.quiz.length >= 3, detail: "包含题目、提示、答案和后续动作。" }
-      ],
-      revisionAdvice: [
-        "若连续两天未完成任务，下一轮自动缩短单日任务。",
-        "若测验低于 60 分，先补微讲义和基础题。",
-        "若测验高于 85 分，增加项目化和开放题。"
+        { label: "资源完整", passed: resources.length >= 4, detail: "覆盖讲义、例题、练习、解析和复盘。" },
+        { label: "测评闭环", passed: assessment.quiz.length >= 4, detail: "包含选择题、答案、解析和后续动作。" }
       ]
     }
   };
@@ -444,7 +543,7 @@ function buildResourcePackage(input, learnerProfile, path, resources, assessment
   const mainWeakness = learnerProfile.weakestDimensions[0];
   const secondaryWeakness = learnerProfile.weakestDimensions[1];
   return {
-    title: `${input.topic}个性化学习资源包`,
+    title: `${input.topic} 个性化学习资源包`,
     audience: `${input.level}学习者 / ${input.style}偏好 / 每天 ${input.dailyMinutes}`,
     packageScore: generationLoop.qualityScore,
     sections: [
@@ -453,28 +552,28 @@ function buildResourcePackage(input, learnerProfile, path, resources, assessment
         title: "当前画像结论",
         items: [
           learnerProfile.summary,
-          `首要补强维度：${mainWeakness.dimension}（${mainWeakness.score} 分）`,
-          `次要补强维度：${secondaryWeakness.dimension}（${secondaryWeakness.score} 分）`
+          `首要补强维度：${mainWeakness.dimension}（初始 ${mainWeakness.score} 分）`,
+          `次要补强维度：${secondaryWeakness.dimension}（初始 ${secondaryWeakness.score} 分）`
         ]
       },
       {
         type: "补救微讲义",
-        title: `${mainWeakness.dimension}快速补救`,
+        title: `${mainWeakness.dimension} 快速补救`,
         items: [
-          `先复述${input.topic}的核心概念，暴露理解断点。`,
+          `先复述 ${input.topic} 的核心概念，暴露理解断点。`,
           "再用一个生活化例子解释概念，避免只背定义。",
           "最后完成 2 道低门槛迁移题，确认能把概念用到新情境。"
         ]
       },
       {
-        type: "分层练习",
-        title: `${input.topic}专项题组`,
+        type: "进度匹配练习",
+        title: `${input.topic} 专项选择题`,
         items: assessment.quiz.map((item) => item.question)
       },
       {
         type: "答案解析与错因提醒",
         title: "自查清单",
-        items: assessment.quiz.map((item) => `${item.answer} 提示：${item.hint}`)
+        items: assessment.quiz.map((item) => `${item.explanation}`)
       },
       {
         type: "后续学习路径",
@@ -482,11 +581,11 @@ function buildResourcePackage(input, learnerProfile, path, resources, assessment
         items: path.map((item) => `${item.stage}：${item.outcome}`)
       }
     ],
-    deliverables: ["学情诊断报告", "补救微讲义", "分层练习题", "答案解析", "错因复盘表", "下一轮学习路径"],
+    deliverables: ["学情诊断报告", "补救微讲义", "进度匹配选择题", "答案解析", "错因复盘表", "下一轮学习路径"],
     usageGuide: [
-      "每天先完成今日任务，再做 1 道自测题。",
+      "每天先完成打卡任务，再做当前进度对应的测评题。",
       "不会的题先看提示，再看答案解析。",
-      "把错因写进学习笔记，下一轮生成时填入薄弱点。"
+      "把错因写进学习笔记，下一次出题会优先覆盖这些知识点。"
     ],
     sourceTrace: resources.map((item) => `${item.type}：${item.title}`)
   };
@@ -501,8 +600,9 @@ function buildDailyPlan(input, learnerProfile) {
       day,
       title: `第 ${day} 天：${day <= 3 ? "概念补强" : day <= 7 ? "练习迁移" : "项目复盘"}`,
       estimate: input.dailyMinutes,
+      focus,
       tasks: [
-        `学习${input.topic}的一个核心概念，并写下自己的解释。`,
+        `学习 ${input.topic} 的一个核心概念，并写下自己的解释。`,
         `完成 2 道围绕“${focus}”的练习题。`,
         "记录一个错因或一个新的理解。"
       ],
@@ -514,14 +614,178 @@ function buildDailyPlan(input, learnerProfile) {
 function buildTutorCards(input, learnerProfile) {
   const focus = learnerProfile.weakestDimensions[0].dimension;
   return [
-    { title: "今天卡住时先问", prompt: `我在学习${input.topic}时，对${focus}不理解，请用${input.style}方式解释。` },
-    { title: "做题后复盘", prompt: `我刚做错了一道${input.topic}题，错因可能是${input.weaknesses}，请帮我分析。` },
-    { title: "准备下一轮", prompt: `根据我今天的学习笔记，帮我更新下一天${input.topic}学习任务。` }
+    { title: "今天卡住时先问", prompt: `我在学习 ${input.topic} 时，对 ${focus} 不理解，请用 ${input.style} 方式解释。` },
+    { title: "做题后复盘", prompt: `我刚做错了一道 ${input.topic} 题，错因可能是 ${input.weaknesses}，请帮我分析。` },
+    { title: "准备下一轮", prompt: `根据我的学习笔记和测评结果，帮我更新下一天 ${input.topic} 学习任务。` }
   ];
 }
 
 function clamp(value) {
   return Math.max(20, Math.min(95, Math.round(value)));
+}
+
+async function evaluateAnswer(body) {
+  const question = body.question || {};
+  const answer = body.answer;
+
+  if (question.type === "choice") {
+    const selectedIndex = Number(answer);
+    const correct = selectedIndex === Number(question.answerIndex);
+    return {
+      agent: "测评评分智能体",
+      mode: "rule-choice",
+      correct,
+      score: correct ? Number(question.score || 25) : 0,
+      maxScore: Number(question.score || 25),
+      feedback: correct ? "回答正确，掌握证据已记录。" : `回答不正确。${question.explanation || "请回到对应知识点复习。"}`,
+      dimension: question.dimension,
+      evidence: {
+        selectedIndex,
+        answerIndex: question.answerIndex,
+        explanation: question.explanation
+      }
+    };
+  }
+
+  if (question.type === "code") {
+    return evaluateCodeAnswer(question, clean(answer, 8000));
+  }
+
+  return evaluateTextAnswer(question, clean(answer, 2000));
+}
+
+async function evaluateTextAnswer(question, answer) {
+  if (!MODEL_CONFIG.apiKey) {
+    const keywords = ensureArray(question.keywords, []).map((item) => String(item).toLowerCase());
+    const lower = answer.toLowerCase();
+    const hit = keywords.filter((keyword) => lower.includes(keyword)).length;
+    const score = keywords.length ? Math.round((hit / keywords.length) * 100) : Math.min(100, Math.round(answer.length / 2));
+    return {
+      agent: "测评评分智能体",
+      mode: "local-text",
+      correct: score >= 60,
+      score,
+      maxScore: 100,
+      feedback: score >= 60 ? "答案覆盖了主要要点。" : "答案要点不足，建议补充概念、例子和使用条件。",
+      dimension: question.dimension
+    };
+  }
+
+  const content = await requestChatCompletion([
+    { role: "system", content: "你是中文学习测评评分智能体。只返回 JSON，不要 Markdown。" },
+    { role: "user", content: `题目：${JSON.stringify(question)}\n学生答案：${answer}\n请返回 {"score":0-100,"correct":true/false,"feedback":"","dimension":""}` }
+  ], { temperature: 0.2, maxTokens: 500 });
+  return { agent: "测评评分智能体", mode: "llm-text", ...parseJsonFromModel(content) };
+}
+
+async function evaluateCodeAnswer(question, code) {
+  const tests = ensureArray(question.tests, []);
+  if (!tests.length) {
+    return {
+      agent: "测评评分智能体",
+      mode: "code-no-tests",
+      correct: false,
+      score: 0,
+      maxScore: 100,
+      feedback: "代码题缺少测试用例，无法运行评测。"
+    };
+  }
+
+  try {
+    const result = await runCodeInDocker(question.language || "python", code, tests);
+    return {
+      agent: "测评评分智能体",
+      mode: "docker-code",
+      correct: result.passed === result.total,
+      score: result.total ? Math.round((result.passed / result.total) * 100) : 0,
+      maxScore: 100,
+      feedback: `Docker 沙箱完成 ${result.total} 个测试，通过 ${result.passed} 个。`,
+      detail: result
+    };
+  } catch (error) {
+    return {
+      agent: "测评评分智能体",
+      mode: "docker-unavailable",
+      correct: false,
+      score: 0,
+      maxScore: 100,
+      feedback: `代码评测需要本机可用 Docker。当前未能运行：${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+}
+
+function runCodeInDocker(language, code, tests) {
+  return new Promise((resolve, reject) => {
+    if (language !== "python") {
+      reject(new Error("当前示例沙箱仅支持 python 代码题"));
+      return;
+    }
+
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "learning-code-"));
+    const solutionPath = path.join(workDir, "solution.py");
+    const testPath = path.join(workDir, "test_runner.py");
+    fs.writeFileSync(solutionPath, code, "utf8");
+    fs.writeFileSync(testPath, buildPythonTestRunner(tests), "utf8");
+
+    const dockerArgs = [
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "-v",
+      `${workDir.replaceAll("\\", "/")}:/work`,
+      "-w",
+      "/work",
+      "python:3.11-alpine",
+      "python",
+      "test_runner.py"
+    ];
+    const child = spawn("docker", dockerArgs, { stdio: ["ignore", "pipe", "pipe"], shell: false });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (data) => {
+      stdout += data;
+    });
+    child.stderr.on("data", (data) => {
+      stderr += data;
+    });
+    child.on("error", reject);
+    child.on("close", () => {
+      try {
+        fs.rmSync(workDir, { recursive: true, force: true });
+        resolve(JSON.parse(stdout));
+      } catch {
+        reject(new Error(stderr || stdout || "Docker 测试未返回有效 JSON"));
+      }
+    });
+  });
+}
+
+function buildPythonTestRunner(tests) {
+  return `
+import importlib.util, json
+spec = importlib.util.spec_from_file_location("solution", "solution.py")
+solution = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(solution)
+tests = ${JSON.stringify(tests)}
+passed = 0
+results = []
+for index, test in enumerate(tests, 1):
+    fn = getattr(solution, test.get("function", "solve"))
+    try:
+        args = test.get("args", [])
+        actual = fn(*args)
+        ok = actual == test.get("expected")
+        passed += 1 if ok else 0
+        results.append({"index": index, "passed": ok, "actual": actual, "expected": test.get("expected")})
+    except Exception as exc:
+        results.append({"index": index, "passed": False, "error": str(exc)})
+print(json.dumps({"total": len(tests), "passed": passed, "results": results}, ensure_ascii=False))
+`;
+}
+
+function ensureArray(value, fallback) {
+  return Array.isArray(value) && value.length ? value : fallback;
 }
 
 function mergeLearningPlan(localPlan, llmPlan) {
@@ -549,7 +813,7 @@ function normalizePlanShape(plan, fallback) {
     path: ensureArray(plan.path, fallback.path),
     resources: ensureArray(plan.resources, fallback.resources),
     assessment: normalizeAssessment(plan.assessment, fallback.assessment),
-    generationLoop: plan.generationLoop || fallback.generationLoop,
+    generationLoop: normalizeGenerationLoop(plan.generationLoop, fallback.generationLoop),
     resourcePackage: plan.resourcePackage || fallback.resourcePackage,
     dailyPlan: ensureArray(plan.dailyPlan, fallback.dailyPlan),
     tutorCards: ensureArray(plan.tutorCards, fallback.tutorCards)
@@ -580,8 +844,14 @@ function normalizeAssessment(assessment, fallback) {
   };
 }
 
-function ensureArray(value, fallback) {
-  return Array.isArray(value) && value.length ? value : fallback;
+function normalizeGenerationLoop(loop, fallback) {
+  if (!loop) return fallback;
+  return {
+    ...fallback,
+    ...loop,
+    stages: ensureArray(loop.stages, fallback.stages),
+    flows: ensureArray(loop.flows, fallback.flows)
+  };
 }
 
 async function callLargeModelForPlan(input, localPlan) {
@@ -591,49 +861,45 @@ async function callLargeModelForPlan(input, localPlan) {
     weak: localPlan.learnerProfile.weakestDimensions,
     requiredDays: input.duration.includes("3 天") ? 3 : 7
   };
-  const prompt = `你是一个可以真正服务学生日常学习的中文多智能体学习系统。请基于学生输入生成完整可执行学习方案。
-
+  const prompt = `你是一个中文多智能体学习系统。请基于学生输入生成完整可执行学习方案。
 只返回 JSON，不要 Markdown。字段必须包含：
 {
- "learnerProfile":{"summary":"","mastery":[{"dimension":"","score":0}],"weakestDimensions":[{"dimension":"","score":0}],"tags":[],"behaviorSignals":[],"strategyPriorities":[]},
+ "learnerProfile":{"summary":"","mastery":[{"dimension":"","score":0,"evidence":"","source":"estimated"}],"weakestDimensions":[{"dimension":"","score":0}],"tags":[],"behaviorSignals":[],"strategyPriorities":[]},
  "path":[{"stage":"","task":"","outcome":""}],
  "resources":[{"type":"","title":"","content":""}],
- "assessment":{"quiz":[{"question":"","answer":"","hint":""}],"rubric":[],"nextActions":[]},
+ "assessment":{"quiz":[{"id":"","type":"choice","dimension":"","question":"","options":[],"answerIndex":0,"explanation":"","score":25}],"rubric":[],"nextActions":[]},
  "resourcePackage":{"title":"","audience":"","packageScore":0,"sections":[{"type":"","title":"","items":[]}],"deliverables":[],"usageGuide":[],"sourceTrace":[]},
- "dailyPlan":[{"day":1,"title":"","estimate":"","tasks":[],"checkpoint":""}],
+ "dailyPlan":[{"day":1,"title":"","estimate":"","focus":"","tasks":[],"checkpoint":""}],
  "tutorCards":[{"title":"","prompt":""}]
 }
 
 要求：
 1. dailyPlan 生成 ${planSeed.requiredDays} 天，每天 3 个任务，任务要具体到学生能直接执行。
-2. assessment.quiz 生成 3 道题，必须带 hint 和 answer。
-3. resourcePackage.sections 生成 4 个章节：学情诊断、微讲义、分层练习、错因复盘。
+2. assessment.quiz 必须是 4 道选择题，带 options、answerIndex、explanation，并能与 dailyPlan 的进度相关。
+3. learnerProfile.mastery 必须说明 evidence/source，不能伪装成真实测量数据。
 4. 内容要针对学生输入，不要泛泛而谈，每个长文本控制在 120 字以内。
+
 学生输入：${JSON.stringify(input)}
-画像摘要：${JSON.stringify(planSeed)}`;
+本地画像种子：${JSON.stringify(planSeed)}`;
 
   const content = await requestChatCompletion([
     { role: "system", content: "你是严谨的个性化学习资源生成专家，必须输出可解析 JSON。" },
     { role: "user", content: prompt }
-  ], { temperature: 0.35, maxTokens: 2600 });
+  ], { temperature: 0.35, maxTokens: 2800 });
   return parseJsonFromModel(content);
 }
 
 function parseJsonFromModel(content) {
-  const trimmed = content.trim();
+  const trimmed = String(content || "").trim();
   const jsonText = trimmed.startsWith("{")
     ? trimmed
     : trimmed.match(/```json\s*([\s\S]*?)```/)?.[1] || trimmed.match(/\{[\s\S]*\}/)?.[0];
-  if (!jsonText) {
-    throw new Error("大模型没有返回 JSON。");
-  }
+  if (!jsonText) throw new Error("大模型没有返回 JSON。");
   return JSON.parse(jsonText);
 }
 
 async function answerTutorQuestion({ question, context }) {
-  if (!question) {
-    return { answer: "请先输入你的问题。", mode: "local" };
-  }
+  if (!question) return { answer: "请先输入你的问题。", mode: "local" };
   if (!MODEL_CONFIG.apiKey) {
     return {
       answer: `你可以先把问题拆成“我不懂的概念、我做错的步骤、我下一步要做什么”。当前问题是：${question}`,
@@ -642,7 +908,7 @@ async function answerTutorQuestion({ question, context }) {
   }
 
   const answer = await requestChatCompletion([
-    { role: "system", content: "你是耐心的中文学习陪练。回答要具体、短、可执行，不要替学生直接跳过思考。" },
+    { role: "system", content: "你是耐心的中文学习陪练。回答要具体、短、可执行，不要替学生跳过思考。" },
     { role: "user", content: `学习上下文：${context || "暂无"}\n\n学生问题：${question}` }
   ], { temperature: 0.5, maxTokens: 900 });
   return { answer, mode: "llm" };
@@ -662,12 +928,7 @@ async function testLargeModelConnection() {
       { role: "system", content: "你是一个接口连通性测试助手。" },
       { role: "user", content: "请只回复：大模型连接成功" }
     ], { temperature: 0.1, maxTokens: 32 });
-    return {
-      ok: true,
-      message: "大模型接口连接成功。",
-      sample: content,
-      llm: publicModelConfig()
-    };
+    return { ok: true, message: "大模型接口连接成功。", sample: content, llm: publicModelConfig() };
   } catch (error) {
     return {
       ok: false,
@@ -703,9 +964,7 @@ async function requestChatCompletion(messages, options = {}) {
     const data = await response.json();
     return extractModelText(data) || "大模型未返回有效内容。";
   } catch (error) {
-    if (error?.name === "AbortError") {
-      throw new Error(`大模型接口请求超时：${MODEL_CONFIG.timeoutMs}ms`);
-    }
+    if (error?.name === "AbortError") throw new Error(`大模型接口请求超时：${MODEL_CONFIG.timeoutMs}ms`);
     if (process.platform === "win32" && isNetworkResetError(error)) {
       const data = await requestModelWithPowerShell(url, requestBody);
       return extractModelText(data) || "大模型未返回有效内容。";
@@ -746,12 +1005,8 @@ $response | ConvertTo-Json -Depth 40 -Compress
 
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (data) => {
-      stdout += data;
-    });
-    child.stderr.on("data", (data) => {
-      stderr += data;
-    });
+    child.stdout.on("data", (data) => { stdout += data; });
+    child.stderr.on("data", (data) => { stderr += data; });
     child.on("error", reject);
     child.on("close", (code) => {
       if (code !== 0) {

@@ -26,9 +26,8 @@ for (const [name, command, args, port] of processes) {
     process.stderr.write(`[${name}] ${text}`);
 
     if (text.includes("EADDRINUSE")) {
-      console.error(
-        `[${name}] 端口 ${port} 已被占用。请关闭旧服务，或临时设置 ${name === "后端" ? "BACKEND_PORT" : "FRONTEND_PORT"} 使用其他端口。`
-      );
+      const envName = name === "后端" ? "BACKEND_PORT" : "FRONTEND_PORT";
+      console.error(`[${name}] 端口 ${port} 已被占用。请关闭旧服务，或临时设置 ${envName} 使用其他端口。`);
     }
   });
 
@@ -43,9 +42,7 @@ for (const [name, command, args, port] of processes) {
 function shutdown(code) {
   shuttingDown = true;
   for (const child of children) {
-    if (!child.killed) {
-      child.kill();
-    }
+    if (!child.killed) child.kill();
   }
   process.exit(code);
 }

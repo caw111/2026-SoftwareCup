@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>个性化学习资源与 AI 陪练系统</title>
+    <title>个性化学习多智能体系统</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -13,15 +13,20 @@
           <div class="brand-mark">学</div>
           <div>
             <strong>AI 学习陪练</strong>
-            <span>画像、资源、任务、反馈闭环</span>
+            <span>方案、进度、测评、反馈闭环</span>
           </div>
         </div>
+
         <nav class="nav-list" aria-label="主导航">
-          <a class="active" href="#workspace">生成方案</a>
-          <a href="#daily">今日学习</a>
-          <a href="#result">资源包</a>
-          <a href="#coach">AI 导师</a>
+          <a class="nav-link active" href="#home" data-view="home">生成方案首页</a>
+          <a class="nav-link" href="#plans" data-view="plans">已生成方案</a>
+          <a class="nav-link" href="#daily" data-view="daily">每日学习</a>
+          <a class="nav-link" href="#knowledge" data-view="knowledge">知识掌握</a>
+          <a class="nav-link" href="#practice" data-view="practice">练习测评</a>
+          <a class="nav-link" href="#agents" data-view="agents">Agent 协作</a>
+          <a class="nav-link" href="#coach" data-view="coach">AI 导师</a>
         </nav>
+
         <div class="status-card">
           <span class="status-dot"></span>
           <div>
@@ -35,7 +40,7 @@
         <section class="topbar">
           <div>
             <p class="eyebrow">Daily Personalized Learning Workspace</p>
-            <h1>面向学生日常使用的个性化学习资源生成与 AI 陪练系统</h1>
+            <h1>个性化资源生成与学习多智能体系统</h1>
           </div>
           <div class="topbar-actions">
             <button id="llmTestButton" class="ghost-button" type="button">测试大模型</button>
@@ -43,125 +48,170 @@
           </div>
         </section>
 
-        <section id="workspace" class="workspace-grid">
-          <form id="learningForm" class="panel form-panel">
-            <div class="panel-title">
-              <h2>学习需求</h2>
-              <p>填写你的学习目标和薄弱点，系统会生成可每天执行的学习方案。</p>
-            </div>
+        <section id="home" class="view active">
+          <div class="workspace-grid">
+            <form id="learningForm" class="panel form-panel">
+              <div class="panel-title">
+                <h2>生成新的学习方案</h2>
+                <p>填写学习目标、基础和薄弱点，系统会生成可保存、可打卡、可测评的学习工作台。</p>
+              </div>
 
-            <label>
-              学习主题
-              <input name="topic" value="机器学习基础" autocomplete="off" />
-            </label>
-
-            <label>
-              学习目标
-              <textarea name="goal" rows="3">理解机器学习核心概念，并能完成一个入门预测项目</textarea>
-            </label>
-
-            <div class="two-columns">
               <label>
-                当前水平
-                <select name="level">
-                  <option>零基础</option>
-                  <option selected>入门</option>
-                  <option>进阶</option>
-                  <option>冲刺竞赛</option>
+                学习主题
+                <input name="topic" value="机器学习基础" autocomplete="off" />
+              </label>
+
+              <label>
+                学习目标
+                <textarea name="goal" rows="3">理解机器学习核心概念，并能完成一个入门预测项目</textarea>
+              </label>
+
+              <div class="two-columns">
+                <label>
+                  当前水平
+                  <select name="level">
+                    <option>零基础</option>
+                    <option selected>入门</option>
+                    <option>进阶</option>
+                    <option>冲刺竞赛</option>
+                  </select>
+                </label>
+
+                <label>
+                  学习周期
+                  <select name="duration">
+                    <option>3 天</option>
+                    <option selected>2 周</option>
+                    <option>1 个月</option>
+                    <option>3 个月</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="two-columns">
+                <label>
+                  每日时间
+                  <select name="dailyMinutes">
+                    <option>25 分钟</option>
+                    <option selected>45 分钟</option>
+                    <option>60 分钟</option>
+                    <option>90 分钟</option>
+                  </select>
+                </label>
+
+                <label>
+                  学习偏好
+                  <select name="style">
+                    <option selected>案例驱动</option>
+                    <option>图文讲解</option>
+                    <option>项目实战</option>
+                    <option>题目训练</option>
+                  </select>
+                </label>
+              </div>
+
+              <label>
+                输出类型
+                <select name="outputType">
+                  <option selected>完整学习方案</option>
+                  <option>偏重讲义和例题</option>
+                  <option>偏重练习和测评</option>
+                  <option>偏重项目任务</option>
                 </select>
               </label>
 
               <label>
-                学习周期
-                <select name="duration">
-                  <option>3 天</option>
-                  <option selected>2 周</option>
-                  <option>1 个月</option>
-                  <option>3 个月</option>
-                </select>
-              </label>
-            </div>
-
-            <div class="two-columns">
-              <label>
-                每日时间
-                <select name="dailyMinutes">
-                  <option>25 分钟</option>
-                  <option selected>45 分钟</option>
-                  <option>60 分钟</option>
-                  <option>90 分钟</option>
-                </select>
+                当前薄弱点
+                <textarea name="weaknesses" rows="3">数学基础一般，对模型训练流程和评估指标不熟悉</textarea>
               </label>
 
-              <label>
-                学习偏好
-                <select name="style">
-                  <option selected>案例驱动</option>
-                  <option>图文讲解</option>
-                  <option>项目实战</option>
-                  <option>题目训练</option>
-                </select>
-              </label>
-            </div>
+              <button class="primary-button" type="submit">生成并保存学习方案</button>
+            </form>
 
-            <label>
-              输出类型
-              <select name="outputType">
-                <option selected>完整学习方案</option>
-                <option>偏重讲义和例题</option>
-                <option>偏重练习和测评</option>
-                <option>偏重项目任务</option>
-              </select>
-            </label>
-
-            <label>
-              当前薄弱点
-              <textarea name="weaknesses" rows="3">数学基础一般，对模型训练流程和评估指标不熟悉</textarea>
-            </label>
-
-            <button class="primary-button" type="submit">
-              生成我的学习工作台
-            </button>
-          </form>
-
-          <section id="agents" class="panel agent-panel">
-            <div class="panel-title">
-              <h2>系统会做什么</h2>
-              <p>智能体不只生成文本，还会把内容拆成每日任务、练习解析和可持续反馈。</p>
-            </div>
-            <div id="agentList" class="agent-list"></div>
-          </section>
+            <section class="panel agent-panel">
+              <div class="panel-title">
+                <h2>生成过程</h2>
+                <p>生成时会展示多智能体数据流：谁接收输入、谁产出结果、谁把信息传给下一位。</p>
+              </div>
+              <div id="generationFlow" class="flow-board idle"></div>
+            </section>
+          </div>
         </section>
 
-        <section id="daily" class="result-section">
+        <section id="plans" class="view">
           <div class="section-heading">
-            <h2>今日学习</h2>
+            <div>
+              <h2>已生成方案</h2>
+              <p>本地保存的方案可以随时切换继续使用。</p>
+            </div>
+            <span id="planCount">0 个方案</span>
+          </div>
+          <div id="savedPlans" class="plan-list empty-state"></div>
+        </section>
+
+        <section id="daily" class="view">
+          <div class="section-heading">
+            <div>
+              <h2>每日学习</h2>
+              <p>勾选进度后，知识掌握雷达图和练习题会随之更新。</p>
+            </div>
             <span id="progressSummary">等待生成</span>
           </div>
           <div id="dailyPanel" class="empty-state">
-            <p>生成学习方案后，这里会出现可勾选的每日任务和学习笔记。</p>
+            <p>生成或选择学习方案后，这里会出现可打卡的每日任务。</p>
           </div>
         </section>
 
-        <section id="result" class="result-section">
+        <section id="knowledge" class="view">
           <div class="section-heading">
-            <h2>学习资源包</h2>
-            <span id="resultMode">等待生成</span>
+            <div>
+              <h2>知识掌握</h2>
+              <p>分数由初始自评、每日打卡和测评结果共同计算，不再是固定装饰值。</p>
+            </div>
+            <span id="masteryMode">等待学习数据</span>
           </div>
-          <div id="resultGrid" class="result-grid empty-state">
-            <p>请先填写学习需求并点击生成按钮。</p>
+          <div id="knowledgePanel" class="result-grid empty-state">
+            <p>完成打卡或测评后会出现掌握度证据。</p>
           </div>
         </section>
 
-        <section id="coach" class="result-section">
+        <section id="practice" class="view">
           <div class="section-heading">
-            <h2>AI 导师问答</h2>
+            <div>
+              <h2>练习测评</h2>
+              <p>题目会根据前面的每日打卡进度生成，并由测评评分智能体自动判分。</p>
+            </div>
+            <button id="regenerateQuizButton" class="ghost-button" type="button">重新出题</button>
+          </div>
+          <div id="practicePanel" class="empty-state">
+            <p>先生成方案并完成部分每日任务，再开始测评。</p>
+          </div>
+        </section>
+
+        <section id="agents" class="view">
+          <div class="section-heading">
+            <div>
+              <h2>Agent 协作</h2>
+              <p>这里展示智能体之间的数据流动，而不是各自孤立工作。</p>
+            </div>
+            <span id="agentMode">等待方案</span>
+          </div>
+          <div id="agentCanvas" class="agent-canvas empty-state"></div>
+          <div id="agentList" class="agent-list"></div>
+        </section>
+
+        <section id="coach" class="view">
+          <div class="section-heading">
+            <div>
+              <h2>AI 导师问答</h2>
+              <p>导师会读取当前方案、打卡进度、笔记和测评结果。</p>
+            </div>
             <span id="coachMode">等待学习上下文</span>
           </div>
           <div class="panel coach-panel">
             <textarea id="coachQuestion" rows="3" placeholder="例如：我还是不懂模型训练流程，请结合今天的任务讲一遍"></textarea>
             <button id="coachButton" class="primary-button" type="button">问 AI 导师</button>
-            <div id="coachAnswer" class="coach-answer">生成学习方案后，可以基于当前资源包继续追问。</div>
+            <div id="coachAnswer" class="coach-answer">生成学习方案后，可以基于当前学习上下文继续追问。</div>
           </div>
         </section>
       </main>

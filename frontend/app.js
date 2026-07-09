@@ -1,102 +1,133 @@
 const API_BASE = "http://localhost:3000";
-const STORAGE_KEY = "software-cup-learning-workspace";
+const STORAGE_KEY = "software-cup-learning-workspace-v2";
 
-const form = document.querySelector("#learningForm");
-const resultGrid = document.querySelector("#resultGrid");
-const resultMode = document.querySelector("#resultMode");
-const dailyPanel = document.querySelector("#dailyPanel");
-const progressSummary = document.querySelector("#progressSummary");
-const serviceStatus = document.querySelector("#serviceStatus");
-const modelStatus = document.querySelector("#modelStatus");
-const healthButton = document.querySelector("#healthButton");
-const llmTestButton = document.querySelector("#llmTestButton");
-const agentList = document.querySelector("#agentList");
-const statusDot = document.querySelector(".status-dot");
-const coachQuestion = document.querySelector("#coachQuestion");
-const coachButton = document.querySelector("#coachButton");
-const coachAnswer = document.querySelector("#coachAnswer");
-const coachMode = document.querySelector("#coachMode");
+const state = loadState();
+let activeView = location.hash.replace("#", "") || "home";
+let flowTimer = null;
 
-let currentPlan = loadSavedPlan();
+const els = {
+  form: document.querySelector("#learningForm"),
+  resultMode: document.querySelector("#resultMode"),
+  dailyPanel: document.querySelector("#dailyPanel"),
+  progressSummary: document.querySelector("#progressSummary"),
+  serviceStatus: document.querySelector("#serviceStatus"),
+  modelStatus: document.querySelector("#modelStatus"),
+  healthButton: document.querySelector("#healthButton"),
+  llmTestButton: document.querySelector("#llmTestButton"),
+  agentList: document.querySelector("#agentList"),
+  agentCanvas: document.querySelector("#agentCanvas"),
+  agentMode: document.querySelector("#agentMode"),
+  statusDot: document.querySelector(".status-dot"),
+  coachQuestion: document.querySelector("#coachQuestion"),
+  coachButton: document.querySelector("#coachButton"),
+  coachAnswer: document.querySelector("#coachAnswer"),
+  coachMode: document.querySelector("#coachMode"),
+  savedPlans: document.querySelector("#savedPlans"),
+  planCount: document.querySelector("#planCount"),
+  generationFlow: document.querySelector("#generationFlow"),
+  knowledgePanel: document.querySelector("#knowledgePanel"),
+  masteryMode: document.querySelector("#masteryMode"),
+  practicePanel: document.querySelector("#practicePanel"),
+  regenerateQuizButton: document.querySelector("#regenerateQuizButton")
+};
 
-healthButton.addEventListener("click", checkHealth);
-llmTestButton.addEventListener("click", testLargeModel);
-form.addEventListener("submit", generatePlan);
-coachButton.addEventListener("click", askTutor);
+els.healthButton.addEventListener("click", checkHealth);
+els.llmTestButton.addEventListener("click", testLargeModel);
+els.form.addEventListener("submit", generatePlan);
+els.coachButton.addEventListener("click", askTutor);
+els.regenerateQuizButton.addEventListener("click", () => loadQuiz(true));
+window.addEventListener("hashchange", syncRoute);
+document.querySelectorAll(".nav-link").forEach((link) => {
+  link.addEventListener("click", () => setView(link.dataset.view));
+});
 
-loadAgents();
-checkHealth();
-if (currentPlan) {
-  renderResult(currentPlan);
-  renderDailyPlan(currentPlan);
-  resultMode.textContent = "已恢复上次方案";
-  coachMode.textContent = "已载入学习上下文";
+boot();
+
+function boot() {
+  setView(activeView, { replace: true });
+  renderAll();
+  renderIdleFlow();
+  loadAgents();
+  checkHealth();
+  if (getCurrentPlan()) {
+    els.coachMode.textContent = "已加载学习上下文";
+  }
+}
+
+function syncRoute() {
+  setView(location.hash.replace("#", "") || "home", { replace: true });
+}
+
+function setView(view, options = {}) {
+  activeView = document.querySelector(`#${view}.view`) ? view : "home";
+  document.querySelectorAll(".view").forEach((section) => {
+    section.classList.toggle("active", section.id === activeView);
+  });
+  document.querySelectorAll(".nav-link").forEach((link) => {
+    link.classList.toggle("active", link.dataset.view === activeView);
+  });
+  if (!options.replace) location.hash = activeView;
 }
 
 async function checkHealth() {
   try {
     const data = await request("/api/health");
-    serviceStatus.textContent = "后端已连接";
-    modelStatus.textContent = formatModelStatus(data);
-    statusDot.classList.add("ok");
+    els.serviceStatus.textContent = "后端已连接";
+    els.modelStatus.textContent = formatModelStatus(data);
+    els.statusDot.classList.add("ok");
   } catch {
-    serviceStatus.textContent = "后端未连接";
-    modelStatus.textContent = "请先运行 npm run dev";
-    statusDot.classList.remove("ok");
+    els.serviceStatus.textContent = "后端未连接";
+    els.modelStatus.textContent = "请先运行 npm run dev";
+    els.statusDot.classList.remove("ok");
   }
 }
 
 async function testLargeModel() {
-  llmTestButton.disabled = true;
-  llmTestButton.textContent = "测试中";
+  els.llmTestButton.disabled = true;
+  els.llmTestButton.textContent = "测试中";
 
   try {
     const data = await request("/api/llm-test");
-    serviceStatus.textContent = data.ok ? "大模型已连接" : "大模型未连接";
-    modelStatus.textContent = data.ok
+    els.serviceStatus.textContent = data.ok ? "大模型已连接" : "大模型未连接";
+    els.modelStatus.textContent = data.ok
       ? `${data.llm.model}：${data.sample || data.message}`
       : `${data.message}${data.detail ? ` ${data.detail}` : ""}`;
-    statusDot.classList.toggle("ok", data.ok);
+    els.statusDot.classList.toggle("ok", data.ok);
   } catch (error) {
-    serviceStatus.textContent = "大模型测试失败";
-    modelStatus.textContent = error.message;
-    statusDot.classList.remove("ok");
+    els.serviceStatus.textContent = "大模型测试失败";
+    els.modelStatus.textContent = error.message;
+    els.statusDot.classList.remove("ok");
   } finally {
-    llmTestButton.disabled = false;
-    llmTestButton.textContent = "测试大模型";
+    els.llmTestButton.disabled = false;
+    els.llmTestButton.textContent = "测试大模型";
   }
 }
 
 function formatModelStatus(data) {
-  if (!data.llmEnabled) {
-    return "本地规则模式，可离线演示";
-  }
+  if (!data.llmEnabled) return "本地规则模式，可离线演示";
   return `大模型：${data.llm.model} / ${data.llm.wireApi} / ${data.llm.baseUrl}`;
 }
 
 async function loadAgents() {
   try {
     const data = await request("/api/agents");
-    agentList.innerHTML = data.agents.map((agent) => `
-      <article class="agent-item">
-        <strong>${escapeHtml(agent.name)}</strong>
-        <p>${escapeHtml(agent.role)}</p>
-      </article>
-    `).join("");
+    state.agents = data.agents || [];
+    saveState();
+    renderAgents();
   } catch {
-    agentList.innerHTML = `<p class="warning">暂时无法加载智能体列表。</p>`;
+    els.agentList.innerHTML = `<p class="warning">暂时无法加载智能体列表。</p>`;
   }
 }
 
 async function generatePlan(event) {
   event.preventDefault();
-  const submitButton = form.querySelector("button[type='submit']");
+  const submitButton = els.form.querySelector("button[type='submit']");
   submitButton.disabled = true;
   submitButton.textContent = "正在生成学习工作台";
-  resultMode.textContent = "生成中";
-  progressSummary.textContent = "生成中";
 
-  const payload = Object.fromEntries(new FormData(form).entries());
+  const payload = Object.fromEntries(new FormData(els.form).entries());
+  startFlowAnimation();
+  setView("home");
 
   try {
     const data = await request("/api/generate", {
@@ -104,55 +135,136 @@ async function generatePlan(event) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
-    currentPlan = { ...data, progress: {}, notes: loadSavedPlan()?.notes || "" };
-    savePlan(currentPlan);
-    renderResult(currentPlan);
-    renderDailyPlan(currentPlan);
-    resultMode.textContent = data.mode === "llm-core" ? "大模型核心生成" : "本地可用方案";
-    coachMode.textContent = "可基于当前方案追问";
+    const plan = normalizeNewPlan(data);
+    state.plans.unshift(plan);
+    state.currentPlanId = plan.id;
+    state.quiz = [];
+    state.quizResults = {};
+    saveState();
+    renderAll();
+    renderFlow(data.generationLoop, "done");
+    setView("plans");
+    els.coachMode.textContent = "已加载学习上下文";
   } catch (error) {
-    resultGrid.className = "result-grid empty-state";
-    resultGrid.innerHTML = `<p class="warning">生成失败：${escapeHtml(error.message)}</p>`;
-    resultMode.textContent = "生成失败";
+    els.generationFlow.className = "flow-board";
+    els.generationFlow.innerHTML = `<p class="warning">生成失败：${escapeHtml(error.message)}</p>`;
   } finally {
     submitButton.disabled = false;
-    submitButton.textContent = "生成我的学习工作台";
+    submitButton.textContent = "生成并保存学习方案";
   }
 }
 
-function renderDailyPlan(data) {
-  const dailyPlan = data.dailyPlan || [];
-  if (!dailyPlan.length) {
-    dailyPanel.className = "empty-state";
-    dailyPanel.innerHTML = "<p>当前方案没有每日任务。</p>";
+function normalizeNewPlan(data) {
+  return {
+    id: `plan-${Date.now()}`,
+    title: data.resourcePackage?.title || `${data.input?.topic || "学习"}方案`,
+    createdAt: new Date().toISOString(),
+    category: data.input?.outputType || "完整学习方案",
+    data,
+    progress: {},
+    notes: "",
+    masteryEvidence: [],
+    quizHistory: []
+  };
+}
+
+function renderAll() {
+  renderSavedPlans();
+  renderDailyPlan();
+  renderKnowledge();
+  renderPractice();
+  renderAgents();
+}
+
+function renderSavedPlans() {
+  els.planCount.textContent = `${state.plans.length} 个方案`;
+  if (!state.plans.length) {
+    els.savedPlans.className = "plan-list empty-state";
+    els.savedPlans.innerHTML = "<p>还没有保存的学习方案。</p>";
     return;
   }
 
-  dailyPanel.className = "daily-board";
-  dailyPanel.innerHTML = `
+  els.savedPlans.className = "plan-list";
+  els.savedPlans.innerHTML = state.plans.map((plan) => {
+    const summary = progressSummaryFor(plan);
+    const active = plan.id === state.currentPlanId;
+    return `
+      <article class="plan-card ${active ? "active" : ""}">
+        <div>
+          <span class="tag">${escapeHtml(plan.category)}</span>
+          <h3>${escapeHtml(plan.title)}</h3>
+          <p>${escapeHtml(plan.data?.learnerProfile?.summary || "")}</p>
+          <small>${formatDate(plan.createdAt)} · 已完成 ${summary.done}/${summary.total} 项 · ${summary.percent}%</small>
+        </div>
+        <div class="plan-actions">
+          <button class="ghost-button" type="button" data-open-plan="${plan.id}">${active ? "当前使用" : "使用方案"}</button>
+          <button class="text-button" type="button" data-delete-plan="${plan.id}">删除</button>
+        </div>
+      </article>
+    `;
+  }).join("");
+
+  els.savedPlans.querySelectorAll("[data-open-plan]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.currentPlanId = button.dataset.openPlan;
+      state.quiz = [];
+      state.quizResults = {};
+      saveState();
+      renderAll();
+      setView("daily");
+    });
+  });
+  els.savedPlans.querySelectorAll("[data-delete-plan]").forEach((button) => {
+    button.addEventListener("click", () => deletePlan(button.dataset.deletePlan));
+  });
+}
+
+function deletePlan(id) {
+  state.plans = state.plans.filter((plan) => plan.id !== id);
+  if (state.currentPlanId === id) {
+    state.currentPlanId = state.plans[0]?.id || null;
+    state.quiz = [];
+    state.quizResults = {};
+  }
+  saveState();
+  renderAll();
+}
+
+function renderDailyPlan() {
+  const plan = getCurrentPlan();
+  if (!plan?.data?.dailyPlan?.length) {
+    els.dailyPanel.className = "empty-state";
+    els.dailyPanel.innerHTML = "<p>生成或选择学习方案后，这里会出现每日任务。</p>";
+    els.progressSummary.textContent = "等待生成";
+    return;
+  }
+
+  const data = plan.data;
+  els.dailyPanel.className = "daily-board";
+  els.dailyPanel.innerHTML = `
     <section class="daily-overview">
       <div>
-        <strong>${escapeHtml(data.resourcePackage?.title || data.input?.topic || "学习计划")}</strong>
+        <strong>${escapeHtml(plan.title)}</strong>
         <p>${escapeHtml(data.learnerProfile?.summary || "")}</p>
       </div>
       <button class="ghost-button" type="button" id="resetProgressButton">重置进度</button>
     </section>
     <div class="daily-grid">
-      ${dailyPlan.map((day) => renderDayCard(day, data.progress || {})).join("")}
+      ${data.dailyPlan.map((day) => renderDayCard(day, plan.progress || {})).join("")}
     </div>
     <section class="study-notes">
       <label>
         学习笔记与错因记录
-        <textarea id="studyNotes" rows="5" placeholder="写下今天的卡点、错因、收获。下次生成时可以复制到薄弱点里。">${escapeHtml(data.notes || "")}</textarea>
+        <textarea id="studyNotes" rows="5" placeholder="写下今天的卡点、错因、收获。">${escapeHtml(plan.notes || "")}</textarea>
       </label>
     </section>
   `;
 
-  dailyPanel.querySelectorAll("input[type='checkbox']").forEach((checkbox) => {
+  els.dailyPanel.querySelectorAll("input[type='checkbox']").forEach((checkbox) => {
     checkbox.addEventListener("change", updateProgress);
   });
-  dailyPanel.querySelector("#studyNotes").addEventListener("input", updateNotes);
-  dailyPanel.querySelector("#resetProgressButton").addEventListener("click", resetProgress);
+  els.dailyPanel.querySelector("#studyNotes").addEventListener("input", updateNotes);
+  els.dailyPanel.querySelector("#resetProgressButton").addEventListener("click", resetProgress);
   updateProgressSummary();
 }
 
@@ -163,7 +275,7 @@ function renderDayCard(day, progress) {
       <div class="day-card-head">
         <span>Day ${day.day}</span>
         <strong>${escapeHtml(day.title)}</strong>
-        <em>${escapeHtml(day.estimate || "")}</em>
+        <em>${escapeHtml(day.estimate || "")} · ${escapeHtml(day.focus || "")}</em>
       </div>
       <div class="task-list">
         ${tasks.map((task, index) => {
@@ -186,194 +298,349 @@ function progressId(day, index) {
 }
 
 function updateProgress(event) {
-  if (!currentPlan) return;
-  const id = event.target.dataset.progressId;
-  currentPlan.progress = currentPlan.progress || {};
-  currentPlan.progress[id] = event.target.checked;
-  savePlan(currentPlan);
+  const plan = getCurrentPlan();
+  if (!plan) return;
+  plan.progress = plan.progress || {};
+  plan.progress[event.target.dataset.progressId] = event.target.checked;
+  state.quiz = [];
+  state.quizResults = {};
+  saveState();
   updateProgressSummary();
+  renderKnowledge();
+  renderPractice();
 }
 
 function updateProgressSummary() {
-  if (!currentPlan?.dailyPlan) {
-    progressSummary.textContent = "等待生成";
+  const plan = getCurrentPlan();
+  if (!plan) {
+    els.progressSummary.textContent = "等待生成";
     return;
   }
-  const total = currentPlan.dailyPlan.reduce((sum, day) => sum + (day.tasks?.length || 0), 0);
-  const done = Object.values(currentPlan.progress || {}).filter(Boolean).length;
-  const percent = total ? Math.round((done / total) * 100) : 0;
-  progressSummary.textContent = `已完成 ${done}/${total} 项，进度 ${percent}%`;
+  const summary = progressSummaryFor(plan);
+  els.progressSummary.textContent = `已完成 ${summary.done}/${summary.total} 项，进度 ${summary.percent}%`;
 }
 
 function updateNotes(event) {
-  if (!currentPlan) return;
-  currentPlan.notes = event.target.value;
-  savePlan(currentPlan);
+  const plan = getCurrentPlan();
+  if (!plan) return;
+  plan.notes = event.target.value;
+  saveState();
 }
 
 function resetProgress() {
-  if (!currentPlan) return;
-  currentPlan.progress = {};
-  savePlan(currentPlan);
-  renderDailyPlan(currentPlan);
+  const plan = getCurrentPlan();
+  if (!plan) return;
+  plan.progress = {};
+  state.quiz = [];
+  state.quizResults = {};
+  saveState();
+  renderAll();
 }
 
-function renderResult(data) {
-  resultGrid.className = "result-grid";
-  const quiz = data.assessment?.quiz || [];
-  resultGrid.innerHTML = `
-    <article class="result-card profile-card">
-      <h3>动态学习者画像</h3>
-      <p>${escapeHtml(data.learnerProfile.summary)}</p>
-      <div class="tag-list">
-        ${(data.profile.tags || []).map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("")}
-      </div>
-      <div class="signal-list">
-        ${(data.learnerProfile.behaviorSignals || []).map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
-      </div>
-    </article>
+function renderKnowledge() {
+  const plan = getCurrentPlan();
+  if (!plan) {
+    els.knowledgePanel.className = "result-grid empty-state";
+    els.knowledgePanel.innerHTML = "<p>暂无学习数据。</p>";
+    els.masteryMode.textContent = "等待学习数据";
+    return;
+  }
 
+  const mastery = computeMastery(plan);
+  const summary = progressSummaryFor(plan);
+  els.masteryMode.textContent = `基于 ${summary.done} 项打卡和 ${Object.keys(state.quizResults || {}).length} 道测评`;
+  els.knowledgePanel.className = "result-grid";
+  els.knowledgePanel.innerHTML = `
     <article class="result-card radar-card">
       <h3>知识点掌握雷达图</h3>
       <canvas id="masteryRadar" width="360" height="300" aria-label="知识点掌握雷达图"></canvas>
+      <p class="hint-text">初始值来自自评；打卡提供学习证据，测评正确率提供掌握证据。</p>
+    </article>
+    <article class="result-card">
+      <h3>掌握度证据</h3>
       <div class="mastery-list">
-        ${(data.learnerProfile.mastery || []).map((item) => `
+        ${mastery.map((item) => `
           <div>
             <span>${escapeHtml(item.dimension)}</span>
-            <strong>${Number(item.score) || 0}</strong>
+            <strong>${item.score}</strong>
+            <small>${escapeHtml(item.evidence)}</small>
           </div>
         `).join("")}
       </div>
     </article>
-
-    <article class="result-card full package-card">
-      <div class="card-heading-row">
-        <div>
-          <h3>${escapeHtml(data.resourcePackage.title)}</h3>
-          <p>${escapeHtml(data.resourcePackage.audience)}</p>
-        </div>
-        <span class="score-badge">${data.resourcePackage.packageScore || data.generationLoop.qualityScore} 分</span>
-      </div>
-      <div class="package-layout">
-        <section class="deliverable-panel">
-          <h4>交付物</h4>
-          ${renderSimpleList(data.resourcePackage.deliverables || [])}
-          <h4>使用顺序</h4>
-          ${renderSimpleList(data.resourcePackage.usageGuide || [])}
-        </section>
-        <div class="package-sections">
-          ${(data.resourcePackage.sections || []).map((section) => `
-            <section class="package-section">
-              <span>${escapeHtml(section.type)}</span>
-              <h4>${escapeHtml(section.title)}</h4>
-              ${renderSimpleList(section.items || [])}
-            </section>
-          `).join("")}
-        </div>
-      </div>
-    </article>
-
     <article class="result-card full">
-      <h3>每日之外的阶段路径</h3>
-      <ul class="item-list">
-        ${(data.path || []).map((item) => `
-          <li>
-            <strong>${escapeHtml(item.stage)}</strong><br />
-            ${escapeHtml(item.task)}<br />
-            <span>产出：${escapeHtml(item.outcome)}</span>
-          </li>
-        `).join("")}
-      </ul>
-    </article>
-
-    <article class="result-card full">
-      <h3>练习题与解析</h3>
-      <div class="quiz-list">
-        ${quiz.map((item, index) => `
-          <details class="quiz-item">
-            <summary>${index + 1}. ${escapeHtml(item.question || item)}</summary>
-            <p><strong>提示：</strong>${escapeHtml(item.hint || "先尝试自己作答，再展开解析。")}</p>
-            <p><strong>解析：</strong>${escapeHtml(item.answer || "暂无解析。")}</p>
-          </details>
-        `).join("")}
-      </div>
-    </article>
-
-    <article class="result-card full loop-card">
-      <div class="card-heading-row">
-        <div>
-          <h3>多智能体生成闭环</h3>
-          <p>${escapeHtml(data.generationLoop.objective)}</p>
-        </div>
-        <span class="score-badge">${data.generationLoop.qualityScore} 分</span>
-      </div>
-      <div class="loop-timeline">
-        ${(data.generationLoop.stages || []).map((stage, index) => `
-          <section class="loop-step">
-            <span class="step-index">${index + 1}</span>
-            <div>
-              <strong>${escapeHtml(stage.agent)}</strong>
-              <p>${escapeHtml(stage.action)}</p>
-              <dl>
-                <div><dt>输入</dt><dd>${escapeHtml(stage.input)}</dd></div>
-                <div><dt>输出</dt><dd>${escapeHtml(stage.output)}</dd></div>
-              </dl>
-            </div>
-          </section>
-        `).join("")}
-      </div>
-    </article>
-
-    <article class="result-card full">
-      <h3>可直接追问的问题</h3>
-      <div class="prompt-grid">
-        ${(data.tutorCards || []).map((card) => `
-          <button class="prompt-card" type="button" data-prompt="${escapeHtml(card.prompt)}">
-            <strong>${escapeHtml(card.title)}</strong>
-            <span>${escapeHtml(card.prompt)}</span>
-          </button>
-        `).join("")}
+      <h3>学习者画像</h3>
+      <p>${escapeHtml(plan.data.learnerProfile?.summary || "")}</p>
+      <div class="tag-list">
+        ${(plan.data.profile?.tags || []).map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("")}
       </div>
     </article>
   `;
-  drawRadar("masteryRadar", data.learnerProfile.mastery || []);
-  resultGrid.querySelectorAll(".prompt-card").forEach((button) => {
-    button.addEventListener("click", () => {
-      coachQuestion.value = button.dataset.prompt;
-      document.querySelector("#coach").scrollIntoView({ behavior: "smooth" });
-    });
+  drawRadar("masteryRadar", mastery);
+}
+
+function computeMastery(plan) {
+  const base = plan.data?.learnerProfile?.mastery || [];
+  const summary = progressSummaryFor(plan);
+  const quizResults = Object.values(state.quizResults || {});
+  return base.map((item) => {
+    const relatedResults = quizResults.filter((result) => result.dimension === item.dimension);
+    const avgQuiz = relatedResults.length
+      ? Math.round(relatedResults.reduce((sum, result) => sum + scorePercent(result), 0) / relatedResults.length)
+      : null;
+    const progressBoost = Math.min(18, Math.round(summary.percent * 0.18));
+    const quizWeight = avgQuiz === null ? 0 : Math.round((avgQuiz - 60) * 0.35);
+    const score = clamp(Number(item.score || 50) + progressBoost + quizWeight);
+    const evidence = avgQuiz === null
+      ? `自评基础 ${item.score || 50} + 打卡进度 ${summary.percent}%`
+      : `自评基础 ${item.score || 50} + 打卡 ${summary.percent}% + 测评 ${avgQuiz}%`;
+    return { ...item, score, evidence };
   });
 }
 
-async function askTutor() {
-  const question = coachQuestion.value.trim();
-  if (!question) {
-    coachAnswer.textContent = "请先输入你的问题。";
+function scorePercent(result) {
+  return result.maxScore ? Math.round((Number(result.score || 0) / Number(result.maxScore)) * 100) : Number(result.score || 0);
+}
+
+function renderPractice() {
+  const plan = getCurrentPlan();
+  if (!plan) {
+    els.practicePanel.className = "empty-state";
+    els.practicePanel.innerHTML = "<p>先生成或选择一个学习方案。</p>";
     return;
   }
-  coachButton.disabled = true;
-  coachButton.textContent = "思考中";
-  coachAnswer.textContent = "AI 导师正在结合你的学习方案回答...";
+  if (!state.quiz?.length) {
+    els.practicePanel.className = "practice-panel";
+    els.practicePanel.innerHTML = `
+      <div class="empty-state compact">
+        <p>练习题会根据当前打卡进度生成。</p>
+        <button id="loadQuizButton" class="primary-button" type="button">生成进度匹配练习</button>
+      </div>
+    `;
+    document.querySelector("#loadQuizButton").addEventListener("click", () => loadQuiz(false));
+    return;
+  }
+
+  els.practicePanel.className = "practice-panel";
+  els.practicePanel.innerHTML = `
+    <div class="quiz-list">
+      ${state.quiz.map((item, index) => renderQuizItem(item, index)).join("")}
+    </div>
+    <div class="score-panel">${renderScoreSummary()}</div>
+  `;
+
+  els.practicePanel.querySelectorAll("[data-evaluate]").forEach((button) => {
+    button.addEventListener("click", () => evaluateQuiz(button.dataset.evaluate));
+  });
+}
+
+function renderQuizItem(item, index) {
+  const result = state.quizResults?.[item.id];
+  return `
+    <article class="quiz-item">
+      <div class="quiz-head">
+        <span>第 ${index + 1} 题 · ${escapeHtml(item.dimension || "综合")}</span>
+        ${result ? `<strong class="${result.correct ? "ok-text" : "bad-text"}">${result.score}/${result.maxScore}</strong>` : ""}
+      </div>
+      <h3>${escapeHtml(item.question)}</h3>
+      <div class="option-list">
+        ${(item.options || []).map((option, optionIndex) => `
+          <label class="option-item">
+            <input type="radio" name="${escapeHtml(item.id)}" value="${optionIndex}" ${result?.evidence?.selectedIndex === optionIndex ? "checked" : ""} />
+            <span>${escapeHtml(option)}</span>
+          </label>
+        `).join("")}
+      </div>
+      <button class="ghost-button" type="button" data-evaluate="${escapeHtml(item.id)}">提交给评分智能体</button>
+      ${result ? `<p class="feedback">${escapeHtml(result.feedback)}</p>` : ""}
+    </article>
+  `;
+}
+
+function renderScoreSummary() {
+  const results = Object.values(state.quizResults || {});
+  if (!results.length) return "尚未提交答案。";
+  const score = results.reduce((sum, result) => sum + Number(result.score || 0), 0);
+  const max = results.reduce((sum, result) => sum + Number(result.maxScore || 0), 0);
+  return `测评评分智能体已完成 ${results.length}/${state.quiz.length} 题，当前得分 ${score}/${max}。`;
+}
+
+async function loadQuiz(regenerate) {
+  const plan = getCurrentPlan();
+  if (!plan) return;
+  els.practicePanel.className = "empty-state";
+  els.practicePanel.innerHTML = "<p>正在根据学习进度重新出题...</p>";
 
   try {
-    const context = currentPlan ? JSON.stringify({
-      topic: currentPlan.input?.topic,
-      profile: currentPlan.learnerProfile?.summary,
-      today: currentPlan.dailyPlan?.[0],
-      notes: currentPlan.notes
+    const data = await request("/api/quiz", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        input: plan.data.input,
+        plan: plan.data,
+        progress: plan.progress,
+        regenerate
+      })
+    });
+    state.quiz = data.quiz || [];
+    state.quizResults = {};
+    saveState();
+    renderPractice();
+  } catch (error) {
+    els.practicePanel.innerHTML = `<p class="warning">出题失败：${escapeHtml(error.message)}</p>`;
+  }
+}
+
+async function evaluateQuiz(questionId) {
+  const question = state.quiz.find((item) => item.id === questionId);
+  const selected = els.practicePanel.querySelector(`input[name="${cssEscape(questionId)}"]:checked`);
+  if (!question || !selected) return;
+
+  try {
+    const result = await request("/api/evaluate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, answer: Number(selected.value) })
+    });
+    state.quizResults[questionId] = result;
+    const plan = getCurrentPlan();
+    if (plan) {
+      plan.quizHistory = plan.quizHistory || [];
+      plan.quizHistory.push({ questionId, result, at: new Date().toISOString() });
+    }
+    saveState();
+    renderPractice();
+    renderKnowledge();
+  } catch (error) {
+    alert(`评分失败：${error.message}`);
+  }
+}
+
+function renderAgents() {
+  const plan = getCurrentPlan();
+  if (plan?.data?.generationLoop) {
+    els.agentMode.textContent = plan.data.generationLoop.status || "协作流程已生成";
+    renderAgentGraph(plan.data.generationLoop);
+  } else {
+    els.agentMode.textContent = "等待方案";
+    els.agentCanvas.className = "agent-canvas empty-state";
+    els.agentCanvas.innerHTML = "<p>生成方案后会展示智能体数据流。</p>";
+  }
+
+  const agents = plan?.data?.agents || state.agents || [];
+  els.agentList.innerHTML = agents.map((agent) => `
+    <article class="agent-item">
+      <strong>${escapeHtml(agent.name)}</strong>
+      <p>${escapeHtml(agent.role)}</p>
+    </article>
+  `).join("");
+}
+
+function startFlowAnimation() {
+  const steps = [
+    "用户输入 -> 学习画像智能体",
+    "学习画像智能体 -> 知识诊断智能体",
+    "知识诊断智能体 -> 路径规划智能体",
+    "路径规划智能体 -> 资源生成智能体",
+    "资源生成智能体 -> 测评评分智能体",
+    "测评评分智能体 -> 学习陪练智能体"
+  ];
+  let index = 0;
+  clearInterval(flowTimer);
+  const render = () => {
+    els.generationFlow.className = "flow-board running";
+    els.generationFlow.innerHTML = steps.map((step, stepIndex) => `
+      <div class="flow-row ${stepIndex === index ? "active" : stepIndex < index ? "done" : ""}">
+        <span>${stepIndex + 1}</span>
+        <strong>${escapeHtml(step)}</strong>
+        <em>${stepIndex === index ? "正在传递数据" : stepIndex < index ? "已完成" : "等待"}</em>
+      </div>
+    `).join("");
+    index = (index + 1) % steps.length;
+  };
+  render();
+  flowTimer = setInterval(render, 900);
+}
+
+function renderIdleFlow() {
+  els.generationFlow.innerHTML = `
+    <div class="flow-row active"><span>1</span><strong>填写学习需求</strong><em>等待输入</em></div>
+    <div class="flow-row"><span>2</span><strong>生成方案时显示数据流</strong><em>待启动</em></div>
+  `;
+}
+
+function renderFlow(loop, status) {
+  clearInterval(flowTimer);
+  const flows = loop?.flows || [];
+  els.generationFlow.className = `flow-board ${status || ""}`;
+  els.generationFlow.innerHTML = flows.map((flow, index) => `
+    <div class="flow-row done">
+      <span>${index + 1}</span>
+      <strong>${escapeHtml(flow.from)} -> ${escapeHtml(flow.to)}</strong>
+      <em>${escapeHtml(flow.payload)}</em>
+    </div>
+  `).join("");
+}
+
+function renderAgentGraph(loop) {
+  const stages = loop.stages || [];
+  const flows = loop.flows || [];
+  els.agentCanvas.className = "agent-canvas";
+  els.agentCanvas.innerHTML = `
+    <div class="agent-node-grid">
+      ${stages.map((stage, index) => `
+        <article class="agent-node">
+          <span>${index + 1}</span>
+          <strong>${escapeHtml(stage.agent)}</strong>
+          <p>${escapeHtml(stage.action)}</p>
+          <small>输入：${escapeHtml(stage.input)}<br />输出：${escapeHtml(stage.output)}</small>
+        </article>
+      `).join("")}
+    </div>
+    <div class="data-flow-list">
+      ${flows.map((flow) => `
+        <div class="data-flow-item">
+          <strong>${escapeHtml(flow.from)}</strong>
+          <span></span>
+          <strong>${escapeHtml(flow.to)}</strong>
+          <em>${escapeHtml(flow.payload)}</em>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+async function askTutor() {
+  const question = els.coachQuestion.value.trim();
+  if (!question) {
+    els.coachAnswer.textContent = "请先输入你的问题。";
+    return;
+  }
+  els.coachButton.disabled = true;
+  els.coachButton.textContent = "思考中";
+  els.coachAnswer.textContent = "AI 导师正在结合当前学习方案、进度和测评结果回答...";
+
+  try {
+    const plan = getCurrentPlan();
+    const context = plan ? JSON.stringify({
+      topic: plan.data.input?.topic,
+      profile: plan.data.learnerProfile?.summary,
+      progress: progressSummaryFor(plan),
+      notes: plan.notes,
+      quizResults: state.quizResults
     }) : "";
     const data = await request("/api/tutor", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question, context })
     });
-    coachAnswer.innerHTML = escapeHtml(data.answer).replaceAll("\n", "<br />");
-    coachMode.textContent = data.mode === "llm" ? "大模型回答" : "本地提示";
+    els.coachAnswer.innerHTML = escapeHtml(data.answer).replaceAll("\n", "<br />");
+    els.coachMode.textContent = data.mode === "llm" ? "大模型回答" : "本地提示";
   } catch (error) {
-    coachAnswer.textContent = `导师回答失败：${error.message}`;
+    els.coachAnswer.textContent = `导师回答失败：${error.message}`;
   } finally {
-    coachButton.disabled = false;
-    coachButton.textContent = "问 AI 导师";
+    els.coachButton.disabled = false;
+    els.coachButton.textContent = "问 AI 导师";
   }
 }
 
@@ -422,7 +689,7 @@ function drawRadar(canvasId, data) {
 
   ctx.beginPath();
   data.forEach((item, index) => {
-    const score = Math.max(0, Math.min(100, Number(item.score) || 0));
+    const score = clamp(Number(item.score) || 0);
     const point = radarPoint(centerX, centerY, radius * (score / 100), step, index);
     if (index === 0) ctx.moveTo(point.x, point.y);
     else ctx.lineTo(point.x, point.y);
@@ -437,39 +704,59 @@ function drawRadar(canvasId, data) {
 
 function radarPoint(centerX, centerY, radius, step, index) {
   const angle = -Math.PI / 2 + step * index;
-  return {
-    x: centerX + Math.cos(angle) * radius,
-    y: centerY + Math.sin(angle) * radius
-  };
+  return { x: centerX + Math.cos(angle) * radius, y: centerY + Math.sin(angle) * radius };
 }
 
-function renderSimpleList(items) {
-  return `
-    <ul class="item-list">
-      ${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
-    </ul>
-  `;
+function progressSummaryFor(plan) {
+  const dailyPlan = plan?.data?.dailyPlan || [];
+  const progress = plan?.progress || {};
+  const total = dailyPlan.reduce((sum, day) => sum + (day.tasks?.length || 0), 0);
+  const done = Object.entries(progress).filter(([, value]) => Boolean(value)).length;
+  return { total, done, percent: total ? Math.round((done / total) * 100) : 0 };
+}
+
+function getCurrentPlan() {
+  return state.plans.find((plan) => plan.id === state.currentPlanId) || null;
 }
 
 async function request(path, options) {
   const response = await fetch(`${API_BASE}${path}`, options);
   if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || `请求失败：${response.status}`);
+    const data = await response.json().catch(async () => ({ message: await response.text() }));
+    throw new Error(data.detail || data.message || `请求失败：${response.status}`);
   }
   return response.json();
 }
 
-function savePlan(plan) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(plan));
+function saveState() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-function loadSavedPlan() {
+function loadState() {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY));
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    return {
+      plans: saved?.plans || [],
+      currentPlanId: saved?.currentPlanId || null,
+      quiz: saved?.quiz || [],
+      quizResults: saved?.quizResults || {},
+      agents: saved?.agents || []
+    };
   } catch {
-    return null;
+    return { plans: [], currentPlanId: null, quiz: [], quizResults: {}, agents: [] };
   }
+}
+
+function formatDate(value) {
+  return new Date(value).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+function clamp(value) {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function cssEscape(value) {
+  return String(value).replaceAll('"', '\\"');
 }
 
 function escapeHtml(value) {
