@@ -126,15 +126,11 @@ async function generatePlan(event) {
   submitButton.textContent = "正在生成学习工作台";
 
   const payload = Object.fromEntries(new FormData(els.form).entries());
-  startFlowAnimation();
+  startFlowSession();
   setView("home");
 
   try {
-    const data = await request("/api/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
+    const data = await requestGeneratedPlan(payload);
     const plan = normalizeNewPlan(data);
     state.plans.unshift(plan);
     state.currentPlanId = plan.id;
@@ -536,30 +532,123 @@ function renderAgents() {
   `).join("");
 }
 
-function startFlowAnimation() {
-  const steps = [
-    "用户输入 -> 学习画像智能体",
-    "学习画像智能体 -> 知识诊断智能体",
-    "知识诊断智能体 -> 路径规划智能体",
-    "路径规划智能体 -> 资源生成智能体",
-    "资源生成智能体 -> 测评评分智能体",
-    "测评评分智能体 -> 学习陪练智能体"
-  ];
-  let index = 0;
+async function requestGeneratedPlan(payload) {
+  try {
+    return await requestGeneratedPlanStream(payload);
+  } catch (error) {
+    console.warn("stream generation failed, fallback to normal request", error);
+    return request("/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+  }
+}
+
+async function requestGeneratedPlanStream(payload) {
+  const response = await fetch(`${API_BASE}/api/generate-stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(`流式生成请求失败：${response.status}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalResult = null;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const event = JSON.parse(line);
+      updateFlowFromEvent(event);
+      if (event.type === "final") finalResult = event.result;
+      if (event.type === "fatal") throw new Error(event.message || "生成失败");
+    }
+  }
+
+  if (!finalResult) throw new Error("生成流结束但没有返回最终方案");
+  return finalResult;
+}
+
+function startFlowSession() {
   clearInterval(flowTimer);
-  const render = () => {
-    els.generationFlow.className = "flow-board running";
-    els.generationFlow.innerHTML = steps.map((step, stepIndex) => `
-      <div class="flow-row ${stepIndex === index ? "active" : stepIndex < index ? "done" : ""}">
-        <span>${stepIndex + 1}</span>
-        <strong>${escapeHtml(step)}</strong>
-        <em>${stepIndex === index ? "正在传递数据" : stepIndex < index ? "已完成" : "等待"}</em>
-      </div>
-    `).join("");
-    index = (index + 1) % steps.length;
-  };
-  render();
-  flowTimer = setInterval(render, 900);
+  state.liveFlow = [];
+  els.generationFlow.className = "flow-board running";
+  els.generationFlow.innerHTML = `
+    <div class="flow-row active">
+      <span>0</span>
+      <strong>后端协作会话启动中</strong>
+      <em>等待第一个智能体接收任务</em>
+    </div>
+  `;
+}
+
+function updateFlowFromEvent(event) {
+  if (event.type === "session-start") {
+    state.liveFlow = [{
+      agentId: "session",
+      agent: "协作会话",
+      action: event.message,
+      status: "active",
+      input: "用户提交的学习需求",
+      output: "正在分发任务"
+    }];
+  }
+
+  if (event.type === "agent-start") {
+    state.liveFlow = (state.liveFlow || []).filter((item) => item.agentId !== event.agentId);
+    state.liveFlow.push({
+      agentId: event.agentId,
+      agent: event.agent,
+      action: event.action,
+      status: "active",
+      input: event.input,
+      output: "执行中",
+      startedAt: event.startedAt || event.at
+    });
+  }
+
+  if (event.type === "agent-done" || event.type === "agent-error") {
+    state.liveFlow = (state.liveFlow || []).map((item) => {
+      if (item.agentId !== event.agentId) return item;
+      return {
+        ...item,
+        status: event.type === "agent-error" ? "error" : "done",
+        output: event.output,
+        durationMs: event.durationMs,
+        completedAt: event.completedAt || event.at
+      };
+    });
+  }
+
+  if (event.type === "final") {
+    state.liveFlow = (state.liveFlow || []).map((item) => (
+      item.status === "active" ? { ...item, status: "done", output: "已完成" } : item
+    ));
+  }
+
+  renderLiveFlow();
+}
+
+function renderLiveFlow() {
+  const items = state.liveFlow || [];
+  els.generationFlow.className = "flow-board running";
+  els.generationFlow.innerHTML = items.map((item, index) => `
+    <div class="flow-row ${item.status === "active" ? "active" : item.status === "done" ? "done" : "error"}">
+      <span>${index + 1}</span>
+      <strong>${escapeHtml(item.agent)}</strong>
+      <em>${escapeHtml(item.action)}<br />输入：${escapeHtml(item.input)}<br />输出：${escapeHtml(item.output)}${item.durationMs !== undefined ? ` · ${item.durationMs}ms` : ""}</em>
+    </div>
+  `).join("");
 }
 
 function renderIdleFlow() {

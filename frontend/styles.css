@@ -571,6 +571,15 @@ textarea:focus {
   background: var(--accent);
 }
 
+.flow-row.error {
+  border-color: #fecaca;
+  background: #fff1f2;
+}
+
+.flow-row.error span {
+  background: var(--danger);
+}
+
 .running .flow-row.active {
   animation: pulse 900ms ease-in-out infinite;
 }

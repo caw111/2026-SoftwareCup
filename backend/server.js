@@ -90,6 +90,12 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "POST" && url.pathname === "/api/generate-stream") {
+      const input = normalizeInput(await readJson(req));
+      await streamLearningPlan(res, input);
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/api/quiz") {
       const body = await readJson(req);
       const input = normalizeInput(body.input || {});
@@ -257,6 +263,73 @@ async function generateLearningPlan(input) {
   }
 }
 
+async function streamLearningPlan(res, input) {
+  res.writeHead(200, {
+    "Content-Type": "application/x-ndjson; charset=utf-8",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive"
+  });
+
+  const emit = (event) => {
+    res.write(`${JSON.stringify({ at: new Date().toISOString(), ...event })}\n`);
+  };
+
+  try {
+    emit({ type: "session-start", message: "多智能体协作生成已启动" });
+    const localPlan = await runLocalAgentsWithEvents(input, emit);
+
+    if (!MODEL_CONFIG.apiKey) {
+      emit({ type: "final", result: { mode: "local", input, agents, ...localPlan } });
+      res.end();
+      return;
+    }
+
+    emit({
+      type: "agent-start",
+      agentId: "llm-agent",
+      agent: "大模型优化智能体",
+      action: "把本地多智能体草案交给大模型进行结构化优化",
+      input: "本地草案、画像、每日任务、测评规则"
+    });
+    const llmStart = Date.now();
+
+    try {
+      const llmPlan = await callLargeModelForPlan(input, localPlan);
+      const merged = mergeLearningPlan(localPlan, llmPlan);
+      emit({
+        type: "agent-done",
+        agentId: "llm-agent",
+        output: "大模型优化完成，已合并结构化字段",
+        durationMs: Date.now() - llmStart
+      });
+      emit({ type: "final", result: { mode: "llm-core", input, agents, ...merged, llmGenerated: true } });
+    } catch (error) {
+      emit({
+        type: "agent-error",
+        agentId: "llm-agent",
+        output: "大模型优化失败，使用本地多智能体结果",
+        durationMs: Date.now() - llmStart,
+        detail: error instanceof Error ? error.message : String(error)
+      });
+      emit({
+        type: "final",
+        result: {
+          mode: "local-fallback",
+          input,
+          agents,
+          warning: "大模型结构化生成失败，已返回本地可用学习方案。",
+          detail: error instanceof Error ? error.message : String(error),
+          ...localPlan
+        }
+      });
+    }
+  } catch (error) {
+    emit({ type: "fatal", message: error instanceof Error ? error.message : String(error) });
+  } finally {
+    res.end();
+  }
+}
+
 function runLocalAgents(input) {
   const learnerProfile = buildLearnerProfile(input);
   const path = buildLearningPath(input);
@@ -279,6 +352,106 @@ function runLocalAgents(input) {
     resources,
     assessment,
     generationLoop,
+    resourcePackage,
+    dailyPlan,
+    tutorCards
+  };
+}
+
+async function runLocalAgentsWithEvents(input, emit) {
+  const trace = [];
+  const runStage = async (stage, work) => {
+    const startedAt = new Date().toISOString();
+    const start = Date.now();
+    emit({ type: "agent-start", startedAt, ...stage });
+    const output = await work();
+    const completedAt = new Date().toISOString();
+    const durationMs = Date.now() - start;
+    const traceItem = { ...stage, startedAt, completedAt, durationMs, output: stage.outputOf(output) };
+    trace.push(traceItem);
+    emit({
+      type: "agent-done",
+      agentId: stage.agentId,
+      completedAt,
+      durationMs,
+      output: traceItem.output
+    });
+    return output;
+  };
+
+  const learnerProfile = await runStage({
+    agentId: "profile-agent",
+    agent: "学习画像智能体",
+    action: "读取用户输入并形成可更新画像",
+    input: "学习主题、目标、基础、周期、偏好、薄弱点",
+    outputOf: (profile) => `识别薄弱维度：${profile.weakestDimensions.map((item) => item.dimension).join("、")}`
+  }, () => buildLearnerProfile(input));
+
+  const path = await runStage({
+    agentId: "planner-agent",
+    agent: "路径规划智能体",
+    action: "根据画像拆解阶段路径",
+    input: "学习画像、学习周期、每日时间",
+    outputOf: (items) => `生成 ${items.length} 个阶段路径`
+  }, () => buildLearningPath(input));
+
+  const dailyPlan = await runStage({
+    agentId: "daily-agent",
+    agent: "每日任务智能体",
+    action: "把阶段路径拆成每日可打卡任务",
+    input: "阶段路径、薄弱维度、每日时间",
+    outputOf: (items) => `生成 ${items.length} 天每日任务`
+  }, () => buildDailyPlan(input, learnerProfile));
+
+  const assessment = await runStage({
+    agentId: "assessment-agent",
+    agent: "测评评分智能体",
+    action: "根据每日任务生成初始测评规则",
+    input: "每日任务、薄弱维度、学习目标",
+    outputOf: (item) => `生成 ${item.quiz.length} 道初始测评题`
+  }, () => buildAssessment(input, learnerProfile, dailyPlan));
+
+  const resources = await runStage({
+    agentId: "resource-agent",
+    agent: "资源生成智能体",
+    action: "生成讲义、例题、练习和复盘模板",
+    input: "路径、任务、测评规则",
+    outputOf: (items) => `生成 ${items.length} 类学习资源`
+  }, () => buildResources(input, learnerProfile, assessment));
+
+  const generationLoop = await runStage({
+    agentId: "quality-agent",
+    agent: "协作质检智能体",
+    action: "检查各智能体产物之间的数据依赖和质量闭环",
+    input: "画像、路径、资源、测评题",
+    outputOf: (loop) => `质量分 ${loop.qualityScore}，数据流 ${loop.flows.length} 条`
+  }, () => buildGenerationLoop(input, learnerProfile, path, resources, assessment));
+
+  const resourcePackage = await runStage({
+    agentId: "package-agent",
+    agent: "方案装配智能体",
+    action: "把多智能体产物装配成可保存方案",
+    input: "全部阶段产物",
+    outputOf: (item) => item.title
+  }, () => buildResourcePackage(input, learnerProfile, path, resources, assessment, generationLoop));
+
+  const tutorCards = buildTutorCards(input, learnerProfile);
+  const profile = {
+    summary: learnerProfile.summary,
+    tags: learnerProfile.tags,
+    priority: learnerProfile.strategyPriorities
+  };
+
+  return {
+    profile,
+    learnerProfile,
+    path,
+    resources,
+    assessment,
+    generationLoop: {
+      ...generationLoop,
+      trace
+    },
     resourcePackage,
     dailyPlan,
     tutorCards
