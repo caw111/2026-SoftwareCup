@@ -125,8 +125,11 @@ const server = http.createServer(async (req, res) => {
       const input = normalizeInput(body.input || {});
       const plan = body.plan || runLocalAgents(input);
       const progress = body.progress || {};
-      const quiz = buildProgressQuiz(input, plan, progress, Number(body.variant || 0), ensureArray(body.history, []));
-      sendJson(res, 200, { quiz, generatedAt: new Date().toISOString(), source: summarizeProgress(plan, progress) });
+      const history = ensureArray(body.history, []);
+      const quizResult = await generateAdaptiveQuiz(input, plan, progress, Number(body.variant || 0), history, {
+        includeCode: Boolean(body.judgeReady)
+      });
+      sendJson(res, 200, { ...quizResult, generatedAt: new Date().toISOString(), source: summarizeProgress(plan, progress) });
       return;
     }
 
@@ -637,7 +640,150 @@ function buildAssessment(input, learnerProfile, dailyPlan) {
   };
 }
 
-function buildProgressQuiz(input, plan, progress = {}, variant = 0, history = []) {
+async function generateAdaptiveQuiz(input, plan, progress = {}, variant = 0, history = [], options = {}) {
+  const summary = summarizeProgress(plan, progress);
+  const localQuiz = buildProgressQuiz(input, plan, progress, variant, history, options);
+
+  if (!MODEL_CONFIG.apiKey) {
+    return { quiz: localQuiz, mode: "local-bank", llmUsed: false };
+  }
+
+  try {
+    const llmQuiz = await callLargeModelForQuiz(input, plan, progress, summary, variant, history, options);
+    return { quiz: normalizeGeneratedQuiz(llmQuiz, localQuiz, summary, variant, options), mode: "llm-quiz", llmUsed: true };
+  } catch (error) {
+    return {
+      quiz: localQuiz,
+      mode: "local-bank-fallback",
+      llmUsed: false,
+      warning: "大模型出题失败，已使用本地专业题库。",
+      detail: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+async function callLargeModelForQuiz(input, plan, progress, summary, variant, history, options) {
+  const completedDays = (plan?.dailyPlan || []).map((day) => ({
+    day: day.day,
+    title: day.title,
+    focus: day.focus,
+    doneTasks: (day.tasks || []).filter((_, index) => progress[`day-${day.day}-task-${index}`])
+  })).filter((day) => day.doneTasks.length);
+  const recentHistory = history.slice(-10).map((item) => ({
+    questionId: item.questionId,
+    type: item.type,
+    dimension: item.dimension,
+    question: String(item.question || "").slice(0, 160),
+    correct: item.correct,
+    score: item.score,
+    maxScore: item.maxScore
+  }));
+  const prompt = `你是专业课程的自适应测评出题智能体。请根据学习进度、已完成任务和错题历史生成新的练习题。
+只返回 JSON 数组，不要 Markdown。每个元素必须符合：
+{
+ "type":"choice|short|code",
+ "dimension":"",
+ "question":"",
+ "options":["仅选择题需要，4项"],
+ "answerIndex":0,
+ "referenceAnswer":"简答题标准答案",
+ "keywords":["简答题评分关键词"],
+ "language":"python",
+ "starterCode":"代码题起始代码",
+ "tests":[{"function":"","args":[],"expected":null}],
+ "explanation":"",
+ "score":20或30
+}
+
+硬性要求：
+1. 生成 4 道题，必须和当前主题 ${input.topic} 的专业知识强相关，不要泛泛学习方法题。
+2. 必须利用 completedDays 和 recentHistory，避免重复 recentHistory 中的题干。
+3. 至少 1 道选择题、1 道简答题。${options.includeCode ? "必须包含 1 道 Python 编程题，tests 要可由 Docker 判题运行。" : "当前 Docker 判题未就绪，不要生成代码题。"}
+4. 选择题要有明确干扰项；简答题要给 referenceAnswer 和 keywords；代码题只考一个函数。
+5. 题干中自然体现当前进度或错题薄弱点，但不要机械复制上下文。
+
+上下文：
+${JSON.stringify({
+  input,
+  progressSummary: summary,
+  completedDays,
+  weakDimensions: plan?.learnerProfile?.weakestDimensions || [],
+  recentHistory,
+  variant,
+  judgeReady: options.includeCode
+})}`;
+
+  const content = await requestChatCompletion([
+    { role: "system", content: "你是严谨的中文自适应测评出题智能体，必须输出可解析 JSON 数组。" },
+    { role: "user", content: prompt }
+  ], { temperature: 0.75, maxTokens: 2200 });
+  const parsed = parseJsonArrayFromModel(content);
+  return parsed;
+}
+
+function parseJsonArrayFromModel(content) {
+  const trimmed = String(content || "").trim();
+  const jsonText = trimmed.startsWith("[")
+    ? trimmed
+    : trimmed.match(/```json\s*([\s\S]*?)```/)?.[1] || trimmed.match(/\[[\s\S]*\]/)?.[0];
+  if (!jsonText) throw new Error("大模型没有返回 JSON 数组。");
+  return JSON.parse(jsonText);
+}
+
+function normalizeGeneratedQuiz(items, fallback, summary, variant, options) {
+  if (!Array.isArray(items)) return fallback;
+  const normalized = items
+    .filter((item) => item && ["choice", "short", "code"].includes(item.type))
+    .filter((item) => options.includeCode || item.type !== "code")
+    .map((item, index) => normalizeQuizItem(item, summary, variant, index));
+  const types = new Set(normalized.map((item) => item.type));
+  if (!types.has("choice") || !types.has("short") || normalized.length < 4) return fallback;
+  if (options.includeCode && !types.has("code")) return fallback;
+  return normalized.slice(0, 4);
+}
+
+function normalizeQuizItem(item, summary, variant, index) {
+  const baseId = slugify(`${item.type}-${item.dimension || "general"}-${item.question || index}`).slice(0, 64);
+  const normalized = {
+    id: `${baseId}-${summary.currentDay || 1}-${summary.done}-${variant || 0}-${index}`,
+    type: item.type,
+    dimension: clean(item.dimension, 80) || "综合应用",
+    question: clean(item.question, 1200),
+    explanation: clean(item.explanation, 800),
+    score: Number(item.score || (item.type === "choice" ? 20 : 30)),
+    relatedDay: summary.currentDay || 1,
+    progressContext: {
+      done: summary.done,
+      total: summary.total
+    }
+  };
+
+  if (item.type === "choice") {
+    normalized.options = ensureArray(item.options, []).slice(0, 4).map((option) => clean(option, 200));
+    normalized.answerIndex = Math.max(0, Math.min(3, Number(item.answerIndex || 0)));
+    if (normalized.options.length !== 4) throw new Error("选择题选项数量不足");
+  }
+  if (item.type === "short") {
+    normalized.referenceAnswer = clean(item.referenceAnswer, 800) || clean(item.answer, 800);
+    normalized.keywords = ensureArray(item.keywords, []).slice(0, 10).map((keyword) => clean(keyword, 40));
+  }
+  if (item.type === "code") {
+    normalized.language = item.language || "python";
+    normalized.starterCode = clean(item.starterCode, 2000) || "def solve():\n    pass\n";
+    normalized.tests = ensureArray(item.tests, []).slice(0, 8);
+    if (!normalized.tests.length) throw new Error("代码题缺少测试用例");
+  }
+  return normalized;
+}
+
+function slugify(value) {
+  return String(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function buildProgressQuiz(input, plan, progress = {}, variant = 0, history = [], options = {}) {
   const summary = summarizeProgress(plan, progress);
   const focus = summary.focus || plan?.learnerProfile?.weakestDimensions?.[0]?.dimension || "概念理解";
   const missedDimensions = [...new Set(history.filter((item) => item && item.correct === false).map((item) => item.dimension).filter(Boolean))];
@@ -654,7 +800,7 @@ function buildProgressQuiz(input, plan, progress = {}, variant = 0, history = []
   const seedOffset = stableHash(seedText);
   const learnedTask = summary.completedTasks[seedOffset % Math.max(1, summary.completedTasks.length)] || `${topic} 的核心概念`;
   const bank = selectProfessionalQuizBank(topic, focus, dayLabel, learnedTask);
-  const selected = selectAdaptiveQuizItems(bank, seedOffset, history, missedDimensions);
+  const selected = selectAdaptiveQuizItems(bank, seedOffset, history, missedDimensions, options);
   return selected.map((item, index) => applyQuizContext(item, {
     index,
     variant,
@@ -834,15 +980,16 @@ function selectProfessionalQuizBank(topic, focus, dayLabel, learnedTask) {
   ];
 }
 
-function selectAdaptiveQuizItems(items, offset, history, missedDimensions) {
+function selectAdaptiveQuizItems(items, offset, history, missedDimensions, options = {}) {
+  const usableItems = options.includeCode ? items : items.filter((item) => item.type !== "code");
   const previousBaseIds = new Set(
     history
       .map((item) => String(item.questionId || "").split("-").slice(0, -4).join("-"))
       .filter(Boolean)
   );
   const prioritized = missedDimensions.length
-    ? items.filter((item) => missedDimensions.includes(item.dimension)).concat(items.filter((item) => !missedDimensions.includes(item.dimension)))
-    : items;
+    ? usableItems.filter((item) => missedDimensions.includes(item.dimension)).concat(usableItems.filter((item) => !missedDimensions.includes(item.dimension)))
+    : usableItems;
   const rotated = prioritized.slice(offset % prioritized.length).concat(prioritized.slice(0, offset % prioritized.length));
   const fresh = rotated.filter((item) => !previousBaseIds.has(item.id));
   const pool = fresh.length >= 4 ? fresh : rotated;

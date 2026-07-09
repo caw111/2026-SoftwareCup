@@ -34,6 +34,7 @@ const els = {
 };
 
 els.healthButton.addEventListener("click", checkHealth);
+els.healthButton.addEventListener("click", checkJudgeStatus);
 els.llmTestButton.addEventListener("click", testLargeModel);
 els.form.addEventListener("submit", generatePlan);
 els.coachButton.addEventListener("click", askTutor);
@@ -595,7 +596,8 @@ async function loadQuiz(regenerate) {
         progress: plan.progress,
         history: plan.quizHistory || [],
         regenerate,
-        variant: plan.quizRound
+        variant: plan.quizRound,
+        judgeReady: Boolean(state.judgeReady)
       })
     });
     state.quiz = data.quiz || [];

@@ -29,6 +29,25 @@ cmd /c npm run dev
 - 前端：<http://127.0.0.1:5173>
 - 后端健康检查：<http://127.0.0.1:3000/api/health>
 - 大模型连通性测试：<http://127.0.0.1:3000/api/llm-test>
+- Docker 判题沙箱状态：<http://127.0.0.1:3000/api/judge/status>
+
+## Docker 在线评测
+
+代码题使用项目内置 Docker 判题镜像 `softwarecup-python-judge:latest`。后端会在第一次评测或访问 `/api/judge/status` 时自动构建镜像。
+
+使用前请先启动 Docker Desktop，并确认命令行可访问 Docker：
+
+```bash
+docker version
+```
+
+也可以手动预构建判题镜像：
+
+```bash
+docker build -t softwarecup-python-judge:latest backend/judge/python
+```
+
+判题容器运行时会禁用网络，限制内存、CPU、进程数，并以非 root 用户执行 Python 测试。若 Docker 未启动，前端会显示“Docker 判题不可用”，系统不会把底层 npipe/daemon 错误暴露给学生。
 
 ## 外接大模型配置
 
@@ -56,6 +75,8 @@ npm run dev
 ```
 
 在页面右上角点击“测试大模型”。如果连接成功，状态栏会显示模型名和模型返回内容；点击“生成个性化学习资源”时，返回结果中的“大模型优化建议”会来自真实外部模型。
+
+练习题生成也会优先调用大模型，并把每日打卡进度、已完成任务、历史错题、Docker 判题状态传入出题提示词；大模型失败时才回退到本地专业题库。
 
 ## 目录结构
 
