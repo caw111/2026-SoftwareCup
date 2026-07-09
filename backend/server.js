@@ -15,6 +15,12 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const JUDGE_IMAGE = process.env.JUDGE_IMAGE || "softwarecup-python-judge:latest";
 const JUDGE_BUILD_DIR = path.join(PROJECT_ROOT, "backend", "judge", "python");
 const JUDGE_TIMEOUT_MS = Number(process.env.JUDGE_TIMEOUT_MS || 10000);
+const JUDGE_AUTO_BOOTSTRAP = process.env.JUDGE_AUTO_BOOTSTRAP !== "false";
+const CONTAINER_CONFIG = {
+  cli: process.env.CONTAINER_CLI || process.env.DOCKER_CLI || "docker",
+  dockerHost: process.env.JUDGE_DOCKER_HOST || process.env.DOCKER_HOST || "",
+  image: JUDGE_IMAGE
+};
 const STORAGE_KEY = process.env.WORKSPACE_STATE_KEY || "default";
 const STORAGE_CONFIG = {
   mysqlUrl: process.env.MYSQL_URL,
@@ -67,6 +73,12 @@ const agents = [
 
 let mysqlPool = null;
 let mysqlReady = false;
+let judgeBootstrapPromise = null;
+let judgeBootstrapStatus = {
+  ok: false,
+  bootstrapping: false,
+  message: "判题沙箱尚未初始化"
+};
 
 const server = http.createServer(async (req, res) => {
   setCors(res);
@@ -181,6 +193,11 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`API 服务已启动：http://localhost:${PORT}`);
+  if (JUDGE_AUTO_BOOTSTRAP) {
+    bootstrapJudgeRuntime().catch((error) => {
+      console.warn(`判题沙箱自举失败：${friendlyJudgeError(error)}`);
+    });
+  }
 });
 
 function setCors(res) {
@@ -370,7 +387,14 @@ function normalizeEnvKey(key) {
     mysql_user: "MYSQL_USER",
     mysql_password: "MYSQL_PASSWORD",
     mysql_database: "MYSQL_DATABASE",
-    workspace_state_key: "WORKSPACE_STATE_KEY"
+    workspace_state_key: "WORKSPACE_STATE_KEY",
+    container_cli: "CONTAINER_CLI",
+    docker_cli: "DOCKER_CLI",
+    docker_host: "DOCKER_HOST",
+    judge_docker_host: "JUDGE_DOCKER_HOST",
+    judge_image: "JUDGE_IMAGE",
+    judge_timeout_ms: "JUDGE_TIMEOUT_MS",
+    judge_auto_bootstrap: "JUDGE_AUTO_BOOTSTRAP"
   };
   return map[key.trim().toLowerCase()] || key.trim();
 }
@@ -1409,10 +1433,12 @@ async function evaluateCodeAnswer(question, code) {
       correct: false,
       score: 0,
       maxScore,
-      feedback: `在线代码评测环境未就绪：${friendlyJudgeError(error)}。请启动 Docker Desktop 后点击“刷新状态”，系统会自动构建判题镜像。`,
+      feedback: `服务端在线代码评测环境未就绪：${friendlyJudgeError(error)}。`,
       detail: {
         reason: error instanceof Error ? error.message : String(error),
-        image: JUDGE_IMAGE
+        image: JUDGE_IMAGE,
+        runtime: CONTAINER_CONFIG.cli,
+        dockerHost: CONTAINER_CONFIG.dockerHost || "local-engine"
       }
     };
   }
@@ -1420,23 +1446,33 @@ async function evaluateCodeAnswer(question, code) {
 
 async function getJudgeStatus() {
   try {
-    await ensureJudgeImage();
+    await bootstrapJudgeRuntime();
     const result = await runCodeInDockerJudge("python", "def solve(x):\n    return x + 1\n", [
       { function: "solve", args: [1], expected: 2 }
     ]);
+    judgeBootstrapStatus = {
+      ok: result.passed === 1,
+      bootstrapping: false,
+      message: result.passed === 1 ? "服务端 Docker 判题沙箱可用" : "服务端 Docker 判题沙箱样例未通过"
+    };
     return {
       ok: result.passed === 1,
       mode: "docker",
+      runtime: CONTAINER_CONFIG.cli,
+      dockerHost: CONTAINER_CONFIG.dockerHost || "local-engine",
       image: JUDGE_IMAGE,
-      message: "Docker 在线评测沙箱可用",
+      message: judgeBootstrapStatus.message,
       sample: result
     };
   } catch (error) {
     return {
       ok: false,
       mode: "docker",
+      runtime: CONTAINER_CONFIG.cli,
+      dockerHost: CONTAINER_CONFIG.dockerHost || "local-engine",
       image: JUDGE_IMAGE,
-      message: "Docker 在线评测沙箱不可用",
+      bootstrapping: judgeBootstrapStatus.bootstrapping,
+      message: judgeBootstrapStatus.bootstrapping ? "服务端正在准备 Docker 判题沙箱" : "服务端 Docker 判题沙箱不可用",
       detail: friendlyJudgeError(error)
     };
   }
@@ -1444,8 +1480,8 @@ async function getJudgeStatus() {
 
 function friendlyJudgeError(error) {
   const message = error instanceof Error ? error.message : String(error);
-  if (/docker|daemon|npipe|pipe|connect|Desktop/i.test(message)) {
-    return "Docker 服务没有启动或当前终端无法访问 Docker";
+  if (/docker|daemon|npipe|pipe|connect|Desktop|Cannot connect|Is the docker daemon running/i.test(message)) {
+    return "服务端容器运行时不可用，请在服务器安装/启动 Docker Engine、Podman，或配置 JUDGE_DOCKER_HOST 指向远程 Docker Engine";
   }
   if (/timed out|timeout/i.test(message)) {
     return "代码运行超时";
@@ -1592,9 +1628,9 @@ function deepEqualWithTolerance(actual, expected) {
 
 async function runCodeInDockerJudge(language, code, tests) {
   if (language !== "python") throw new Error("当前判题镜像仅支持 python");
-  await ensureJudgeImage();
+  await bootstrapJudgeRuntime();
   const payload = JSON.stringify({ language, code, tests });
-  const { stdout } = await runCommand("docker", [
+  const { stdout } = await runContainerCommand([
     "run",
     "--rm",
     "--network",
@@ -1619,20 +1655,61 @@ async function runCodeInDockerJudge(language, code, tests) {
   return JSON.parse(stdout);
 }
 
+async function bootstrapJudgeRuntime() {
+  if (judgeBootstrapPromise) return judgeBootstrapPromise;
+  judgeBootstrapStatus = {
+    ok: false,
+    bootstrapping: true,
+    message: "服务端正在准备 Docker 判题沙箱"
+  };
+  judgeBootstrapPromise = ensureJudgeImage()
+    .then(() => {
+      judgeBootstrapStatus = {
+        ok: true,
+        bootstrapping: false,
+        message: "服务端 Docker 判题镜像已就绪"
+      };
+      return judgeBootstrapStatus;
+    })
+    .catch((error) => {
+      judgeBootstrapPromise = null;
+      judgeBootstrapStatus = {
+        ok: false,
+        bootstrapping: false,
+        message: friendlyJudgeError(error)
+      };
+      throw error;
+    });
+  return judgeBootstrapPromise;
+}
+
 async function ensureJudgeImage() {
-  await runCommand("docker", ["version", "--format", "{{.Server.Version}}"], { timeoutMs: 5000 });
+  await runContainerCommand(["version", "--format", "{{.Server.Version}}"], { timeoutMs: 5000 });
   try {
-    await runCommand("docker", ["image", "inspect", JUDGE_IMAGE], { timeoutMs: 5000 });
+    await runContainerCommand(["image", "inspect", JUDGE_IMAGE], { timeoutMs: 5000 });
   } catch {
-    await runCommand("docker", ["build", "-t", JUDGE_IMAGE, JUDGE_BUILD_DIR], { timeoutMs: 120000 });
+    await runContainerCommand(["build", "-t", JUDGE_IMAGE, JUDGE_BUILD_DIR], { timeoutMs: 120000 });
   }
+}
+
+function runContainerCommand(args, options = {}) {
+  return runCommand(CONTAINER_CONFIG.cli, args, {
+    ...options,
+    env: {
+      ...(CONTAINER_CONFIG.dockerHost ? { DOCKER_HOST: CONTAINER_CONFIG.dockerHost } : {})
+    }
+  });
 }
 
 function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
-      shell: false
+      shell: false,
+      env: {
+        ...process.env,
+        ...(options.env || {})
+      }
     });
     let stdout = "";
     let stderr = "";

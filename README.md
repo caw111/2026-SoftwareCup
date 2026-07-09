@@ -57,21 +57,30 @@ MYSQL_URL=mysql://softwarecup:your-password@127.0.0.1:3306/softwarecup
 
 ## Docker 在线评测
 
-代码题使用项目内置 Docker 判题镜像 `softwarecup-python-judge:latest`。后端会在第一次评测或访问 `/api/judge/status` 时自动构建镜像。
+代码题使用项目内置服务端判题镜像 `softwarecup-python-judge:latest`。后端启动后会自动检查容器运行时并构建判题镜像；用户和客户侧不需要手动构建镜像。
 
-使用前请先启动 Docker Desktop，并确认命令行可访问 Docker：
+服务端需要具备一种容器运行时，可以是 Linux Docker Engine、远程 Docker Engine，或兼容 Docker CLI 的 Podman。默认配置如下：
 
-```bash
-docker version
+```env
+CONTAINER_CLI=docker
+JUDGE_IMAGE=softwarecup-python-judge:latest
+JUDGE_TIMEOUT_MS=10000
+JUDGE_AUTO_BOOTSTRAP=true
 ```
 
-也可以手动预构建判题镜像：
+如果判题容器运行在独立 Linux 服务器上，可以配置远程 Docker Engine：
 
-```bash
-docker build -t softwarecup-python-judge:latest backend/judge/python
+```env
+JUDGE_DOCKER_HOST=tcp://judge-server:2375
 ```
 
-判题容器运行时会禁用网络，限制内存、CPU、进程数，并以非 root 用户执行 Python 测试。若 Docker 未启动，前端会显示“Docker 判题不可用”，系统不会把底层 npipe/daemon 错误暴露给学生。
+如果服务端使用 Podman：
+
+```env
+CONTAINER_CLI=podman
+```
+
+判题容器运行时会禁用网络，限制内存、CPU、进程数，并以非 root 用户执行 Python 测试。若服务端容器运行时不可用，前端会显示“服务端判题环境未就绪”，不会把底层 npipe/daemon 错误暴露给学生。
 
 ## 外接大模型配置
 
