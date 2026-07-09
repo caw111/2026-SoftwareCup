@@ -4,6 +4,7 @@ const STORAGE_KEY = "software-cup-learning-workspace-v2";
 const state = loadState();
 let activeView = location.hash.replace("#", "") || "home";
 let flowTimer = null;
+let persistTimer = null;
 
 const els = {
   form: document.querySelector("#learningForm"),
@@ -48,9 +49,28 @@ function boot() {
   renderAll();
   renderIdleFlow();
   loadAgents();
+  loadDiskState();
   checkHealth();
   if (getCurrentPlan()) {
     els.coachMode.textContent = "已加载学习上下文";
+  }
+}
+
+async function loadDiskState() {
+  try {
+    const diskState = await request("/api/workspace-state");
+    if (diskState?.plans?.length) {
+      state.plans = diskState.plans;
+      state.currentPlanId = diskState.currentPlanId || diskState.plans[0]?.id || null;
+      state.quiz = diskState.quiz || [];
+      state.quizResults = diskState.quizResults || {};
+      state.agents = diskState.agents || state.agents || [];
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeState()));
+      renderAll();
+    }
+    state.diskReady = true;
+  } catch {
+    state.diskReady = false;
   }
 }
 
@@ -864,7 +884,32 @@ async function request(path, options) {
 }
 
 function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeState()));
+  scheduleDiskSave();
+}
+
+function serializeState() {
+  return {
+    plans: state.plans || [],
+    currentPlanId: state.currentPlanId || null,
+    quiz: state.quiz || [],
+    quizResults: state.quizResults || {},
+    agents: state.agents || []
+  };
+}
+
+function scheduleDiskSave() {
+  if (!state.diskReady) return;
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    fetch(`${API_BASE}/api/workspace-state`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(serializeState())
+    }).catch(() => {
+      state.diskReady = false;
+    });
+  }, 350);
 }
 
 function loadState() {
@@ -875,10 +920,11 @@ function loadState() {
       currentPlanId: saved?.currentPlanId || null,
       quiz: saved?.quiz || [],
       quizResults: saved?.quizResults || {},
-      agents: saved?.agents || []
+      agents: saved?.agents || [],
+      diskReady: false
     };
   } catch {
-    return { plans: [], currentPlanId: null, quiz: [], quizResults: {}, agents: [] };
+    return { plans: [], currentPlanId: null, quiz: [], quizResults: {}, agents: [], diskReady: false };
   }
 }
 

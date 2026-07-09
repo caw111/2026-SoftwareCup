@@ -8,6 +8,8 @@ import { spawn } from "node:child_process";
 loadEnvFile();
 
 const PORT = Number(process.env.BACKEND_PORT || 3000);
+const DATA_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "data");
+const WORKSPACE_STATE_FILE = path.join(DATA_DIR, "workspace-state.json");
 const MODEL_CONFIG = {
   apiKey: process.env.OPENAI_API_KEY,
   baseUrl: trimTrailingSlash(process.env.OPENAI_BASE_URL || "https://api.openai.com/v1"),
@@ -83,6 +85,18 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/api/workspace-state") {
+      sendJson(res, 200, readWorkspaceState());
+      return;
+    }
+
+    if (req.method === "PUT" && url.pathname === "/api/workspace-state") {
+      const body = await readJson(req);
+      const saved = writeWorkspaceState(body);
+      sendJson(res, 200, saved);
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/api/generate") {
       const input = normalizeInput(await readJson(req));
       const result = await generateLearningPlan(input);
@@ -145,6 +159,48 @@ function setCors(res) {
 function sendJson(res, status, data) {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(data, null, 2));
+}
+
+function readWorkspaceState() {
+  try {
+    if (!fs.existsSync(WORKSPACE_STATE_FILE)) {
+      return emptyWorkspaceState();
+    }
+    const data = JSON.parse(fs.readFileSync(WORKSPACE_STATE_FILE, "utf8"));
+    return normalizeWorkspaceState(data);
+  } catch {
+    return emptyWorkspaceState();
+  }
+}
+
+function writeWorkspaceState(body) {
+  const state = normalizeWorkspaceState(body);
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(WORKSPACE_STATE_FILE, JSON.stringify({
+    ...state,
+    savedAt: new Date().toISOString()
+  }, null, 2), "utf8");
+  return { ok: true, savedAt: new Date().toISOString(), file: WORKSPACE_STATE_FILE };
+}
+
+function emptyWorkspaceState() {
+  return {
+    plans: [],
+    currentPlanId: null,
+    quiz: [],
+    quizResults: {},
+    agents: []
+  };
+}
+
+function normalizeWorkspaceState(value) {
+  return {
+    plans: Array.isArray(value?.plans) ? value.plans : [],
+    currentPlanId: typeof value?.currentPlanId === "string" ? value.currentPlanId : null,
+    quiz: Array.isArray(value?.quiz) ? value.quiz : [],
+    quizResults: value?.quizResults && typeof value.quizResults === "object" ? value.quizResults : {},
+    agents: Array.isArray(value?.agents) ? value.agents : []
+  };
 }
 
 function loadEnvFile() {
