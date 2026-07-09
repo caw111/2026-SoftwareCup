@@ -826,6 +826,59 @@ textarea:focus {
   line-height: 1.6;
 }
 
+.test-detail-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fff7f7;
+}
+
+.test-detail-panel > strong {
+  color: var(--danger);
+}
+
+.test-detail-item {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.test-detail-item > span {
+  color: #991b1b;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.test-detail-item dl {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.test-detail-item dl div {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.test-detail-item dt {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.test-detail-item dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 13px;
+}
+
 .reference-answer {
   margin: 10px 0 0;
   padding: 10px;

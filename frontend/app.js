@@ -571,9 +571,42 @@ function renderQuizItem(item, index) {
       ${answerControl}
       <button class="ghost-button" type="button" data-evaluate="${escapeHtml(item.id)}">提交给评分智能体</button>
       ${result ? `<p class="feedback">${escapeHtml(result.feedback)}</p>` : ""}
+      ${renderCodeTestDetails(item, result)}
       ${renderReferenceAnswer(item, result)}
     </article>
   `;
+}
+
+function renderCodeTestDetails(item, result) {
+  if (!result || item.type !== "code") return "";
+  const rows = result.detail?.results || [];
+  const failedRows = rows.filter((row) => !row.passed);
+  if (!failedRows.length) return "";
+  return `
+    <div class="test-detail-panel">
+      <strong>未通过测试样例</strong>
+      ${failedRows.map((row) => `
+        <section class="test-detail-item">
+          <span>用例 ${row.index}</span>
+          <dl>
+            <div><dt>测试输入</dt><dd>${escapeHtml(formatTestValue(row.input ?? row.args ?? []))}</dd></div>
+            <div><dt>正确输出</dt><dd>${escapeHtml(formatTestValue(row.expected))}</dd></div>
+            <div><dt>你的输出</dt><dd>${escapeHtml(row.error ? `运行错误：${row.error}` : formatTestValue(row.actual))}</dd></div>
+          </dl>
+        </section>
+      `).join("")}
+    </div>
+  `;
+}
+
+function formatTestValue(value) {
+  if (value === undefined) return "undefined";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function renderReferenceAnswer(item, result) {

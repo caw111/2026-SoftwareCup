@@ -58,11 +58,11 @@ def run_python(code, tests, workdir):
             actual = fn(*test.get("args", []))
             if has_alarm:
                 signal.alarm(0)
-            results.append(make_result(index, actual, test.get("expected")))
+            results.append(make_result(index, actual, test.get("expected"), test.get("args", [])))
         except Exception as exc:
             if has_alarm:
                 signal.alarm(0)
-            results.append({"index": index, "passed": False, "error": str(exc)})
+            results.append(make_error_result(index, test, str(exc)))
     return results
 
 
@@ -84,9 +84,9 @@ def run_javascript(code, tests, workdir):
                 if (typeof fn !== "function") throw new Error("找不到函数 " + (test.function || "solve"));
                 const actual = fn(...(test.args || []));
                 const passed = JSON.stringify(actual) === JSON.stringify(test.expected);
-                results.push({ index: i + 1, passed, actual, expected: test.expected });
+                results.push({ index: i + 1, passed, input: test.args || [], args: test.args || [], actual, expected: test.expected });
               } catch (error) {
-                results.push({ index: i + 1, passed: false, error: String(error.message || error) });
+                results.push({ index: i + 1, passed: false, input: test.args || [], args: test.args || [], actual: null, expected: test.expected, error: String(error.message || error) });
               }
             }
             console.log(JSON.stringify(results));
@@ -120,8 +120,27 @@ def run_java(code, tests, workdir):
     return json.loads(stdout)
 
 
-def make_result(index, actual, expected):
-    return {"index": index, "passed": deep_equal(actual, expected), "actual": actual, "expected": expected}
+def make_result(index, actual, expected, args=None):
+    return {
+        "index": index,
+        "passed": deep_equal(actual, expected),
+        "input": args or [],
+        "args": args or [],
+        "actual": actual,
+        "expected": expected,
+    }
+
+
+def make_error_result(index, test, error):
+    return {
+        "index": index,
+        "passed": False,
+        "input": test.get("args", []),
+        "args": test.get("args", []),
+        "actual": None,
+        "expected": test.get("expected"),
+        "error": error,
+    }
 
 
 def cpp_literal(value):
@@ -164,6 +183,10 @@ def cpp_json_expr(expr, value):
     return f"to_string({expr})"
 
 
+def json_value(value):
+    return json.dumps(value, ensure_ascii=False)
+
+
 def build_cpp_runner(tests):
     lines = [
         '#include <bits/stdc++.h>',
@@ -182,9 +205,10 @@ def build_cpp_runner(tests):
         expected = test.get("expected")
         call = f"{fn}({', '.join(cpp_literal(arg) for arg in args)})"
         expected_literal = cpp_literal(expected)
+        input_json = json_value(args)
         actual_json = cpp_json_expr("actual", expected)
         expected_json = cpp_json_expr("expected", expected)
-        lines.append(f"try{{ auto actual = {call}; auto expected = {expected_literal}; bool ok = eq(actual, expected); out.push_back(string(\"{{\\\"index\\\":{index},\\\"passed\\\":\")+(ok?\"true\":\"false\")+\",\\\"actual\\\":\"+{actual_json}+\",\\\"expected\\\":\"+{expected_json}+\"}}\"); }}catch(...){{ out.push_back(\"{{\\\"index\\\":{index},\\\"passed\\\":false,\\\"error\\\":\\\"runtime error\\\"}}\"); }}")
+        lines.append(f"try{{ auto actual = {call}; auto expected = {expected_literal}; bool ok = eq(actual, expected); out.push_back(string(\"{{\\\"index\\\":{index},\\\"passed\\\":\")+(ok?\"true\":\"false\")+\",\\\"input\\\":{input_json},\\\"args\\\":{input_json},\\\"actual\\\":\"+{actual_json}+\",\\\"expected\\\":\"+{expected_json}+\"}}\"); }}catch(...){{ out.push_back(\"{{\\\"index\\\":{index},\\\"passed\\\":false,\\\"input\\\":{input_json},\\\"args\\\":{input_json},\\\"actual\\\":null,\\\"expected\\\":{json_value(expected)},\\\"error\\\":\\\"runtime error\\\"}}\"); }}")
     lines.append('cout<<"["; for(size_t i=0;i<out.size();++i){ if(i) cout<<","; cout<<out[i]; } cout<<"]"; }')
     return "\n".join(lines)
 
@@ -250,9 +274,10 @@ def build_java_runner(tests):
         expected = test.get("expected")
         call = f"Solution.{fn}({', '.join(java_literal(arg) for arg in args)})"
         expected_literal = java_literal(expected)
+        input_json = json_value(args)
         actual_json = java_json_expr("actual", expected)
         expected_json = java_json_expr("expected", expected)
-        lines.append(f"try{{ var actual={call}; var expected={expected_literal}; boolean ok=eq(actual, expected); out.add(\"{{\\\"index\\\":{index},\\\"passed\\\":\"+(ok?\"true\":\"false\")+\",\\\"actual\\\":\"+{actual_json}+\",\\\"expected\\\":\"+{expected_json}+\"}}\"); }}catch(Throwable e){{ out.add(\"{{\\\"index\\\":{index},\\\"passed\\\":false,\\\"error\\\":\"+quote(e.getMessage())+\"}}\"); }}")
+        lines.append(f"try{{ var actual={call}; var expected={expected_literal}; boolean ok=eq(actual, expected); out.add(\"{{\\\"index\\\":{index},\\\"passed\\\":\"+(ok?\"true\":\"false\")+\",\\\"input\\\":{input_json},\\\"args\\\":{input_json},\\\"actual\\\":\"+{actual_json}+\",\\\"expected\\\":\"+{expected_json}+\"}}\"); }}catch(Throwable e){{ out.add(\"{{\\\"index\\\":{index},\\\"passed\\\":false,\\\"input\\\":{input_json},\\\"args\\\":{input_json},\\\"actual\\\":null,\\\"expected\\\":{json_value(expected)},\\\"error\\\":\"+quote(e.getMessage())+\"}}\"); }}")
     lines.append('System.out.print("["); for(int i=0;i<out.size();i++){ if(i>0) System.out.print(","); System.out.print(out.get(i)); } System.out.print("]"); }}')
     return "\n".join(lines)
 
