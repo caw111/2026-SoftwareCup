@@ -1,4 +1,4 @@
-const API_BASE = "http://localhost:3000";
+const API_BASE = `${location.protocol}//${location.hostname || "127.0.0.1"}:3000`;
 const STORAGE_KEY = "software-cup-learning-workspace-v2";
 
 const state = loadState();
@@ -713,6 +713,11 @@ async function evaluateQuiz(questionId) {
   const answer = readQuizAnswer(question);
   if (!question || answer === null || answer === "") return;
   question.lastAnswer = answer;
+  const button = els.practicePanel.querySelector(`[data-evaluate="${cssEscape(questionId)}"]`);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "评测中...";
+  }
 
   try {
     const result = await request("/api/evaluate", {
@@ -742,6 +747,11 @@ async function evaluateQuiz(questionId) {
     renderSavedPlans();
   } catch (error) {
     alert(`评分失败：${error.message}`);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "提交给评分智能体";
+    }
   }
 }
 
@@ -1070,7 +1080,12 @@ function getCurrentPlan() {
 }
 
 async function request(path, options) {
-  const response = await fetch(`${API_BASE}${path}`, options);
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, options);
+  } catch (error) {
+    throw new Error(`无法连接后端服务 ${API_BASE}。请确认 npm run dev 正在运行，并刷新页面后重试。`);
+  }
   if (!response.ok) {
     const data = await response.json().catch(async () => ({ message: await response.text() }));
     throw new Error(data.detail || data.message || `请求失败：${response.status}`);

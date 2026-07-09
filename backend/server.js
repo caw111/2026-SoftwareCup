@@ -1565,6 +1565,9 @@ async function evaluateCodeAnswer(question, code) {
   }
 
   try {
+    if (!judgeBootstrapStatus.ok) {
+      throw new Error(judgeBootstrapStatus.message || "服务端容器判题沙箱未就绪");
+    }
     const result = await runCodeInDockerJudge(question.language || "python", code, tests);
     return {
       agent: "测评评分智能体",
