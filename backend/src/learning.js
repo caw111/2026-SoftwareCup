@@ -1,12 +1,12 @@
 import { agents } from "./agents.js";
 
-import { MODEL_CONFIG } from "./config.js";
+import { JUDGE_AUTO_BOOTSTRAP, MODEL_CONFIG } from "./config.js";
 
 import { clean, clamp, ensureArray, normalizeCodeLanguage } from "./utils.js";
 
 import { requestChatCompletion, parseJsonFromModel } from "./llm.js";
 
-import { bootstrapJudgeRuntime, friendlyJudgeError } from "./judge.js";
+import { bootstrapJudgeRuntime, friendlyJudgeError, getJudgeRuntimeStatus } from "./judge.js";
 
 export function normalizeInput(body) {
   return {
@@ -372,19 +372,19 @@ export async function generateAdaptiveQuiz(input, plan, progress = {}, variant =
   const localQuiz = buildProgressQuiz(input, plan, progress, variant, history, quizOptions);
 
   if (!MODEL_CONFIG.apiKey) {
-    return { quiz: localQuiz, mode: "local-bank", llmUsed: false, includeCode: quizOptions.includeCode, judge: judgeBootstrapStatus };
+    return { quiz: localQuiz, mode: "local-bank", llmUsed: false, includeCode: quizOptions.includeCode, judge: getJudgeRuntimeStatus() };
   }
 
   try {
     const llmQuiz = await callLargeModelForQuiz(input, plan, progress, summary, variant, history, quizOptions);
-    return { quiz: normalizeGeneratedQuiz(llmQuiz, localQuiz, summary, variant, quizOptions), mode: "llm-quiz", llmUsed: true, includeCode: quizOptions.includeCode, judge: judgeBootstrapStatus };
+    return { quiz: normalizeGeneratedQuiz(llmQuiz, localQuiz, summary, variant, quizOptions), mode: "llm-quiz", llmUsed: true, includeCode: quizOptions.includeCode, judge: getJudgeRuntimeStatus() };
   } catch (error) {
     return {
       quiz: localQuiz,
       mode: "local-bank-fallback",
       llmUsed: false,
       includeCode: quizOptions.includeCode,
-      judge: judgeBootstrapStatus,
+      judge: getJudgeRuntimeStatus(),
       warning: "大模型出题失败，已使用本地专业题库。",
       detail: error instanceof Error ? error.message : String(error)
     };

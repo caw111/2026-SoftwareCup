@@ -15,6 +15,10 @@ let judgeBootstrapStatus = {
   message: "判题沙箱尚未初始化"
 };
 
+export function getJudgeRuntimeStatus() {
+  return { ...judgeBootstrapStatus };
+}
+
 export async function evaluateAnswer(body) {
   const question = body.question || {};
   const answer = body.answer;

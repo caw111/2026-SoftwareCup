@@ -4,9 +4,12 @@ import path from "node:path";
 
 import { fileURLToPath } from "node:url";
 
+const SOURCE_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+export const PROJECT_ROOT = path.resolve(SOURCE_DIR, "..", "..");
+
 function loadEnvFile() {
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const envPath = path.resolve(__dirname, "..", ".env");
+  const envPath = path.join(PROJECT_ROOT, ".env");
   if (!fs.existsSync(envPath)) return;
 
   const lines = fs.readFileSync(envPath, "utf8").split(/\r?\n/);
@@ -55,8 +58,6 @@ function normalizeEnvKey(key) {
 loadEnvFile();
 
 export const PORT = Number(process.env.BACKEND_PORT || 3000);
-
-export const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 export const DATA_DIR = path.join(PROJECT_ROOT, "data");
 
