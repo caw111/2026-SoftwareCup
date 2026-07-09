@@ -29,7 +29,8 @@ const els = {
   knowledgePanel: document.querySelector("#knowledgePanel"),
   masteryMode: document.querySelector("#masteryMode"),
   practicePanel: document.querySelector("#practicePanel"),
-  regenerateQuizButton: document.querySelector("#regenerateQuizButton")
+  regenerateQuizButton: document.querySelector("#regenerateQuizButton"),
+  judgeStatus: document.querySelector("#judgeStatus")
 };
 
 els.healthButton.addEventListener("click", checkHealth);
@@ -51,8 +52,27 @@ function boot() {
   loadAgents();
   loadDiskState();
   checkHealth();
+  checkJudgeStatus();
   if (getCurrentPlan()) {
     els.coachMode.textContent = "已加载学习上下文";
+  }
+}
+
+async function checkJudgeStatus() {
+  if (!els.judgeStatus) return;
+  els.judgeStatus.textContent = "判题沙箱检测中";
+  els.judgeStatus.className = "status-pill";
+  try {
+    const data = await request("/api/judge/status");
+    state.judgeReady = Boolean(data.ok);
+    els.judgeStatus.textContent = data.ok ? "Docker 判题可用" : data.detail || "判题沙箱不可用";
+    els.judgeStatus.classList.toggle("ok", data.ok);
+    els.judgeStatus.classList.toggle("bad", !data.ok);
+  } catch (error) {
+    state.judgeReady = false;
+    els.judgeStatus.textContent = "Docker 判题不可用";
+    els.judgeStatus.title = error.message;
+    els.judgeStatus.classList.add("bad");
   }
 }
 

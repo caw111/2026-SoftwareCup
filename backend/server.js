@@ -10,6 +10,10 @@ loadEnvFile();
 const PORT = Number(process.env.BACKEND_PORT || 3000);
 const DATA_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "data");
 const WORKSPACE_STATE_FILE = path.join(DATA_DIR, "workspace-state.json");
+const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const JUDGE_IMAGE = process.env.JUDGE_IMAGE || "softwarecup-python-judge:latest";
+const JUDGE_BUILD_DIR = path.join(PROJECT_ROOT, "backend", "judge", "python");
+const JUDGE_TIMEOUT_MS = Number(process.env.JUDGE_TIMEOUT_MS || 10000);
 const MODEL_CONFIG = {
   apiKey: process.env.OPENAI_API_KEY,
   baseUrl: trimTrailingSlash(process.env.OPENAI_BASE_URL || "https://api.openai.com/v1"),
@@ -82,6 +86,12 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/agents") {
       sendJson(res, 200, { agents });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/judge/status") {
+      const status = await getJudgeStatus();
+      sendJson(res, status.ok ? 200 : 503, status);
       return;
     }
 
@@ -1097,20 +1107,20 @@ async function evaluateTextAnswer(question, answer) {
 
 async function evaluateCodeAnswer(question, code) {
   const tests = ensureArray(question.tests, []);
+  const maxScore = Number(question.score || 100);
   if (!tests.length) {
     return {
       agent: "测评评分智能体",
       mode: "code-no-tests",
       correct: false,
       score: 0,
-      maxScore: 100,
+      maxScore,
       feedback: "代码题缺少测试用例，无法运行评测。"
     };
   }
 
   try {
-    const result = await runCodeInDocker(question.language || "python", code, tests);
-    const maxScore = Number(question.score || 100);
+    const result = await runCodeInDockerJudge(question.language || "python", code, tests);
     return {
       agent: "测评评分智能体",
       mode: "docker-code",
@@ -1121,19 +1131,54 @@ async function evaluateCodeAnswer(question, code) {
       detail: result
     };
   } catch (error) {
-    const fallback = evaluatePythonFunctionLocally(question, code, tests);
-    const maxScore = Number(question.score || 100);
     return {
       agent: "测评评分智能体",
-      mode: "local-code-fallback",
-      correct: fallback.passed === fallback.total,
-      score: fallback.total ? Math.round((fallback.passed / fallback.total) * maxScore) : 0,
+      mode: "judge-unavailable",
+      correct: false,
+      score: 0,
       maxScore,
-      feedback: `已使用内置评测器完成 ${fallback.total} 个测试，通过 ${fallback.passed} 个。`,
-      detail: fallback,
-      dockerSkipped: error instanceof Error ? error.message : String(error)
+      feedback: `在线代码评测环境未就绪：${friendlyJudgeError(error)}。请启动 Docker Desktop 后点击“刷新状态”，系统会自动构建判题镜像。`,
+      detail: {
+        reason: error instanceof Error ? error.message : String(error),
+        image: JUDGE_IMAGE
+      }
     };
   }
+}
+
+async function getJudgeStatus() {
+  try {
+    await ensureJudgeImage();
+    const result = await runCodeInDockerJudge("python", "def solve(x):\n    return x + 1\n", [
+      { function: "solve", args: [1], expected: 2 }
+    ]);
+    return {
+      ok: result.passed === 1,
+      mode: "docker",
+      image: JUDGE_IMAGE,
+      message: "Docker 在线评测沙箱可用",
+      sample: result
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      mode: "docker",
+      image: JUDGE_IMAGE,
+      message: "Docker 在线评测沙箱不可用",
+      detail: friendlyJudgeError(error)
+    };
+  }
+}
+
+function friendlyJudgeError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/docker|daemon|npipe|pipe|connect|Desktop/i.test(message)) {
+    return "Docker 服务没有启动或当前终端无法访问 Docker";
+  }
+  if (/timed out|timeout/i.test(message)) {
+    return "代码运行超时";
+  }
+  return message.slice(0, 240);
 }
 
 function evaluatePythonFunctionLocally(question, code, tests) {
@@ -1273,74 +1318,86 @@ function deepEqualWithTolerance(actual, expected) {
   return actual === expected;
 }
 
-function runCodeInDocker(language, code, tests) {
+async function runCodeInDockerJudge(language, code, tests) {
+  if (language !== "python") throw new Error("当前判题镜像仅支持 python");
+  await ensureJudgeImage();
+  const payload = JSON.stringify({ language, code, tests });
+  const { stdout } = await runCommand("docker", [
+    "run",
+    "--rm",
+    "--network",
+    "none",
+    "--memory",
+    "128m",
+    "--cpus",
+    "0.5",
+    "--pids-limit",
+    "64",
+    "--read-only",
+    "--tmpfs",
+    "/tmp:rw,noexec,nosuid,size=32m",
+    "--user",
+    "1000:1000",
+    "-i",
+    JUDGE_IMAGE
+  ], {
+    input: payload,
+    timeoutMs: JUDGE_TIMEOUT_MS
+  });
+  return JSON.parse(stdout);
+}
+
+async function ensureJudgeImage() {
+  await runCommand("docker", ["version", "--format", "{{.Server.Version}}"], { timeoutMs: 5000 });
+  try {
+    await runCommand("docker", ["image", "inspect", JUDGE_IMAGE], { timeoutMs: 5000 });
+  } catch {
+    await runCommand("docker", ["build", "-t", JUDGE_IMAGE, JUDGE_BUILD_DIR], { timeoutMs: 120000 });
+  }
+}
+
+function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    if (language !== "python") {
-      reject(new Error("当前示例沙箱仅支持 python 代码题"));
-      return;
-    }
-
-    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "learning-code-"));
-    const solutionPath = path.join(workDir, "solution.py");
-    const testPath = path.join(workDir, "test_runner.py");
-    fs.writeFileSync(solutionPath, code, "utf8");
-    fs.writeFileSync(testPath, buildPythonTestRunner(tests), "utf8");
-
-    const dockerArgs = [
-      "run",
-      "--rm",
-      "--network",
-      "none",
-      "-v",
-      `${workDir.replaceAll("\\", "/")}:/work`,
-      "-w",
-      "/work",
-      "python:3.11-alpine",
-      "python",
-      "test_runner.py"
-    ];
-    const child = spawn("docker", dockerArgs, { stdio: ["ignore", "pipe", "pipe"], shell: false });
+    const child = spawn(command, args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      shell: false
+    });
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill("SIGKILL");
+      reject(new Error(`${command} ${args.join(" ")} timed out after ${options.timeoutMs}ms`));
+    }, options.timeoutMs || 30000);
+
     child.stdout.on("data", (data) => {
       stdout += data;
     });
     child.stderr.on("data", (data) => {
       stderr += data;
     });
-    child.on("error", reject);
-    child.on("close", () => {
-      try {
-        fs.rmSync(workDir, { recursive: true, force: true });
-        resolve(JSON.parse(stdout));
-      } catch {
-        reject(new Error(stderr || stdout || "Docker 测试未返回有效 JSON"));
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (code === 0) {
+        resolve({ stdout, stderr });
+      } else {
+        reject(new Error(stderr || stdout || `${command} exited with code ${code}`));
       }
     });
-  });
-}
 
-function buildPythonTestRunner(tests) {
-  return `
-import importlib.util, json
-spec = importlib.util.spec_from_file_location("solution", "solution.py")
-solution = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(solution)
-tests = ${JSON.stringify(tests)}
-passed = 0
-results = []
-for index, test in enumerate(tests, 1):
-    fn = getattr(solution, test.get("function", "solve"))
-    try:
-        args = test.get("args", [])
-        actual = fn(*args)
-        ok = actual == test.get("expected")
-        passed += 1 if ok else 0
-        results.append({"index": index, "passed": ok, "actual": actual, "expected": test.get("expected")})
-    except Exception as exc:
-        results.append({"index": index, "passed": False, "error": str(exc)})
-print(json.dumps({"total": len(tests), "passed": passed, "results": results}, ensure_ascii=False))
-`;
+    if (options.input) child.stdin.end(options.input);
+    else child.stdin.end();
+  });
 }
 
 function ensureArray(value, fallback) {
