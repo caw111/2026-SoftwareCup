@@ -29,7 +29,31 @@ cmd /c npm run dev
 - 前端：<http://127.0.0.1:5173>
 - 后端健康检查：<http://127.0.0.1:3000/api/health>
 - 大模型连通性测试：<http://127.0.0.1:3000/api/llm-test>
+- 用户数据存储状态：<http://127.0.0.1:3000/api/storage/status>
 - Docker 判题沙箱状态：<http://127.0.0.1:3000/api/judge/status>
+
+## MySQL 用户数据存储
+
+系统支持把已生成方案、每日进度、练习题、测评结果等工作台状态保存到 MySQL。配置后，后端会自动创建 `workspace_states` 表；未配置 MySQL 时会回退到本地 `data/workspace-state.json`，便于开发演示。
+
+`.env` 示例：
+
+```env
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3306
+MYSQL_USER=softwarecup
+MYSQL_PASSWORD=your-password
+MYSQL_DATABASE=softwarecup
+WORKSPACE_STATE_KEY=default
+```
+
+也可以使用连接串：
+
+```env
+MYSQL_URL=mysql://softwarecup:your-password@127.0.0.1:3306/softwarecup
+```
+
+生产环境建议使用不同的 `WORKSPACE_STATE_KEY` 区分用户、班级或租户；当前原型默认保存一个工作台状态。
 
 ## Docker 在线评测
 

@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import mysql from "mysql2/promise";
 
 loadEnvFile();
 
@@ -14,6 +15,15 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const JUDGE_IMAGE = process.env.JUDGE_IMAGE || "softwarecup-python-judge:latest";
 const JUDGE_BUILD_DIR = path.join(PROJECT_ROOT, "backend", "judge", "python");
 const JUDGE_TIMEOUT_MS = Number(process.env.JUDGE_TIMEOUT_MS || 10000);
+const STORAGE_KEY = process.env.WORKSPACE_STATE_KEY || "default";
+const STORAGE_CONFIG = {
+  mysqlUrl: process.env.MYSQL_URL,
+  host: process.env.MYSQL_HOST,
+  port: Number(process.env.MYSQL_PORT || 3306),
+  user: process.env.MYSQL_USER,
+  password: process.env.MYSQL_PASSWORD,
+  database: process.env.MYSQL_DATABASE
+};
 const MODEL_CONFIG = {
   apiKey: process.env.OPENAI_API_KEY,
   baseUrl: trimTrailingSlash(process.env.OPENAI_BASE_URL || "https://api.openai.com/v1"),
@@ -55,6 +65,9 @@ const agents = [
   }
 ];
 
+let mysqlPool = null;
+let mysqlReady = false;
+
 const server = http.createServer(async (req, res) => {
   setCors(res);
 
@@ -73,6 +86,7 @@ const server = http.createServer(async (req, res) => {
         service: "个性化资源生成与学习多智能体后端",
         llmEnabled: Boolean(MODEL_CONFIG.apiKey),
         llm: publicModelConfig(),
+        storage: storagePublicConfig(),
         time: new Date().toISOString()
       });
       return;
@@ -89,6 +103,12 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/api/storage/status") {
+      const status = await getStorageStatus();
+      sendJson(res, status.ok ? 200 : 503, status);
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === "/api/judge/status") {
       const status = await getJudgeStatus();
       sendJson(res, status.ok ? 200 : 503, status);
@@ -96,13 +116,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/workspace-state") {
-      sendJson(res, 200, readWorkspaceState());
+      sendJson(res, 200, await readWorkspaceState());
       return;
     }
 
     if (req.method === "PUT" && url.pathname === "/api/workspace-state") {
       const body = await readJson(req);
-      const saved = writeWorkspaceState(body);
+      const saved = await writeWorkspaceState(body);
       sendJson(res, 200, saved);
       return;
     }
@@ -174,7 +194,22 @@ function sendJson(res, status, data) {
   res.end(JSON.stringify(data, null, 2));
 }
 
-function readWorkspaceState() {
+async function readWorkspaceState() {
+  if (isMysqlConfigured()) {
+    try {
+      const pool = await getMysqlPool();
+      const [rows] = await pool.execute(
+        "SELECT state_json FROM workspace_states WHERE state_key = ? LIMIT 1",
+        [STORAGE_KEY]
+      );
+      if (rows.length) {
+        return normalizeWorkspaceState(JSON.parse(rows[0].state_json));
+      }
+    } catch (error) {
+      console.warn(`MySQL 读取失败，回退文件存储：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   try {
     if (!fs.existsSync(WORKSPACE_STATE_FILE)) {
       return emptyWorkspaceState();
@@ -186,14 +221,97 @@ function readWorkspaceState() {
   }
 }
 
-function writeWorkspaceState(body) {
+async function writeWorkspaceState(body) {
   const state = normalizeWorkspaceState(body);
+  if (isMysqlConfigured()) {
+    try {
+      const pool = await getMysqlPool();
+      await pool.execute(
+        `INSERT INTO workspace_states (state_key, state_json, updated_at)
+         VALUES (?, ?, NOW())
+         ON DUPLICATE KEY UPDATE state_json = VALUES(state_json), updated_at = NOW()`,
+        [STORAGE_KEY, JSON.stringify(state)]
+      );
+      return { ok: true, savedAt: new Date().toISOString(), storage: "mysql", key: STORAGE_KEY };
+    } catch (error) {
+      console.warn(`MySQL 写入失败，回退文件存储：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(WORKSPACE_STATE_FILE, JSON.stringify({
     ...state,
     savedAt: new Date().toISOString()
   }, null, 2), "utf8");
-  return { ok: true, savedAt: new Date().toISOString(), file: WORKSPACE_STATE_FILE };
+  return { ok: true, savedAt: new Date().toISOString(), storage: "file", file: WORKSPACE_STATE_FILE };
+}
+
+async function getStorageStatus() {
+  if (!isMysqlConfigured()) {
+    return {
+      ok: true,
+      mode: "file",
+      message: "未配置 MySQL，当前使用本地文件存储",
+      file: WORKSPACE_STATE_FILE
+    };
+  }
+
+  try {
+    await getMysqlPool();
+    return {
+      ok: true,
+      mode: "mysql",
+      message: "MySQL 用户数据存储可用",
+      database: STORAGE_CONFIG.mysqlUrl ? "MYSQL_URL" : STORAGE_CONFIG.database,
+      key: STORAGE_KEY
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      mode: "mysql",
+      message: "MySQL 用户数据存储不可用",
+      detail: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+function storagePublicConfig() {
+  return {
+    mode: isMysqlConfigured() ? "mysql" : "file",
+    key: STORAGE_KEY,
+    mysqlConfigured: isMysqlConfigured()
+  };
+}
+
+function isMysqlConfigured() {
+  return Boolean(STORAGE_CONFIG.mysqlUrl || (STORAGE_CONFIG.host && STORAGE_CONFIG.user && STORAGE_CONFIG.database));
+}
+
+async function getMysqlPool() {
+  if (mysqlPool && mysqlReady) return mysqlPool;
+
+  mysqlPool = STORAGE_CONFIG.mysqlUrl
+    ? mysql.createPool(STORAGE_CONFIG.mysqlUrl)
+    : mysql.createPool({
+      host: STORAGE_CONFIG.host,
+      port: STORAGE_CONFIG.port,
+      user: STORAGE_CONFIG.user,
+      password: STORAGE_CONFIG.password,
+      database: STORAGE_CONFIG.database,
+      waitForConnections: true,
+      connectionLimit: Number(process.env.MYSQL_CONNECTION_LIMIT || 6),
+      namedPlaceholders: false
+    });
+
+  await mysqlPool.execute(`
+    CREATE TABLE IF NOT EXISTS workspace_states (
+      state_key VARCHAR(128) PRIMARY KEY,
+      state_json LONGTEXT NOT NULL,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+  `);
+  mysqlReady = true;
+  return mysqlPool;
 }
 
 function emptyWorkspaceState() {
@@ -245,7 +363,14 @@ function normalizeEnvKey(key) {
     openai_base_url: "OPENAI_BASE_URL",
     openai_model: "OPENAI_MODEL",
     openai_wire_api: "OPENAI_WIRE_API",
-    openai_timeout_ms: "OPENAI_TIMEOUT_MS"
+    openai_timeout_ms: "OPENAI_TIMEOUT_MS",
+    mysql_url: "MYSQL_URL",
+    mysql_host: "MYSQL_HOST",
+    mysql_port: "MYSQL_PORT",
+    mysql_user: "MYSQL_USER",
+    mysql_password: "MYSQL_PASSWORD",
+    mysql_database: "MYSQL_DATABASE",
+    workspace_state_key: "WORKSPACE_STATE_KEY"
   };
   return map[key.trim().toLowerCase()] || key.trim();
 }
