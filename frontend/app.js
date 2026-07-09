@@ -448,6 +448,22 @@ function renderPractice() {
   els.practicePanel.querySelectorAll("[data-evaluate]").forEach((button) => {
     button.addEventListener("click", () => evaluateQuiz(button.dataset.evaluate));
   });
+  els.practicePanel.querySelectorAll(".code-answer").forEach((textarea) => {
+    textarea.addEventListener("keydown", handleCodeTextareaKeydown);
+  });
+}
+
+function handleCodeTextareaKeydown(event) {
+  if (event.key !== "Tab") return;
+  event.preventDefault();
+  const textarea = event.currentTarget;
+  const start = textarea.selectionStart;
+  const end = textarea.selectionEnd;
+  const value = textarea.value;
+  const indent = "    ";
+  textarea.value = `${value.slice(0, start)}${indent}${value.slice(end)}`;
+  textarea.selectionStart = start + indent.length;
+  textarea.selectionEnd = start + indent.length;
 }
 
 function renderQuizItem(item, index) {
@@ -463,8 +479,21 @@ function renderQuizItem(item, index) {
       ${answerControl}
       <button class="ghost-button" type="button" data-evaluate="${escapeHtml(item.id)}">提交给评分智能体</button>
       ${result ? `<p class="feedback">${escapeHtml(result.feedback)}</p>` : ""}
-      ${item.referenceAnswer && result ? `<p class="reference-answer">参考答案：${escapeHtml(item.referenceAnswer)}</p>` : ""}
+      ${renderReferenceAnswer(item, result)}
     </article>
+  `;
+}
+
+function renderReferenceAnswer(item, result) {
+  if (!result) return "";
+  const reference = result.referenceAnswer || item.referenceAnswer || (item.type === "choice" ? item.explanation : "");
+  if (!reference) return "";
+  return `
+    <div class="reference-answer">
+      <strong>标准答案</strong>
+      <p>${escapeHtml(reference)}</p>
+      <small>本题得分：${Number(result.score || 0)}/${Number(result.maxScore || item.score || 0)}</small>
+    </div>
   `;
 }
 
@@ -486,7 +515,7 @@ function renderAnswerControl(item, result) {
     return `
       <label class="answer-box">
         Python 代码
-        <textarea data-answer-for="${escapeHtml(item.id)}" rows="9" spellcheck="false">${escapeHtml(item.lastAnswer || item.starterCode || "")}</textarea>
+        <textarea class="code-answer" data-answer-for="${escapeHtml(item.id)}" rows="9" spellcheck="false">${escapeHtml(item.lastAnswer || item.starterCode || "")}</textarea>
       </label>
       <p class="hint-text">${escapeHtml(item.explanation || "")}</p>
     `;

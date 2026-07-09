@@ -798,9 +798,22 @@ textarea:focus {
 
 .reference-answer {
   margin: 10px 0 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: #ecfdf5;
   color: var(--muted);
   font-size: 13px;
   line-height: 1.6;
+}
+
+.reference-answer strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--ok);
+}
+
+.reference-answer p {
+  margin: 0 0 6px;
 }
 
 .score-panel,
