@@ -579,7 +579,7 @@ function renderQuizItem(item, index) {
 
 function renderCodeTestDetails(item, result) {
   if (!result || item.type !== "code") return "";
-  const rows = result.detail?.results || [];
+  const rows = normalizeCodeResultRows(item, result);
   const failedRows = rows.filter((row) => !row.passed);
   if (!failedRows.length) return "";
   return `
@@ -597,6 +597,23 @@ function renderCodeTestDetails(item, result) {
       `).join("")}
     </div>
   `;
+}
+
+function normalizeCodeResultRows(item, result) {
+  const rows = result.detail?.results;
+  if (Array.isArray(rows) && rows.length) return rows;
+  if (!result.correct && Array.isArray(item.tests) && item.tests.length) {
+    return item.tests.map((test, index) => ({
+      index: index + 1,
+      passed: false,
+      input: test.args || [],
+      args: test.args || [],
+      expected: test.expected,
+      actual: result.detail?.actual ?? null,
+      error: result.detail?.loadError || result.detail?.reason || result.detail?.localReason || "未返回逐条测试结果"
+    }));
+  }
+  return [];
 }
 
 function formatTestValue(value) {

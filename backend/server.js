@@ -1569,25 +1569,27 @@ async function evaluateCodeAnswer(question, code) {
       throw new Error(judgeBootstrapStatus.message || "服务端容器判题沙箱未就绪");
     }
     const result = await runCodeInDockerJudge(question.language || "python", code, tests);
+    const feedback = buildCodeFeedback("Docker 沙箱", result);
     return {
       agent: "测评评分智能体",
       mode: "docker-code",
       correct: result.passed === result.total,
       score: result.total ? Math.round((result.passed / result.total) * maxScore) : 0,
       maxScore,
-      feedback: `Docker 沙箱完成 ${result.total} 个测试，通过 ${result.passed} 个。`,
+      feedback,
       detail: result
     };
   } catch (error) {
     try {
       const result = await runCodeInLocalJudge(question.language || "python", code, tests);
+      const feedback = buildCodeFeedback("服务端本地判题", result);
       return {
         agent: "测评评分智能体",
         mode: "local-runner-code",
         correct: result.passed === result.total,
         score: result.total ? Math.round((result.passed / result.total) * maxScore) : 0,
         maxScore,
-        feedback: `服务端本地判题完成 ${result.total} 个测试，通过 ${result.passed} 个。`,
+        feedback,
         detail: result,
         sandboxFallback: friendlyJudgeError(error)
       };
@@ -1608,6 +1610,23 @@ async function evaluateCodeAnswer(question, code) {
         }
       };
     }
+  }
+}
+
+function buildCodeFeedback(label, result) {
+  const base = `${label}完成 ${result.total} 个测试，通过 ${result.passed} 个。`;
+  const firstFailed = ensureArray(result.results, []).find((item) => !item.passed);
+  if (!firstFailed) return base;
+  return `${base} 首个失败用例：输入 ${stringifyCompact(firstFailed.input ?? firstFailed.args ?? [])}；正确输出 ${stringifyCompact(firstFailed.expected)}；你的输出 ${firstFailed.error ? `运行错误：${firstFailed.error}` : stringifyCompact(firstFailed.actual)}。`;
+}
+
+function stringifyCompact(value) {
+  if (value === undefined) return "undefined";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
   }
 }
 

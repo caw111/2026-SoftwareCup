@@ -23,7 +23,8 @@ const server = http.createServer(async (req, res) => {
     const data = await fs.readFile(filePath);
 
     res.writeHead(200, {
-      "Content-Type": mimeTypes[ext] || "application/octet-stream"
+      "Content-Type": mimeTypes[ext] || "application/octet-stream",
+      "Cache-Control": "no-store"
     });
     res.end(data);
   } catch {
