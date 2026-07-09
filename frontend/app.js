@@ -548,7 +548,7 @@ function renderAnswerControl(item, result) {
   if (item.type === "code") {
     return `
       <label class="answer-box">
-        Python 代码
+        ${codeLanguageLabel(item.language)} 代码
         <textarea class="code-answer" data-answer-for="${escapeHtml(item.id)}" rows="9" spellcheck="false">${escapeHtml(item.lastAnswer || item.starterCode || "")}</textarea>
       </label>
       <p class="hint-text">${escapeHtml(item.explanation || "")}</p>
@@ -561,6 +561,15 @@ function renderAnswerControl(item, result) {
       <textarea data-answer-for="${escapeHtml(item.id)}" rows="5" placeholder="请写出关键概念、判断依据和例子">${escapeHtml(item.lastAnswer || "")}</textarea>
     </label>
   `;
+}
+
+function codeLanguageLabel(language) {
+  return {
+    python: "Python",
+    cpp: "C++",
+    java: "Java",
+    javascript: "JavaScript"
+  }[language] || "代码";
 }
 
 function typeLabel(type) {

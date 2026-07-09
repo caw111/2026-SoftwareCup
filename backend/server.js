@@ -12,7 +12,7 @@ const PORT = Number(process.env.BACKEND_PORT || 3000);
 const DATA_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "data");
 const WORKSPACE_STATE_FILE = path.join(DATA_DIR, "workspace-state.json");
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const JUDGE_IMAGE = process.env.JUDGE_IMAGE || "softwarecup-python-judge:latest";
+const JUDGE_IMAGE = process.env.JUDGE_IMAGE || "softwarecup-code-judge:latest";
 const JUDGE_BUILD_DIR = path.join(PROJECT_ROOT, "backend", "judge", "python");
 const JUDGE_TIMEOUT_MS = Number(process.env.JUDGE_TIMEOUT_MS || 10000);
 const JUDGE_AUTO_BOOTSTRAP = process.env.JUDGE_AUTO_BOOTSTRAP !== "false";
@@ -791,7 +791,8 @@ async function generateAdaptiveQuiz(input, plan, progress = {}, variant = 0, his
   const summary = summarizeProgress(plan, progress);
   const quizOptions = {
     ...options,
-    includeCode: shouldIncludeProgrammingQuestion(input, plan, progress, history)
+    includeCode: shouldIncludeProgrammingQuestion(input, plan, progress, history),
+    codeLanguage: inferProgrammingLanguage(input, plan, history)
   };
   if (quizOptions.includeCode && JUDGE_AUTO_BOOTSTRAP) {
     bootstrapJudgeRuntime().catch((error) => {
@@ -833,6 +834,23 @@ function shouldIncludeProgrammingQuestion(input, plan, progress, history) {
   return /编程|代码|程序|算法|数据结构|python|javascript|java|c\+\+|机器学习|深度学习|模型|训练|预测|数据处理|特征|评估指标/i.test(text);
 }
 
+function inferProgrammingLanguage(input, plan, history) {
+  const text = [
+    input.topic,
+    input.goal,
+    input.outputType,
+    input.style,
+    input.weaknesses,
+    ...(plan?.dailyPlan || []).flatMap((day) => [day.title, day.focus, ...(day.tasks || [])]),
+    ...ensureArray(history, []).map((item) => `${item.language || ""} ${item.question || ""}`)
+  ].join(" ").toLowerCase();
+  if (/c\+\+|cpp|信息学|竞赛|acm|蓝桥杯/.test(text)) return "cpp";
+  if (/javascript|js|node|前端|网页|web/.test(text)) return "javascript";
+  if (/\bjava\b|spring|后端/.test(text)) return "java";
+  if (/python|机器学习|深度学习|数据|模型|训练|预测|特征|pandas|sklearn/.test(text)) return "python";
+  return "python";
+}
+
 async function callLargeModelForQuiz(input, plan, progress, summary, variant, history, options) {
   const completedDays = (plan?.dailyPlan || []).map((day) => ({
     day: day.day,
@@ -859,7 +877,7 @@ async function callLargeModelForQuiz(input, plan, progress, summary, variant, hi
  "answerIndex":0,
  "referenceAnswer":"简答题标准答案",
  "keywords":["简答题评分关键词"],
- "language":"python",
+ "language":"python|cpp|java|javascript",
  "starterCode":"代码题起始代码",
  "tests":[{"function":"","args":[],"expected":null}],
  "explanation":"",
@@ -869,9 +887,10 @@ async function callLargeModelForQuiz(input, plan, progress, summary, variant, hi
 硬性要求：
 1. 生成 4 道题，必须和当前主题 ${input.topic} 的专业知识强相关，不要泛泛学习方法题。
 2. 必须利用 completedDays 和 recentHistory，避免重复 recentHistory 中的题干。
-3. ${options.includeCode ? "当前学习内容适合编程训练，题型结构必须严格为：2 道 choice 选择题、1 道 short 简答题、1 道 code Python 编程题；代码题 tests 要可由服务端判题沙箱运行。" : "当前学习内容暂不适合编程训练，题型结构为 3 道 choice 选择题、1 道 short 简答题。"}
+3. ${options.includeCode ? `当前学习内容适合编程训练，题型结构必须严格为：2 道 choice 选择题、1 道 short 简答题、1 道 code 编程题；编程题语言必须是 ${options.codeLanguage}，tests 要可由服务端判题沙箱运行。` : "当前学习内容暂不适合编程训练，题型结构为 3 道 choice 选择题、1 道 short 简答题。"}
 4. 选择题要有明确干扰项；简答题要给 referenceAnswer 和 keywords；代码题只考一个函数。
-5. 题干中自然体现当前进度或错题薄弱点，但不要机械复制上下文。
+5. 编程题测试格式统一为 {"function":"函数名","args":[参数1,参数2],"expected":期望返回值}；不要使用标准输入输出题。
+6. 题干中自然体现当前进度或错题薄弱点，但不要机械复制上下文。
 
 上下文：
 ${JSON.stringify({
@@ -881,7 +900,8 @@ ${JSON.stringify({
   weakDimensions: plan?.learnerProfile?.weakestDimensions || [],
   recentHistory,
   variant,
-  includeProgrammingQuestion: options.includeCode
+  includeProgrammingQuestion: options.includeCode,
+  requiredCodeLanguage: options.codeLanguage
 })}`;
 
   const content = await requestChatCompletion([
@@ -906,7 +926,7 @@ function normalizeGeneratedQuiz(items, fallback, summary, variant, options) {
   const normalized = items
     .filter((item) => item && ["choice", "short", "code"].includes(item.type))
     .filter((item) => options.includeCode || item.type !== "code")
-    .map((item, index) => normalizeQuizItem(item, summary, variant, index));
+    .map((item, index) => normalizeQuizItem(item, summary, variant, index, options));
   const structured = pickQuizByStructure(normalized, options.includeCode);
   return structured || fallback;
 }
@@ -923,7 +943,7 @@ function pickQuizByStructure(items, includeCode) {
   return [choices[0], choices[1], choices[2], shorts[0]];
 }
 
-function normalizeQuizItem(item, summary, variant, index) {
+function normalizeQuizItem(item, summary, variant, index, options = {}) {
   const baseId = slugify(`${item.type}-${item.dimension || "general"}-${item.question || index}`).slice(0, 64);
   const normalized = {
     id: `${baseId}-${summary.currentDay || 1}-${summary.done}-${variant || 0}-${index}`,
@@ -949,12 +969,128 @@ function normalizeQuizItem(item, summary, variant, index) {
     normalized.keywords = ensureArray(item.keywords, []).slice(0, 10).map((keyword) => clean(keyword, 40));
   }
   if (item.type === "code") {
-    normalized.language = item.language || "python";
-    normalized.starterCode = clean(item.starterCode, 2000) || "def solve():\n    pass\n";
+    normalized.language = normalizeCodeLanguage(options.codeLanguage || item.language || "python");
     normalized.tests = ensureArray(item.tests, []).slice(0, 8);
     if (!normalized.tests.length) throw new Error("代码题缺少测试用例");
+    const functionName = normalized.tests[0]?.function || "solve";
+    const starter = clean(item.starterCode, 2000);
+    normalized.starterCode = starterMatchesLanguage(starter, normalized.language)
+      ? starter
+      : starterForFunction(normalized.language, functionName, normalized.tests);
   }
   return normalized;
+}
+
+function normalizeCodeLanguage(language) {
+  const value = String(language || "python").toLowerCase();
+  if (["cpp", "c++"].includes(value)) return "cpp";
+  if (["javascript", "js", "node"].includes(value)) return "javascript";
+  if (value === "java") return "java";
+  return "python";
+}
+
+function defaultStarterCode(language) {
+  if (language === "cpp") return "int solve(int x) {\n    // 在这里编写代码\n    return x;\n}\n";
+  if (language === "java") return "public class Solution {\n    public static int solve(int x) {\n        // 在这里编写代码\n        return x;\n    }\n}\n";
+  if (language === "javascript") return "function solve(x) {\n  // 在这里编写代码\n  return x;\n}\n\nmodule.exports = { solve };\n";
+  return "def solve(x):\n    # 在这里编写代码\n    return x\n";
+}
+
+function starterMatchesLanguage(code, language) {
+  if (!code) return false;
+  if (language === "python") return /def\s+\w+\s*\(/.test(code);
+  if (language === "cpp") return /(vector<|#include|int\s+\w+\s*\(|double\s+\w+\s*\()/.test(code) && !/public\s+class/.test(code);
+  if (language === "java") return /public\s+class\s+Solution/.test(code);
+  if (language === "javascript") return /(module\.exports|function\s+\w+\s*\(|=>)/.test(code);
+  return false;
+}
+
+function starterForFunction(language, functionName, tests = []) {
+  const normalized = normalizeCodeLanguage(language);
+  if (functionName === "accuracy") {
+    if (normalized === "cpp") return "double accuracy(vector<int> y_true, vector<int> y_pred) {\n    // 在这里编写代码\n    return 0.0;\n}\n";
+    if (normalized === "java") return "public class Solution {\n    public static double accuracy(int[] y_true, int[] y_pred) {\n        // 在这里编写代码\n        return 0.0;\n    }\n}\n";
+    if (normalized === "javascript") return "function accuracy(y_true, y_pred) {\n  // 在这里编写代码\n  return 0;\n}\n\nmodule.exports = { accuracy };\n";
+    return "def accuracy(y_true, y_pred):\n    # 在这里编写代码\n    pass\n";
+  }
+  if (functionName === "normalize_scores") {
+    if (normalized === "cpp") return "vector<double> normalize_scores(vector<double> scores) {\n    // 在这里编写代码\n    return {};\n}\n";
+    if (normalized === "java") return "public class Solution {\n    public static double[] normalize_scores(double[] scores) {\n        // 在这里编写代码\n        return new double[]{};\n    }\n}\n";
+    if (normalized === "javascript") return "function normalize_scores(scores) {\n  // 在这里编写代码\n  return [];\n}\n\nmodule.exports = { normalize_scores };\n";
+    return "def normalize_scores(scores):\n    # 在这里编写代码\n    pass\n";
+  }
+  return starterFromTests(normalized, functionName, tests);
+}
+
+function starterFromTests(language, functionName, tests = []) {
+  const first = tests[0] || { args: [0], expected: 0 };
+  const args = first.args || [];
+  const returnType = codeTypeForValue(language, first.expected);
+  const argList = args.map((arg, index) => `${codeTypeForValue(language, arg)} arg${index + 1}`);
+  if (language === "cpp") {
+    return `${returnType} ${functionName}(${argList.join(", ")}) {\n    // 在这里编写代码\n    return ${defaultReturnForType(language, first.expected)};\n}\n`;
+  }
+  if (language === "java") {
+    return `public class Solution {\n    public static ${returnType} ${functionName}(${argList.join(", ")}) {\n        // 在这里编写代码\n        return ${defaultReturnForType(language, first.expected)};\n    }\n}\n`;
+  }
+  if (language === "javascript") {
+    return `function ${functionName}(${args.map((_, index) => `arg${index + 1}`).join(", ")}) {\n  // 在这里编写代码\n  return ${defaultReturnForType(language, first.expected)};\n}\n\nmodule.exports = { ${functionName} };\n`;
+  }
+  return `def ${functionName}(${args.map((_, index) => `arg${index + 1}`).join(", ")}):\n    # 在这里编写代码\n    return ${defaultReturnForType(language, first.expected)}\n`;
+}
+
+function codeTypeForValue(language, value) {
+  if (language === "cpp") {
+    if (Array.isArray(value)) return `vector<${codeTypeForValue(language, value[0] ?? 0)}>`;
+    if (typeof value === "number" && !Number.isInteger(value)) return "double";
+    if (typeof value === "string") return "string";
+    if (typeof value === "boolean") return "bool";
+    return "int";
+  }
+  if (language === "java") {
+    if (Array.isArray(value)) return `${codeTypeForValue(language, value[0] ?? 0)}[]`;
+    if (typeof value === "number" && !Number.isInteger(value)) return "double";
+    if (typeof value === "string") return "String";
+    if (typeof value === "boolean") return "boolean";
+    return "int";
+  }
+  return "";
+}
+
+function defaultReturnForType(language, sample) {
+  if (Array.isArray(sample)) {
+    if (language === "cpp") return "{}";
+    if (language === "java") return `new ${codeTypeForValue(language, sample[0] ?? 0)}[]{}`;
+    if (language === "javascript") return "[]";
+    return "[]";
+  }
+  if (typeof sample === "string") return language === "cpp" || language === "java" || language === "javascript" ? '""' : '""';
+  if (typeof sample === "boolean") return language === "python" ? "False" : "false";
+  return "0";
+}
+
+function testsForFunction(language, functionName) {
+  const normalized = normalizeCodeLanguage(language);
+  if (functionName === "accuracy") {
+    const numericTests = [
+      { function: "accuracy", args: [[1, 0, 1, 1], [1, 1, 1, 0]], expected: 0.5 },
+      { function: "accuracy", args: [[1, 2, 3], [1, 2, 3]], expected: 1 },
+      { function: "accuracy", args: [[0, 0, 1], [1, 1, 1]], expected: 0.3333333333333333 }
+    ];
+    if (normalized === "javascript" || normalized === "python") {
+      return [
+        numericTests[0],
+        { function: "accuracy", args: [["cat", "dog"], ["cat", "dog"]], expected: 1 },
+        numericTests[2]
+      ];
+    }
+    return numericTests;
+  }
+  return [
+    { function: "normalize_scores", args: [[2, 4, 6]], expected: [0, 0.5, 1] },
+    { function: "normalize_scores", args: [[5, 5]], expected: [0, 0] },
+    { function: "normalize_scores", args: [[-1, 1]], expected: [0, 1] }
+  ];
 }
 
 function slugify(value) {
@@ -980,7 +1116,7 @@ function buildProgressQuiz(input, plan, progress = {}, variant = 0, history = []
   const topic = input.topic || plan?.input?.topic || "当前主题";
   const seedOffset = stableHash(seedText);
   const learnedTask = summary.completedTasks[seedOffset % Math.max(1, summary.completedTasks.length)] || `${topic} 的核心概念`;
-  const bank = selectProfessionalQuizBank(topic, focus, dayLabel, learnedTask);
+  const bank = selectProfessionalQuizBank(topic, focus, dayLabel, learnedTask, options);
   const selected = selectAdaptiveQuizItems(bank, seedOffset, history, missedDimensions, options);
   return selected.map((item, index) => applyQuizContext(item, {
     index,
@@ -991,7 +1127,8 @@ function buildProgressQuiz(input, plan, progress = {}, variant = 0, history = []
   }));
 }
 
-function selectProfessionalQuizBank(topic, focus, dayLabel, learnedTask) {
+function selectProfessionalQuizBank(topic, focus, dayLabel, learnedTask, options = {}) {
+  const codeLanguage = normalizeCodeLanguage(options.codeLanguage || "python");
   if (/机器学习|machine learning|ML/i.test(topic)) {
     return [
       {
@@ -1037,30 +1174,22 @@ function selectProfessionalQuizBank(topic, focus, dayLabel, learnedTask) {
       {
         id: "ml-accuracy-code",
         type: "code",
-        language: "python",
+        language: codeLanguage,
         dimension: "实践应用",
         question: "编程题：请实现 accuracy(y_true, y_pred)，返回预测正确的比例。要求 y_true 和 y_pred 为等长列表。",
-        starterCode: "def accuracy(y_true, y_pred):\n    # 在这里编写代码\n    pass\n",
-        tests: [
-          { function: "accuracy", args: [[1, 0, 1, 1], [1, 1, 1, 0]], expected: 0.5 },
-          { function: "accuracy", args: [["cat", "dog"], ["cat", "dog"]], expected: 1 },
-          { function: "accuracy", args: [[0, 0, 1], [1, 1, 1]], expected: 0.3333333333333333 }
-        ],
+        starterCode: starterForFunction(codeLanguage, "accuracy"),
+        tests: testsForFunction(codeLanguage, "accuracy"),
         explanation: "该题检查你是否能把评估指标转成可运行代码。若本机 Docker 可用，后端会在隔离容器中运行测试。",
         score: 30
       },
       {
         id: "ml-normalize-code",
         type: "code",
-        language: "python",
+        language: codeLanguage,
         dimension: "实践应用",
         question: "编程题：实现 normalize_scores(scores)，把数值列表线性映射到 0-1；若最大值等于最小值，返回全 0。",
-        starterCode: "def normalize_scores(scores):\n    # 在这里编写代码\n    pass\n",
-        tests: [
-          { function: "normalize_scores", args: [[2, 4, 6]], expected: [0, 0.5, 1] },
-          { function: "normalize_scores", args: [[5, 5]], expected: [0, 0] },
-          { function: "normalize_scores", args: [[-1, 1]], expected: [0, 1] }
-        ],
+        starterCode: starterForFunction(codeLanguage, "normalize_scores"),
+        tests: testsForFunction(codeLanguage, "normalize_scores"),
         explanation: "该题对应特征缩放/归一化的基础实现，能检查你是否理解预处理逻辑。",
         score: 30
       },
@@ -1146,15 +1275,11 @@ function selectProfessionalQuizBank(topic, focus, dayLabel, learnedTask) {
     {
       id: "general-code",
       type: "code",
-      language: "python",
+      language: codeLanguage,
       dimension: "实践应用",
       question: "编程题：实现 normalize_scores(scores)，把列表映射到 0-1 区间；若最大值等于最小值，返回全 0。",
-      starterCode: "def normalize_scores(scores):\n    # 在这里编写代码\n    pass\n",
-      tests: [
-        { function: "normalize_scores", args: [[2, 4, 6]], expected: [0, 0.5, 1] },
-        { function: "normalize_scores", args: [[5, 5]], expected: [0, 0] },
-        { function: "normalize_scores", args: [[-1, 1]], expected: [0, 1] }
-      ],
+      starterCode: starterForFunction(codeLanguage, "normalize_scores"),
+      tests: testsForFunction(codeLanguage, "normalize_scores"),
       explanation: "该题检查你能否把专业数据处理步骤写成可测试函数。",
       score: 30
     }
@@ -1651,9 +1776,9 @@ function deepEqualWithTolerance(actual, expected) {
 }
 
 async function runCodeInDockerJudge(language, code, tests) {
-  if (language !== "python") throw new Error("当前判题镜像仅支持 python");
+  const normalizedLanguage = normalizeCodeLanguage(language);
   await bootstrapJudgeRuntime();
-  const payload = JSON.stringify({ language, code, tests });
+  const payload = JSON.stringify({ language: normalizedLanguage, code, tests });
   const { stdout } = await runContainerCommand([
     "run",
     "--rm",
