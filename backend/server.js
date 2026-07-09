@@ -1576,20 +1576,35 @@ async function evaluateCodeAnswer(question, code) {
       detail: result
     };
   } catch (error) {
-    return {
-      agent: "测评评分智能体",
-      mode: "judge-unavailable",
-      correct: false,
-      score: 0,
-      maxScore,
-      feedback: `服务端在线代码评测环境未就绪：${friendlyJudgeError(error)}。`,
-      detail: {
-        reason: error instanceof Error ? error.message : String(error),
-        image: JUDGE_IMAGE,
-        runtime: CONTAINER_CONFIG.cli,
-        dockerHost: CONTAINER_CONFIG.dockerHost || "local-engine"
-      }
-    };
+    try {
+      const result = await runCodeInLocalJudge(question.language || "python", code, tests);
+      return {
+        agent: "测评评分智能体",
+        mode: "local-runner-code",
+        correct: result.passed === result.total,
+        score: result.total ? Math.round((result.passed / result.total) * maxScore) : 0,
+        maxScore,
+        feedback: `服务端本地判题完成 ${result.total} 个测试，通过 ${result.passed} 个。`,
+        detail: result,
+        sandboxFallback: friendlyJudgeError(error)
+      };
+    } catch (localError) {
+      return {
+        agent: "测评评分智能体",
+        mode: "judge-unavailable",
+        correct: false,
+        score: 0,
+        maxScore,
+        feedback: `服务端在线代码评测环境未就绪：${friendlyJudgeError(localError)}。`,
+        detail: {
+          dockerReason: error instanceof Error ? error.message : String(error),
+          localReason: localError instanceof Error ? localError.message : String(localError),
+          image: JUDGE_IMAGE,
+          runtime: CONTAINER_CONFIG.cli,
+          dockerHost: CONTAINER_CONFIG.dockerHost || "local-engine"
+        }
+      };
+    }
   }
 }
 
@@ -1614,16 +1629,31 @@ async function getJudgeStatus() {
       sample: result
     };
   } catch (error) {
-    return {
-      ok: false,
-      mode: "docker",
-      runtime: CONTAINER_CONFIG.cli,
-      dockerHost: CONTAINER_CONFIG.dockerHost || "local-engine",
-      image: JUDGE_IMAGE,
-      bootstrapping: judgeBootstrapStatus.bootstrapping,
-      message: judgeBootstrapStatus.bootstrapping ? "服务端正在准备 Docker 判题沙箱" : "服务端 Docker 判题沙箱不可用",
-      detail: friendlyJudgeError(error)
-    };
+    try {
+      const result = await runCodeInLocalJudge("python", "def solve(x):\n    return x + 1\n", [
+        { function: "solve", args: [1], expected: 2 }
+      ]);
+      return {
+        ok: result.passed === 1,
+        mode: "local-runner",
+        runtime: "server-process",
+        message: result.passed === 1 ? "服务端本地判题可用" : "服务端本地判题样例未通过",
+        dockerFallbackReason: friendlyJudgeError(error),
+        sample: result
+      };
+    } catch (localError) {
+      return {
+        ok: false,
+        mode: "unavailable",
+        runtime: CONTAINER_CONFIG.cli,
+        dockerHost: CONTAINER_CONFIG.dockerHost || "local-engine",
+        image: JUDGE_IMAGE,
+        bootstrapping: judgeBootstrapStatus.bootstrapping,
+        message: "服务端代码判题不可用",
+        detail: friendlyJudgeError(localError),
+        dockerDetail: friendlyJudgeError(error)
+      };
+    }
   }
 }
 
@@ -1797,6 +1827,21 @@ async function runCodeInDockerJudge(language, code, tests) {
     "1000:1000",
     "-i",
     JUDGE_IMAGE
+  ], {
+    input: payload,
+    timeoutMs: JUDGE_TIMEOUT_MS
+  });
+  return JSON.parse(stdout);
+}
+
+async function runCodeInLocalJudge(language, code, tests) {
+  const payload = JSON.stringify({
+    language: normalizeCodeLanguage(language),
+    code,
+    tests
+  });
+  const { stdout } = await runCommand("python", [
+    path.join(JUDGE_BUILD_DIR, "run_python.py")
   ], {
     input: payload,
     timeoutMs: JUDGE_TIMEOUT_MS

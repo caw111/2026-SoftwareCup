@@ -80,7 +80,7 @@ JUDGE_DOCKER_HOST=tcp://judge-server:2375
 CONTAINER_CLI=podman
 ```
 
-判题容器运行时会禁用网络，限制内存、CPU、进程数，并以非 root 用户执行 Python、C++、Java、JavaScript 测试。出题智能体会根据学习主题选择编程语言，例如 C++ 数据结构、Java 后端、JavaScript 前端算法、Python 机器学习。若服务端容器运行时不可用，前端会显示“服务端判题环境未就绪”，不会把底层 npipe/daemon 错误暴露给学生。
+判题容器运行时会禁用网络，限制内存、CPU、进程数，并以非 root 用户执行 Python、C++、Java、JavaScript 测试。出题智能体会根据学习主题选择编程语言，例如 C++ 数据结构、Java 后端、JavaScript 前端算法、Python 机器学习。若服务端容器运行时不可用，系统会自动切换到服务端本地多语言 runner，保证用户仍然可以提交代码并获得评分；不会把底层 npipe/daemon 错误暴露给学生。
 
 ## 外接大模型配置
 
