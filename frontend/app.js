@@ -39,6 +39,7 @@ els.llmTestButton.addEventListener("click", testLargeModel);
 els.form.addEventListener("submit", generatePlan);
 els.coachButton.addEventListener("click", askTutor);
 els.regenerateQuizButton.addEventListener("click", () => loadQuiz(true));
+els.practicePanel.addEventListener("keydown", handleCodeTextareaKeydown, true);
 window.addEventListener("hashchange", syncRoute);
 document.querySelectorAll(".nav-link").forEach((link) => {
   link.addEventListener("click", () => setView(link.dataset.view));
@@ -482,22 +483,79 @@ function renderPractice() {
   els.practicePanel.querySelectorAll("[data-evaluate]").forEach((button) => {
     button.addEventListener("click", () => evaluateQuiz(button.dataset.evaluate));
   });
-  els.practicePanel.querySelectorAll(".code-answer").forEach((textarea) => {
-    textarea.addEventListener("keydown", handleCodeTextareaKeydown);
-  });
 }
 
 function handleCodeTextareaKeydown(event) {
-  if (event.key !== "Tab") return;
+  const textarea = event.target.closest?.("textarea.code-answer");
+  if (!textarea || event.key !== "Tab") return;
   event.preventDefault();
-  const textarea = event.currentTarget;
+  event.stopPropagation();
+
   const start = textarea.selectionStart;
   const end = textarea.selectionEnd;
   const value = textarea.value;
   const indent = "    ";
+
+  if (start !== end && value.slice(start, end).includes("\n")) {
+    updateSelectedLinesIndent(textarea, event.shiftKey ? "outdent" : "indent");
+    return;
+  }
+
+  if (event.shiftKey) {
+    const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+    const removable = value.slice(lineStart, lineStart + indent.length) === indent
+      ? indent.length
+      : value[lineStart] === "\t"
+        ? 1
+        : 0;
+    if (!removable) return;
+    textarea.value = `${value.slice(0, lineStart)}${value.slice(lineStart + removable)}`;
+    textarea.selectionStart = Math.max(lineStart, start - removable);
+    textarea.selectionEnd = Math.max(lineStart, end - removable);
+    return;
+  }
+
   textarea.value = `${value.slice(0, start)}${indent}${value.slice(end)}`;
   textarea.selectionStart = start + indent.length;
   textarea.selectionEnd = start + indent.length;
+}
+
+function updateSelectedLinesIndent(textarea, mode) {
+  const value = textarea.value;
+  const indent = "    ";
+  const selectionStart = textarea.selectionStart;
+  const selectionEnd = textarea.selectionEnd;
+  const lineStart = value.lastIndexOf("\n", selectionStart - 1) + 1;
+  const lineEnd = selectionEnd < value.length && value[selectionEnd - 1] === "\n"
+    ? selectionEnd - 1
+    : selectionEnd;
+  const before = value.slice(0, lineStart);
+  const selected = value.slice(lineStart, lineEnd);
+  const after = value.slice(lineEnd);
+  const lines = selected.split("\n");
+  let delta = 0;
+
+  const updated = lines.map((line) => {
+    if (mode === "indent") {
+      delta += indent.length;
+      return `${indent}${line}`;
+    }
+    if (line.startsWith(indent)) {
+      delta -= indent.length;
+      return line.slice(indent.length);
+    }
+    if (line.startsWith("\t")) {
+      delta -= 1;
+      return line.slice(1);
+    }
+    return line;
+  }).join("\n");
+
+  textarea.value = `${before}${updated}${after}`;
+  textarea.selectionStart = mode === "indent"
+    ? selectionStart + indent.length
+    : Math.max(lineStart, selectionStart + Math.min(0, delta));
+  textarea.selectionEnd = Math.max(textarea.selectionStart, selectionEnd + delta);
 }
 
 function renderQuizItem(item, index) {
