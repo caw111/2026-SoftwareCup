@@ -115,7 +115,7 @@ const server = http.createServer(async (req, res) => {
       const input = normalizeInput(body.input || {});
       const plan = body.plan || runLocalAgents(input);
       const progress = body.progress || {};
-      const quiz = buildProgressQuiz(input, plan, progress, Number(body.variant || 0));
+      const quiz = buildProgressQuiz(input, plan, progress, Number(body.variant || 0), ensureArray(body.history, []));
       sendJson(res, 200, { quiz, generatedAt: new Date().toISOString(), source: summarizeProgress(plan, progress) });
       return;
     }
@@ -627,23 +627,30 @@ function buildAssessment(input, learnerProfile, dailyPlan) {
   };
 }
 
-function buildProgressQuiz(input, plan, progress = {}, variant = 0) {
+function buildProgressQuiz(input, plan, progress = {}, variant = 0, history = []) {
   const summary = summarizeProgress(plan, progress);
   const focus = summary.focus || plan?.learnerProfile?.weakestDimensions?.[0]?.dimension || "概念理解";
-  const seedOffset = Math.abs(Number(variant || 0) + summary.done + summary.currentDay) % 3;
+  const missedDimensions = [...new Set(history.filter((item) => item && item.correct === false).map((item) => item.dimension).filter(Boolean))];
+  const seedText = JSON.stringify({
+    topic: input.topic,
+    done: summary.done,
+    currentDay: summary.currentDay,
+    variant,
+    missedDimensions,
+    recent: history.slice(-6).map((item) => [item.questionId, item.correct, item.dimension])
+  });
   const dayLabel = summary.currentDay ? `第 ${summary.currentDay} 天` : "当前阶段";
   const topic = input.topic || plan?.input?.topic || "当前主题";
+  const seedOffset = stableHash(seedText);
   const learnedTask = summary.completedTasks[seedOffset % Math.max(1, summary.completedTasks.length)] || `${topic} 的核心概念`;
   const bank = selectProfessionalQuizBank(topic, focus, dayLabel, learnedTask);
-  return rotateQuiz(bank, seedOffset).map((item, index) => ({
-    ...item,
-    id: `${item.id}-${summary.currentDay || 1}-${summary.done}-${variant || 0}-${index}`,
-    relatedDay: summary.currentDay || 1,
-    progressContext: {
-      done: summary.done,
-      total: summary.total,
-      learnedTask
-    }
+  const selected = selectAdaptiveQuizItems(bank, seedOffset, history, missedDimensions);
+  return selected.map((item, index) => applyQuizContext(item, {
+    index,
+    variant,
+    summary,
+    learnedTask,
+    missedDimensions
   }));
 }
 
@@ -706,6 +713,21 @@ function selectProfessionalQuizBank(topic, focus, dayLabel, learnedTask) {
         score: 30
       },
       {
+        id: "ml-normalize-code",
+        type: "code",
+        language: "python",
+        dimension: "实践应用",
+        question: "编程题：实现 normalize_scores(scores)，把数值列表线性映射到 0-1；若最大值等于最小值，返回全 0。",
+        starterCode: "def normalize_scores(scores):\n    # 在这里编写代码\n    pass\n",
+        tests: [
+          { function: "normalize_scores", args: [[2, 4, 6]], expected: [0, 0.5, 1] },
+          { function: "normalize_scores", args: [[5, 5]], expected: [0, 0] },
+          { function: "normalize_scores", args: [[-1, 1]], expected: [0, 1] }
+        ],
+        explanation: "该题对应特征缩放/归一化的基础实现，能检查你是否理解预处理逻辑。",
+        score: 30
+      },
+      {
         id: "ml-bias-variance-short",
         type: "short",
         dimension: "概念理解",
@@ -714,6 +736,31 @@ function selectProfessionalQuizBank(topic, focus, dayLabel, learnedTask) {
         referenceAnswer: "通常说明过拟合。可尝试正则化、简化模型、增加数据或数据增强，并用验证集/交叉验证确认改进。",
         explanation: "重点是判断泛化问题，并给出合理的模型或数据层面修正。",
         score: 30
+      },
+      {
+        id: "ml-train-val-short",
+        type: "short",
+        dimension: "方法迁移",
+        question: "简答：为什么不能直接用测试集反复调参？请说明验证集和测试集的职责区别。",
+        keywords: ["验证集", "测试集", "调参", "泛化", "泄漏", "最终评估"],
+        referenceAnswer: "验证集用于模型选择和调参；测试集应尽量只在最终评估时使用。反复用测试集调参会让模型间接适配测试集，导致泛化评估偏乐观。",
+        explanation: "该题检查训练/验证/测试划分的专业理解。",
+        score: 30
+      },
+      {
+        id: "ml-regularization-choice",
+        type: "choice",
+        dimension: "概念理解",
+        question: "当线性模型出现过拟合时，L2 正则化通常起什么作用？",
+        options: [
+          "惩罚过大的权重，降低模型复杂度，从而改善泛化",
+          "让训练误差必然变成 0",
+          "删除所有无关特征且不需要验证",
+          "只改变测试集分布"
+        ],
+        answerIndex: 0,
+        explanation: "L2 正则化通过惩罚权重大小抑制过拟合，但不保证训练误差为 0。",
+        score: 20
       }
     ];
   }
@@ -777,8 +824,18 @@ function selectProfessionalQuizBank(topic, focus, dayLabel, learnedTask) {
   ];
 }
 
-function rotateQuiz(items, offset) {
-  const rotated = items.slice(offset).concat(items.slice(0, offset));
+function selectAdaptiveQuizItems(items, offset, history, missedDimensions) {
+  const previousBaseIds = new Set(
+    history
+      .map((item) => String(item.questionId || "").split("-").slice(0, -4).join("-"))
+      .filter(Boolean)
+  );
+  const prioritized = missedDimensions.length
+    ? items.filter((item) => missedDimensions.includes(item.dimension)).concat(items.filter((item) => !missedDimensions.includes(item.dimension)))
+    : items;
+  const rotated = prioritized.slice(offset % prioritized.length).concat(prioritized.slice(0, offset % prioritized.length));
+  const fresh = rotated.filter((item) => !previousBaseIds.has(item.id));
+  const pool = fresh.length >= 4 ? fresh : rotated;
   const required = ["choice", "short", "code"];
   const selected = [];
   for (const type of required) {
@@ -790,6 +847,33 @@ function rotateQuiz(items, offset) {
     if (!selected.includes(item)) selected.push(item);
   }
   return selected.slice(0, 4);
+}
+
+function applyQuizContext(item, context) {
+  const missedText = context.missedDimensions.length
+    ? `上一轮薄弱维度：${context.missedDimensions.join("、")}。`
+    : "上一轮暂无明显错题维度。";
+  const progressPrefix = `【进度：已完成 ${context.summary.done}/${context.summary.total} 项，当前任务：${context.learnedTask}】`;
+  return {
+    ...item,
+    id: `${item.id}-${context.summary.currentDay || 1}-${context.summary.done}-${context.variant || 0}-${context.index}`,
+    question: `${progressPrefix}\n${missedText}\n${item.question}`,
+    relatedDay: context.summary.currentDay || 1,
+    progressContext: {
+      done: context.summary.done,
+      total: context.summary.total,
+      learnedTask: context.learnedTask,
+      missedDimensions: context.missedDimensions
+    }
+  };
+}
+
+function stableHash(value) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0;
+  }
+  return Math.abs(hash);
 }
 
 function summarizeProgress(plan, progress = {}) {

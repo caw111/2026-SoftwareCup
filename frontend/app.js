@@ -203,6 +203,7 @@ function renderSavedPlans() {
   els.savedPlans.className = "plan-list";
   els.savedPlans.innerHTML = state.plans.map((plan) => {
     const summary = progressSummaryFor(plan);
+    const quizStatus = quizStatusFor(plan);
     const active = plan.id === state.currentPlanId;
     return `
       <article class="plan-card ${active ? "active" : ""}">
@@ -210,7 +211,7 @@ function renderSavedPlans() {
           <span class="tag">${escapeHtml(plan.category)}</span>
           <h3>${escapeHtml(plan.title)}</h3>
           <p>${escapeHtml(plan.data?.learnerProfile?.summary || "")}</p>
-          <small>${formatDate(plan.createdAt)} · 已完成 ${summary.done}/${summary.total} 项 · ${summary.percent}%</small>
+          <small>${formatDate(plan.createdAt)} · 已完成 ${summary.done}/${summary.total} 项 · ${summary.percent}% · ${escapeHtml(quizStatus)}</small>
         </div>
         <div class="plan-actions">
           <button class="ghost-button" type="button" data-open-plan="${plan.id}">${active ? "当前使用" : "使用方案"}</button>
@@ -233,6 +234,17 @@ function renderSavedPlans() {
   els.savedPlans.querySelectorAll("[data-delete-plan]").forEach((button) => {
     button.addEventListener("click", () => deletePlan(button.dataset.deletePlan));
   });
+}
+
+function quizStatusFor(plan) {
+  const history = plan.quizHistory || [];
+  if (!history.length) return "尚未测评";
+  const recent = history.slice(-4);
+  const score = recent.reduce((sum, item) => sum + Number(item.score || item.result?.score || 0), 0);
+  const max = recent.reduce((sum, item) => sum + Number(item.maxScore || item.result?.maxScore || 0), 0);
+  const weak = recent.filter((item) => !item.correct).map((item) => item.dimension).filter(Boolean);
+  const weakText = weak.length ? `，待补强：${[...new Set(weak)].slice(0, 2).join("、")}` : "";
+  return `最近测评 ${score}/${max}${weakText}`;
 }
 
 function deletePlan(id) {
@@ -322,6 +334,7 @@ function updateProgress(event) {
   state.quizResults = {};
   saveState();
   updateProgressSummary();
+  renderSavedPlans();
   renderKnowledge();
   renderPractice();
 }
@@ -550,6 +563,7 @@ async function loadQuiz(regenerate) {
   if (!plan) return;
   els.practicePanel.className = "empty-state";
   els.practicePanel.innerHTML = "<p>正在根据学习进度重新出题...</p>";
+  plan.quizRound = regenerate ? Number(plan.quizRound || 0) + 1 : Number(plan.quizRound || 0);
 
   try {
     const data = await request("/api/quiz", {
@@ -559,8 +573,9 @@ async function loadQuiz(regenerate) {
         input: plan.data.input,
         plan: plan.data,
         progress: plan.progress,
+        history: plan.quizHistory || [],
         regenerate,
-        variant: regenerate ? Date.now() : progressSummaryFor(plan).done
+        variant: plan.quizRound
       })
     });
     state.quiz = data.quiz || [];
@@ -588,11 +603,22 @@ async function evaluateQuiz(questionId) {
     const plan = getCurrentPlan();
     if (plan) {
       plan.quizHistory = plan.quizHistory || [];
-      plan.quizHistory.push({ questionId, result, at: new Date().toISOString() });
+      plan.quizHistory.push({
+        questionId,
+        type: question.type,
+        dimension: question.dimension,
+        question: question.question,
+        correct: result.correct,
+        score: result.score,
+        maxScore: result.maxScore,
+        result,
+        at: new Date().toISOString()
+      });
     }
     saveState();
     renderPractice();
     renderKnowledge();
+    renderSavedPlans();
   } catch (error) {
     alert(`评分失败：${error.message}`);
   }
