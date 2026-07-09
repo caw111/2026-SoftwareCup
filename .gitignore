@@ -4,3 +4,8 @@ npm-debug.log*
 data/
 __pycache__/
 *.pyc
+.agents
+.aris
+.claude
+AGENTS.md
+CLAUDE.md
