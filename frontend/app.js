@@ -671,7 +671,9 @@ function updateFlowFromEvent(event) {
   }
 
   if (event.type === "agent-start") {
-    state.liveFlow = (state.liveFlow || []).filter((item) => item.agentId !== event.agentId);
+    state.liveFlow = (state.liveFlow || [])
+      .filter((item) => item.agentId !== event.agentId)
+      .map((item) => item.status === "active" ? { ...item, status: "done", output: item.output === "执行中" ? "已交接给下一智能体" : item.output } : item);
     state.liveFlow.push({
       agentId: event.agentId,
       agent: event.agent,
@@ -707,14 +709,31 @@ function updateFlowFromEvent(event) {
 
 function renderLiveFlow() {
   const items = state.liveFlow || [];
+  const current = [...items].reverse().find((item) => item.status === "active");
   els.generationFlow.className = "flow-board running";
-  els.generationFlow.innerHTML = items.map((item, index) => `
-    <div class="flow-row ${item.status === "active" ? "active" : item.status === "done" ? "done" : "error"}">
-      <span>${index + 1}</span>
-      <strong>${escapeHtml(item.agent)}</strong>
-      <em>${escapeHtml(item.action)}<br />输入：${escapeHtml(item.input)}<br />输出：${escapeHtml(item.output)}${item.durationMs !== undefined ? ` · ${item.durationMs}ms` : ""}</em>
-    </div>
-  `).join("");
+  els.generationFlow.innerHTML = `
+    <section class="current-agent-panel ${current ? "working" : ""}">
+      <span>${current ? "工作中" : "等待中"}</span>
+      <strong>${escapeHtml(current?.agent || "等待智能体接收任务")}</strong>
+      <p>${escapeHtml(current?.action || "生成开始后会实时切换到当前正在执行的智能体。")}</p>
+      ${current ? `<small>输入：${escapeHtml(current.input)}<br />状态：${escapeHtml(current.output)}</small>` : ""}
+    </section>
+    ${items.map((item, index) => `
+      <div class="flow-row ${item.status === "active" ? "active" : item.status === "done" ? "done" : "error"}">
+        <span>${index + 1}</span>
+        <strong>${escapeHtml(item.agent)}</strong>
+        <em>${flowStatusLabel(item.status)} · ${escapeHtml(item.action)}<br />输入：${escapeHtml(item.input)}<br />输出：${escapeHtml(item.output)}${item.durationMs !== undefined ? ` · ${item.durationMs}ms` : ""}</em>
+      </div>
+    `).join("")}
+  `;
+}
+
+function flowStatusLabel(status) {
+  return {
+    active: "正在工作",
+    done: "已完成",
+    error: "已失败"
+  }[status] || "等待";
 }
 
 function renderIdleFlow() {

@@ -524,6 +524,42 @@ textarea:focus {
   gap: 10px;
 }
 
+.current-agent-panel {
+  display: grid;
+  gap: 8px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: var(--shadow);
+}
+
+.current-agent-panel.working {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.current-agent-panel span {
+  width: fit-content;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: #ffffff;
+  background: var(--primary);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.current-agent-panel strong {
+  font-size: 18px;
+}
+
+.current-agent-panel p,
+.current-agent-panel small {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
 .flow-row {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);
