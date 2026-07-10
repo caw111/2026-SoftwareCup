@@ -12,7 +12,13 @@
 
 ## 快速启动
 
-需要本机已安装 Node.js。
+需要本机已安装 Node.js。首次运行先安装依赖：
+
+```bash
+npm install
+```
+
+如果只需要本地规则演示，可以直接启动：
 
 ```bash
 npm run dev
@@ -30,30 +36,81 @@ cmd /c npm run dev
 - 后端健康检查：<http://127.0.0.1:3000/api/health>
 - 大模型连通性测试：<http://127.0.0.1:3000/api/llm-test>
 - 用户数据存储状态：<http://127.0.0.1:3000/api/storage/status>
-- Docker 判题沙箱状态：<http://127.0.0.1:3000/api/judge/status>
+- 判题运行时状态：<http://127.0.0.1:3000/api/judge/status>
 
 ## MySQL 用户数据存储
 
-系统支持把已生成方案、每日进度、练习题、测评结果等工作台状态保存到 MySQL。配置后，后端会自动创建 `workspace_states` 表；未配置 MySQL 时会回退到本地 `data/workspace-state.json`，便于开发演示。
+系统使用 MySQL 8 保存用户、学习方案、每日任务、练习轮次和测评结果。核心业务数据采用关系表，结构可能变化的大模型生成结果使用 JSON 快照。数据库结构由 `database/migrations/` 中的版本化 SQL 管理，不在业务代码中动态建表。
 
-`.env` 示例：
+本地开发可以先启动项目自带的 MySQL：
+
+```bash
+docker compose up -d mysql
+```
+
+在不会提交到 Git 的 `.env.local` 中配置：
 
 ```env
 MYSQL_HOST=127.0.0.1
 MYSQL_PORT=3306
 MYSQL_USER=softwarecup
-MYSQL_PASSWORD=your-password
+MYSQL_PASSWORD=softwarecup-dev
 MYSQL_DATABASE=softwarecup
-WORKSPACE_STATE_KEY=default
+MYSQL_CONNECTION_LIMIT=6
 ```
 
-也可以使用连接串：
+也可以只配置连接串：
 
 ```env
-MYSQL_URL=mysql://softwarecup:your-password@127.0.0.1:3306/softwarecup
+MYSQL_URL=mysql://softwarecup:softwarecup-dev@127.0.0.1:3306/softwarecup
 ```
 
-生产环境建议使用不同的 `WORKSPACE_STATE_KEY` 区分用户、班级或租户；当前原型默认保存一个工作台状态。
+执行迁移并启动：
+
+```bash
+npm run db:migrate
+npm run dev
+```
+
+后端启动时也会检查并补齐尚未执行的迁移。浏览器通过匿名 HttpOnly 会话隔离用户数据；已有浏览器本地工作台会在该用户数据库为空时自动导入一次。未配置 MySQL 时仍可进行本地演示，但不会声称数据已写入数据库。
+
+应用程序不要直接使用 MySQL `root` 账号。推荐单独创建只拥有 `softwarecup` 数据库权限的业务账号，并把真实密码写入已被 Git 忽略的 `.env.local`。
+
+可以随时检查迁移状态：
+
+```bash
+npm run db:status
+```
+
+迁移命令是幂等的，已经成功执行的迁移不会重复执行。不要修改已经执行过的迁移文件；表结构变化应新增更高编号的 SQL 文件。
+
+## 测试与验收
+
+配置 MySQL 后执行：
+
+```bash
+npm run db:migrate
+npm test
+```
+
+自动化测试覆盖：
+
+- 数据库迁移结构和迁移文件校验。
+- 方案创建、读取及用户数据隔离。
+- 每日任务进度和学习笔记持久化。
+- 测评题保存、答案提交、评分结果和历史记录。
+- 标准答案、关键词及隐藏测试用例不会发送给浏览器。
+
+完整回归还应检查：
+
+```text
+GET  /api/health          后端、MySQL 和模型配置
+GET  /api/llm-test        外部大模型连通性
+GET  /api/storage/status  MySQL 存储状态
+GET  /api/judge/status    Docker 或 local-runner 判题状态
+```
+
+本项目已验证以下完整链路：前端资源加载、同步/流式方案生成、方案落库、任务打卡、笔记保存、动态出题、普通题和代码题提交、评分结果回读、学习陪练以及方案删除。测试使用的临时用户和数据会在测试结束后清理。
 
 ## Docker 在线评测
 
@@ -114,8 +171,10 @@ npm run dev
 ## 目录结构
 
 ```text
-backend/   后端 API 服务
+backend/   后端 API、Service、Repository 和数据库连接层
+database/  MySQL 版本化迁移与数据库说明
 frontend/  前端页面
-scripts/   一键启动脚本
+scripts/   启动和数据库迁移脚本
+docker-compose.yml
 package.json
 ```

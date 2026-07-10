@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "node scripts/dev.js",
     "backend": "node backend/server.js",
-    "frontend": "node frontend/server.js"
+    "frontend": "node frontend/server.js",
+    "db:migrate": "node scripts/migrate.js",
+    "db:status": "node scripts/migrate.js --status",
+    "test": "node --test"
   },
   "dependencies": {
     "mysql2": "^3.22.6"

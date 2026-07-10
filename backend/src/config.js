@@ -9,20 +9,26 @@ const SOURCE_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const PROJECT_ROOT = path.resolve(SOURCE_DIR, "..", "..");
 
 function loadEnvFile() {
-  const envPath = path.join(PROJECT_ROOT, ".env");
-  if (!fs.existsSync(envPath)) return;
-
-  const lines = fs.readFileSync(envPath, "utf8").split(/\r?\n/);
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("[")) continue;
-    const separatorIndex = trimmed.indexOf("=");
-    if (separatorIndex === -1) continue;
-    const rawKey = trimmed.slice(0, separatorIndex).trim();
-    const rawValue = trimmed.slice(separatorIndex + 1).trim();
-    const key = normalizeEnvKey(rawKey);
-    const value = rawValue.replace(/^["']|["']$/g, "");
-    if (key && process.env[key] === undefined) process.env[key] = value;
+  const externalKeys = new Set(Object.keys(process.env));
+  for (const filename of [".env", ".env.local"]) {
+    const envPath = path.join(PROJECT_ROOT, filename);
+    if (!fs.existsSync(envPath)) continue;
+    const seenInFile = new Set();
+    const lines = fs.readFileSync(envPath, "utf8").split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("[")) continue;
+      const separatorIndex = trimmed.indexOf("=");
+      if (separatorIndex === -1) continue;
+      const rawKey = trimmed.slice(0, separatorIndex).trim();
+      const rawValue = trimmed.slice(separatorIndex + 1).trim();
+      const key = normalizeEnvKey(rawKey);
+      const value = rawValue.replace(/^["']|["']$/g, "");
+      if (key && !externalKeys.has(key) && !seenInFile.has(key)) {
+        process.env[key] = value;
+        seenInFile.add(key);
+      }
+    }
   }
 }
 
@@ -43,7 +49,12 @@ function normalizeEnvKey(key) {
     mysql_user: "MYSQL_USER",
     mysql_password: "MYSQL_PASSWORD",
     mysql_database: "MYSQL_DATABASE",
+    mysql_connection_limit: "MYSQL_CONNECTION_LIMIT",
     workspace_state_key: "WORKSPACE_STATE_KEY",
+    frontend_origins: "FRONTEND_ORIGINS",
+    session_cookie_name: "SESSION_COOKIE_NAME",
+    session_ttl_days: "SESSION_TTL_DAYS",
+    session_cookie_secure: "SESSION_COOKIE_SECURE",
     container_cli: "CONTAINER_CLI",
     docker_cli: "DOCKER_CLI",
     docker_host: "DOCKER_HOST",
@@ -85,8 +96,21 @@ export const STORAGE_CONFIG = {
   port: Number(process.env.MYSQL_PORT || 3306),
   user: process.env.MYSQL_USER,
   password: process.env.MYSQL_PASSWORD,
-  database: process.env.MYSQL_DATABASE
+  database: process.env.MYSQL_DATABASE,
+  connectionLimit: Number(process.env.MYSQL_CONNECTION_LIMIT || 6)
 };
+
+export const SESSION_CONFIG = {
+  cookieName: process.env.SESSION_COOKIE_NAME || "softwarecup_session",
+  ttlDays: Number(process.env.SESSION_TTL_DAYS || 30),
+  secure: process.env.SESSION_COOKIE_SECURE === "true"
+};
+
+export const FRONTEND_ORIGINS = (process.env.FRONTEND_ORIGINS
+  || "http://127.0.0.1:5173,http://localhost:5173")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
 
 export const MODEL_CONFIG = {
   apiKey: process.env.OPENAI_API_KEY,
