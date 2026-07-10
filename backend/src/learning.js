@@ -8,6 +8,15 @@ import { requestChatCompletion, parseJsonFromModel } from "./llm.js";
 
 import { bootstrapJudgeRuntime, friendlyJudgeError, getJudgeRuntimeStatus } from "./judge.js";
 
+import {
+  buildAdaptiveState,
+  buildDiagnosticPretest,
+  buildGovernanceReport,
+  buildKnowledgeGraph,
+  buildRemediationPlan,
+  buildTeacherAnalytics
+} from "./adaptive-learning.js";
+
 export function normalizeInput(body) {
   return {
     topic: clean(body.topic) || "机器学习基础",
@@ -118,11 +127,33 @@ export async function streamLearningPlan(res, input) {
 
 export function runLocalAgents(input) {
   const learnerProfile = buildLearnerProfile(input);
+  const knowledgeGraph = buildKnowledgeGraph(input, learnerProfile);
+  const diagnosticPretest = buildDiagnosticPretest(input, learnerProfile, knowledgeGraph);
+  const adaptiveState = buildAdaptiveState({ learnerProfile, knowledgeGraph });
   const path = buildLearningPath(input);
   const dailyPlan = buildDailyPlan(input, learnerProfile);
   const assessment = buildAssessment(input, learnerProfile, dailyPlan);
-  const resources = buildResources(input, learnerProfile, assessment);
+  const resources = buildResources(input, learnerProfile, assessment, knowledgeGraph);
   const generationLoop = buildGenerationLoop(input, learnerProfile, path, resources, assessment);
+  const remediationPlan = buildRemediationPlan(input, knowledgeGraph, learnerProfile);
+  const governanceReport = buildGovernanceReport({
+    input,
+    learnerProfile,
+    path,
+    resources,
+    assessment,
+    dailyPlan,
+    knowledgeGraph
+  });
+  const teacherDashboard = buildTeacherAnalytics({
+    input,
+    learnerProfile,
+    dailyPlan,
+    assessment,
+    knowledgeGraph,
+    governanceReport,
+    adaptiveState
+  });
   const resourcePackage = buildResourcePackage(input, learnerProfile, path, resources, assessment, generationLoop);
   const tutorCards = buildTutorCards(input, learnerProfile);
   const profile = {
@@ -134,10 +165,16 @@ export function runLocalAgents(input) {
   return {
     profile,
     learnerProfile,
+    knowledgeGraph,
+    diagnosticPretest,
+    adaptiveState,
     path,
     resources,
     assessment,
     generationLoop,
+    remediationPlan,
+    governanceReport,
+    teacherDashboard,
     resourcePackage,
     dailyPlan,
     tutorCards
@@ -173,6 +210,24 @@ async function runLocalAgentsWithEvents(input, emit) {
     outputOf: (profile) => `识别薄弱维度：${profile.weakestDimensions.map((item) => item.dimension).join("、")}`
   }, () => buildLearnerProfile(input));
 
+  const knowledgeGraph = await runStage({
+    agentId: "knowledge-graph-agent",
+    agent: "知识图谱智能体",
+    action: "把学习主题拆成可诊断、可推荐、可复测的知识节点",
+    input: "学习画像、薄弱维度、学习主题",
+    outputOf: (graph) => `生成 ${graph.concepts.length} 个知识节点和 ${graph.edges.length} 条先修关系`
+  }, () => buildKnowledgeGraph(input, learnerProfile));
+
+  const diagnosticPretest = await runStage({
+    agentId: "diagnostic-pretest-agent",
+    agent: "诊断前测智能体",
+    action: "围绕薄弱知识点生成首轮诊断题",
+    input: "知识图谱、学习画像、薄弱维度",
+    outputOf: (diagnostic) => `生成 ${diagnostic.items.length} 道诊断前测题`
+  }, () => buildDiagnosticPretest(input, learnerProfile, knowledgeGraph));
+
+  const adaptiveState = buildAdaptiveState({ learnerProfile, knowledgeGraph });
+
   const path = await runStage({
     agentId: "planner-agent",
     agent: "路径规划智能体",
@@ -203,7 +258,7 @@ async function runLocalAgentsWithEvents(input, emit) {
     action: "生成讲义、例题、练习和复盘模板",
     input: "路径、任务、测评规则",
     outputOf: (items) => `生成 ${items.length} 类学习资源`
-  }, () => buildResources(input, learnerProfile, assessment));
+  }, () => buildResources(input, learnerProfile, assessment, knowledgeGraph));
 
   const generationLoop = await runStage({
     agentId: "quality-agent",
@@ -212,6 +267,34 @@ async function runLocalAgentsWithEvents(input, emit) {
     input: "画像、路径、资源、测评题",
     outputOf: (loop) => `质量分 ${loop.qualityScore}，数据流 ${loop.flows.length} 条`
   }, () => buildGenerationLoop(input, learnerProfile, path, resources, assessment));
+
+  const remediationPlan = buildRemediationPlan(input, knowledgeGraph, learnerProfile);
+
+  const governanceReport = await runStage({
+    agentId: "governance-agent",
+    agent: "内容治理智能体",
+    action: "检查资源包的知识点绑定、证据来源、答案泄露和测评闭环",
+    input: "知识图谱、资源、测评题、每日任务",
+    outputOf: (report) => `质量分 ${report.score}，风险等级 ${report.riskLevel}`
+  }, () => buildGovernanceReport({
+    input,
+    learnerProfile,
+    path,
+    resources,
+    assessment,
+    dailyPlan,
+    knowledgeGraph
+  }));
+
+  const teacherDashboard = buildTeacherAnalytics({
+    input,
+    learnerProfile,
+    dailyPlan,
+    assessment,
+    knowledgeGraph,
+    governanceReport,
+    adaptiveState
+  });
 
   const resourcePackage = await runStage({
     agentId: "package-agent",
@@ -231,6 +314,9 @@ async function runLocalAgentsWithEvents(input, emit) {
   return {
     profile,
     learnerProfile,
+    knowledgeGraph,
+    diagnosticPretest,
+    adaptiveState,
     path,
     resources,
     assessment,
@@ -238,6 +324,9 @@ async function runLocalAgentsWithEvents(input, emit) {
       ...generationLoop,
       trace
     },
+    remediationPlan,
+    governanceReport,
+    teacherDashboard,
     resourcePackage,
     dailyPlan,
     tutorCards
@@ -319,29 +408,60 @@ function buildLearningPath(input) {
   ];
 }
 
-function buildResources(input, learnerProfile, assessment) {
+function buildResources(input, learnerProfile, assessment, knowledgeGraph) {
   const focus = learnerProfile.weakestDimensions[0].dimension;
+  const concepts = ensureArray(knowledgeGraph?.concepts, []);
+  const focusedConcepts = concepts
+    .filter((concept) => concept.dimension === focus)
+    .concat(concepts)
+    .filter((concept, index, array) => array.findIndex((item) => item.id === concept.id) === index)
+    .slice(0, 6);
+  const grounded = focusedConcepts.map((concept, index) => ({
+    type: index % 2 === 0 ? "知识点微讲义" : "变式练习",
+    conceptId: concept.id,
+    sourceConcepts: [concept.id, ...(concept.prerequisites || [])],
+    title: `${concept.title} ${index % 2 === 0 ? "微讲义" : "变式练习"}`,
+    objective: concept.standard || `掌握 ${concept.title}`,
+    difficulty: concept.difficulty,
+    misconceptions: concept.misconceptions || [],
+    content: index % 2 === 0
+      ? `围绕“${concept.title}”完成定义、适用条件、反例和一个 ${input.topic} 场景解释，重点修正：${(concept.misconceptions || []).slice(0, 2).join("、") || "常见误区"}。`
+      : `完成 2 道与“${concept.title}”相关的变式题，要求写出判断依据、错因标签和复测结果。`
+  }));
   return [
     {
       type: "微讲义",
+      conceptId: focusedConcepts[0]?.id,
+      sourceConcepts: focusedConcepts.slice(0, 3).map((concept) => concept.id),
       title: `${input.topic} 核心概念速览`,
+      objective: "建立主题总览，并连接后续细粒度知识点。",
       content: `按“概念定义-现实类比-关键步骤-易错点”的结构学习 ${input.topic}，每个概念都写出自己的例子。`
     },
     {
       type: "例题讲解",
+      conceptId: focusedConcepts[1]?.id,
+      sourceConcepts: focusedConcepts.slice(0, 4).map((concept) => concept.id),
       title: `${input.topic} 场景化案例`,
+      objective: "把概念迁移到真实问题结构。",
       content: `选择一个熟悉场景，说明 ${input.topic} 如何解决问题，并标出输入、处理、输出和评估方式。`
     },
     {
       type: "进度匹配练习",
+      conceptId: focusedConcepts[2]?.id,
+      sourceConcepts: focusedConcepts.map((concept) => concept.id),
       title: `${focus} 专项选择题组`,
+      objective: "用题目证据更新掌握度。",
       content: `练习会优先覆盖已打卡任务和薄弱维度，当前默认生成 ${assessment.quiz.length} 道选择题。`
     },
     {
       type: "复盘模板",
+      conceptId: focusedConcepts[3]?.id,
+      sourceConcepts: focusedConcepts.map((concept) => concept.id),
       title: "错因记录表",
+      objective: "沉淀错因、提示使用和复测结果。",
       content: "记录错题、卡点、正确思路、下次提醒和需要补学的知识点，用于下一次画像更新。"
-    }
+    },
+    ...grounded
   ];
 }
 
@@ -874,6 +994,19 @@ function applyQuizContext(item, context) {
   return {
     ...item,
     id: `${item.id}-${context.summary.currentDay || 1}-${context.summary.done}-${context.variant || 0}-${context.index}`,
+    conceptId: item.conceptId || slugify(`${item.dimension || "general"}-${item.id}`).slice(0, 80),
+    difficulty: item.difficulty || (item.type === "code" ? 4 : item.type === "short" ? 3 : 2),
+    estimatedTimeSec: item.estimatedTimeSec || (item.type === "code" ? 900 : item.type === "short" ? 240 : 90),
+    hintLadder: item.hintLadder || [
+      "先判断题目考查的知识点。",
+      "再写出适用条件或关键公式。",
+      "最后排除与条件冲突的选项或步骤。"
+    ],
+    scoringSignals: {
+      usesProgress: true,
+      usesMistakeHistory: context.missedDimensions.length > 0,
+      retestRecommendedBelow: 70
+    },
     question: `${progressPrefix}\n${missedText}\n${item.question}`,
     relatedDay: context.summary.currentDay || 1,
     progressContext: {
@@ -931,20 +1064,50 @@ function buildGenerationLoop(input, learnerProfile, path, resources, assessment)
     qualityScore,
     stages: [
       { id: "profile-agent", agent: "学习画像智能体", status: "done", action: "读取表单目标、基础、偏好和薄弱点", input: "用户学习需求", output: `初始画像：${weakest}` },
+      { id: "knowledge-graph-agent", agent: "知识图谱智能体", status: "done", action: "拆解知识节点和先修关系", input: "学习画像与学习主题", output: "形成可诊断、可推荐、可复测的知识图谱" },
+      { id: "diagnostic-pretest-agent", agent: "诊断前测智能体", status: "done", action: "生成首轮诊断题", input: "知识图谱与薄弱维度", output: "形成诊断前测和错因标签" },
       { id: "diagnosis-agent", agent: "知识诊断智能体", status: "done", action: "把薄弱点映射到知识维度", input: "画像与薄弱点文本", output: `优先补救：${learnerProfile.weakestDimensions[0].dimension}` },
       { id: "planner-agent", agent: "路径规划智能体", status: "done", action: "拆分阶段路径和每日任务", input: "诊断结果、周期、每日时间", output: `生成 ${path.length} 个阶段` },
       { id: "resource-agent", agent: "资源生成智能体", status: "done", action: "生成讲义、例题、练习和解析", input: "路径约束与学习偏好", output: `生成 ${resources.length} 类资源` },
       { id: "assessment-agent", agent: "测评评分智能体", status: "done", action: "生成选择题并定义评分规则", input: "资源草案与进度信号", output: `生成 ${assessment.quiz.length} 道选择题` },
+      { id: "governance-agent", agent: "内容治理智能体", status: "done", action: "审查知识点绑定、证据来源和答案泄露风险", input: "资源、测评、图谱与每日任务", output: "形成质量治理报告" },
+      { id: "teacher-agent", agent: "教师分析智能体", status: "done", action: "汇总薄弱知识点和干预建议", input: "掌握度、错因、质量报告", output: "形成教师观察报告" },
       { id: "coach-agent", agent: "学习陪练智能体", status: "done", action: "整合为可追问上下文", input: "方案、资源、测评规则", output: "形成后续答疑上下文" }
     ],
     flows: [
       { from: "用户输入", to: "学习画像智能体", payload: "目标、水平、周期、偏好、薄弱点" },
-      { from: "学习画像智能体", to: "知识诊断智能体", payload: "初始画像、掌握度预估、行为信号" },
+      { from: "学习画像智能体", to: "知识图谱智能体", payload: "初始画像、掌握度预估、薄弱维度" },
+      { from: "知识图谱智能体", to: "诊断前测智能体", payload: "知识节点、先修关系、概念难度" },
+      { from: "诊断前测智能体", to: "知识诊断智能体", payload: "诊断题、错因标签、待测概念" },
       { from: "知识诊断智能体", to: "路径规划智能体", payload: "薄弱维度和补救优先级" },
       { from: "路径规划智能体", to: "资源生成智能体", payload: "阶段路径、每日任务约束" },
       { from: "资源生成智能体", to: "测评评分智能体", payload: "讲义、例题、练习知识点" },
+      { from: "测评评分智能体", to: "内容治理智能体", payload: "题目、标准答案、解析和安全边界" },
+      { from: "内容治理智能体", to: "教师分析智能体", payload: "质量评分、风险项和可干预知识点" },
       { from: "测评评分智能体", to: "学习画像智能体", payload: "得分、错因、维度证据" },
       { from: "学习画像智能体", to: "学习陪练智能体", payload: "更新后的画像和下一步建议" }
+    ],
+    artifacts: [
+      { id: "learner-profile-v1", owner: "学习画像智能体", type: "profile", version: 1, status: "accepted", reviewers: ["知识诊断智能体"] },
+      { id: "knowledge-graph-v1", owner: "知识图谱智能体", type: "concept-graph", version: 1, status: "accepted", reviewers: ["诊断前测智能体", "内容治理智能体"] },
+      { id: "diagnostic-pretest-v1", owner: "诊断前测智能体", type: "assessment", version: 1, status: "accepted", reviewers: ["内容治理智能体"] },
+      { id: "daily-plan-v1", owner: "路径规划智能体", type: "plan", version: 1, status: "accepted", reviewers: ["资源生成智能体"] },
+      { id: "resource-pack-v1", owner: "资源生成智能体", type: "resources", version: 1, status: "needs-review", reviewers: ["内容治理智能体", "教师分析智能体"] },
+      { id: "quality-report-v1", owner: "内容治理智能体", type: "governance", version: 1, status: "accepted", reviewers: ["教师分析智能体"] }
+    ],
+    revisionCycles: [
+      {
+        round: 1,
+        reviewer: "内容治理智能体",
+        issue: "检查题目答案、知识点绑定、难度梯度和泄题风险。",
+        decision: "通过基础质量门禁；若教师端发现风险，可退回资源生成智能体重写。"
+      },
+      {
+        round: 2,
+        reviewer: "教师分析智能体",
+        issue: "根据薄弱知识点确认补救作业是否可下发。",
+        decision: "生成作业包、分组建议和干预队列。"
+      }
     ],
     review: {
       passed: qualityScore >= 80,
@@ -1053,7 +1216,22 @@ function mergeLearningPlan(localPlan, llmPlan) {
 }
 
 function pickKnownPlanFields(plan) {
-  const fields = ["learnerProfile", "path", "resources", "assessment", "generationLoop", "resourcePackage", "dailyPlan", "tutorCards"];
+  const fields = [
+    "learnerProfile",
+    "knowledgeGraph",
+    "diagnosticPretest",
+    "adaptiveState",
+    "path",
+    "resources",
+    "assessment",
+    "generationLoop",
+    "remediationPlan",
+    "governanceReport",
+    "teacherDashboard",
+    "resourcePackage",
+    "dailyPlan",
+    "tutorCards"
+  ];
   return Object.fromEntries(fields.filter((field) => plan?.[field]).map((field) => [field, plan[field]]));
 }
 
@@ -1061,10 +1239,16 @@ function normalizePlanShape(plan, fallback) {
   return {
     ...plan,
     learnerProfile: normalizeLearnerProfile(plan.learnerProfile, fallback.learnerProfile),
+    knowledgeGraph: normalizeKnowledgeGraph(plan.knowledgeGraph, fallback.knowledgeGraph),
+    diagnosticPretest: normalizeDiagnosticPretest(plan.diagnosticPretest, fallback.diagnosticPretest),
+    adaptiveState: plan.adaptiveState || fallback.adaptiveState,
     path: ensureArray(plan.path, fallback.path),
     resources: ensureArray(plan.resources, fallback.resources),
     assessment: normalizeAssessment(plan.assessment, fallback.assessment),
     generationLoop: normalizeGenerationLoop(plan.generationLoop, fallback.generationLoop),
+    remediationPlan: plan.remediationPlan || fallback.remediationPlan,
+    governanceReport: plan.governanceReport || fallback.governanceReport,
+    teacherDashboard: plan.teacherDashboard || fallback.teacherDashboard,
     resourcePackage: plan.resourcePackage || fallback.resourcePackage,
     dailyPlan: ensureArray(plan.dailyPlan, fallback.dailyPlan),
     tutorCards: ensureArray(plan.tutorCards, fallback.tutorCards)
@@ -1081,6 +1265,26 @@ function normalizeLearnerProfile(profile, fallback) {
     tags: ensureArray(profile.tags, fallback.tags),
     behaviorSignals: ensureArray(profile.behaviorSignals, fallback.behaviorSignals),
     strategyPriorities: ensureArray(profile.strategyPriorities, fallback.strategyPriorities)
+  };
+}
+
+function normalizeKnowledgeGraph(graph, fallback) {
+  if (!graph) return fallback;
+  return {
+    ...fallback,
+    ...graph,
+    dimensions: ensureArray(graph.dimensions, fallback.dimensions),
+    concepts: ensureArray(graph.concepts, fallback.concepts),
+    edges: ensureArray(graph.edges, fallback.edges)
+  };
+}
+
+function normalizeDiagnosticPretest(diagnostic, fallback) {
+  if (!diagnostic) return fallback;
+  return {
+    ...fallback,
+    ...diagnostic,
+    items: ensureArray(diagnostic.items, fallback.items)
   };
 }
 

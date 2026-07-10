@@ -26,6 +26,7 @@ import {
   importLegacyWorkspaceForUser,
   resetPlanProgressForUser,
   setActivePlanForUser,
+  updatePlanContentForUser,
   updatePlanNotesForUser,
   updateTaskProgressForUser
 } from "./src/services/plan-service.js";
@@ -36,6 +37,7 @@ import {
 import { requireUserSession } from "./src/services/session-service.js";
 import { getStorageStatus, readWorkspaceState, writeWorkspaceState, storagePublicConfig } from "./src/storage.js";
 import { clean, ensureArray } from "./src/utils.js";
+import { evaluateDiagnosticPretest } from "./src/adaptive-learning.js";
 import { migrateDatabase } from "../scripts/migrate.js";
 
 const server = http.createServer(async (req, res) => {
@@ -143,6 +145,18 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const contentMatch = url.pathname.match(/^\/api\/plans\/([^/]+)\/content$/);
+    if (req.method === "PATCH" && contentMatch) {
+      const session = await databaseSession(req, res);
+      const body = await readJson(req);
+      sendJson(
+        res,
+        200,
+        await updatePlanContentForUser(session.userId, decodePart(contentMatch[1]), body)
+      );
+      return;
+    }
+
     const taskMatch = url.pathname.match(/^\/api\/plans\/([^/]+)\/tasks\/([^/]+)$/);
     if (req.method === "PATCH" && taskMatch) {
       const session = await databaseSession(req, res);
@@ -195,6 +209,13 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/generate-stream") {
       const input = normalizeInput(await readJson(req));
       await streamLearningPlan(res, input);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/diagnostic/evaluate") {
+      const body = await readJson(req);
+      const result = evaluateDiagnosticPretest(body.plan || {}, body.answers || {});
+      sendJson(res, 200, result);
       return;
     }
 
@@ -256,7 +277,10 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const result = await answerTutorQuestion({
         question: clean(body.question, 1000),
-        context: clean(body.context, 5000)
+        context: clean(body.context, 5000),
+        mode: clean(body.mode, 30),
+        hintLevel: Number(body.hintLevel || 1),
+        history: ensureArray(body.history, []).slice(-8)
       });
       sendJson(res, 200, result);
       return;

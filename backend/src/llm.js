@@ -11,20 +11,62 @@ export function parseJsonFromModel(content) {
   return JSON.parse(jsonText);
 }
 
-export async function answerTutorQuestion({ question, context }) {
+export async function answerTutorQuestion({ question, context, mode = "hint", hintLevel = 1, history = [] }) {
   if (!question) return { answer: "请先输入你的问题。", mode: "local" };
+  const tutorMode = normalizeTutorMode(mode);
+  const level = Math.max(1, Math.min(4, Number(hintLevel || 1)));
+  const recentHistory = Array.isArray(history) ? history.slice(-6) : [];
   if (!MODEL_CONFIG.apiKey) {
     return {
-      answer: `你可以先把问题拆成“我不懂的概念、我做错的步骤、我下一步要做什么”。当前问题是：${question}`,
-      mode: "local"
+      answer: buildLocalTutorAnswer(question, tutorMode, level, recentHistory),
+      mode: "local",
+      tutorMode,
+      hintLevel: level
     };
   }
 
   const answer = await requestChatCompletion([
-    { role: "system", content: "你是耐心的中文学习陪练。回答要具体、短、可执行，不要替学生跳过思考。" },
-    { role: "user", content: `学习上下文：${context || "暂无"}\n\n学生问题：${question}` }
+    { role: "system", content: tutorSystemPrompt(tutorMode, level) },
+    { role: "user", content: `学习上下文：${context || "暂无"}\n\n最近对话：${JSON.stringify(recentHistory)}\n\n学生问题：${question}` }
   ], { temperature: 0.5, maxTokens: 900 });
-  return { answer, mode: "llm" };
+  return { answer, mode: "llm", tutorMode, hintLevel: level };
+}
+
+function normalizeTutorMode(mode) {
+  return ["hint", "inquiry", "explain"].includes(mode) ? mode : "hint";
+}
+
+function tutorSystemPrompt(mode, hintLevel) {
+  const hintPolicy = [
+    "只给方向，不给关键步骤。",
+    "给出关键条件和排除思路。",
+    "给出半成品步骤，让学生补全。",
+    "可以给完整讲解，但必须最后要求学生用自己的话复述。"
+  ][Math.max(1, Math.min(4, hintLevel)) - 1];
+  if (mode === "inquiry") {
+    return `你是中文学习陪练，采用苏格拉底式追问。先判断学生卡点，再提出2-3个具体问题，不直接给最终答案。提示层级要求：${hintPolicy}`;
+  }
+  if (mode === "explain") {
+    return `你是中文学习陪练，可以给出清晰讲解，但必须包含概念边界、一个例子和一个让学生自检的小问题。提示层级要求：${hintPolicy}`;
+  }
+  return `你是中文学习陪练。优先给分层提示，避免直接跳到最终答案。提示层级要求：${hintPolicy}`;
+}
+
+function buildLocalTutorAnswer(question, mode, hintLevel, history) {
+  const memory = history.length ? `我会结合你刚才的 ${history.length} 轮追问继续推进。` : "我会先从当前问题建立上下文。";
+  const ladder = {
+    1: "提示 1：先判断它考查哪个知识点，暂时不要算最终答案。",
+    2: "提示 2：写出适用条件，再排除一个明显不符合的选项或步骤。",
+    3: "提示 3：我给你半成品路径：概念 -> 条件 -> 例子 -> 自检，你补中间判断。",
+    4: "提示 4：可以看完整讲解，但看完要用自己的话复述一遍。"
+  }[hintLevel] || "提示 1：先定位知识点。";
+  if (mode === "inquiry") {
+    return `${memory}${ladder} 你先回答三个问题：1. 卡住的是概念、步骤还是应用场景？2. 题目要求的输入、输出和约束分别是什么？3. 你已经尝试到哪一步？当前问题是：${question}`;
+  }
+  if (mode === "explain") {
+    return `${memory}${ladder} 可以按“定义-边界-例子-自检”理解：先写核心概念，再说明什么时候适用，接着举例，最后做一道变式题。当前问题是：${question}`;
+  }
+  return `${memory}${ladder} 把问题拆成“我不懂的概念、我做错的步骤、我下一步要做什么”。先写出你认为最关键的一步，再回来对照。当前问题是：${question}`;
 }
 
 export async function testLargeModelConnection() {

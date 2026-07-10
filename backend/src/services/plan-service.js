@@ -7,6 +7,7 @@ import {
   resetPlanProgressRecord,
   setActivePlanRecord,
   softDeletePlanRecord,
+  updatePlanContentRecord,
   updatePlanNotesRecord,
   updateTaskProgressRecord
 } from "../repositories/plan-repository.js";
@@ -53,6 +54,19 @@ export async function updatePlanNotesForUser(userId, planId, notes) {
   const ok = await updatePlanNotesRecord(userId, planId, normalizedNotes);
   if (!ok) throw notFound("学习方案不存在");
   return { ok: true, notes: normalizedNotes };
+}
+
+export async function updatePlanContentForUser(userId, planId, payload) {
+  const data = payload?.data && typeof payload.data === "object" ? payload.data : null;
+  if (!data) {
+    const error = new Error("方案内容不能为空");
+    error.statusCode = 400;
+    throw error;
+  }
+  const masteryEvidence = Array.isArray(payload?.masteryEvidence) ? payload.masteryEvidence : undefined;
+  const ok = await updatePlanContentRecord(userId, planId, { data, masteryEvidence });
+  if (!ok) throw notFound("学习方案不存在");
+  return { ok: true, data, masteryEvidence };
 }
 
 export async function updateTaskProgressForUser(userId, planId, taskKey, completed) {

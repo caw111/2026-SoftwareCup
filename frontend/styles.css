@@ -360,6 +360,12 @@ textarea:focus {
   gap: 14px;
 }
 
+.agent-artifact-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
 .plan-card {
   display: flex;
   align-items: flex-start;
@@ -482,6 +488,95 @@ textarea:focus {
   padding: 18px;
 }
 
+.diagnostic-board,
+.remediation-board,
+.governance-board,
+.teacher-board {
+  display: grid;
+  gap: 14px;
+}
+
+.diagnostic-summary,
+.remediation-head,
+.governance-summary,
+.teacher-summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: var(--shadow);
+}
+
+.diagnostic-summary strong,
+.remediation-head strong,
+.governance-summary strong,
+.teacher-summary strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 18px;
+}
+
+.diagnostic-summary p,
+.remediation-head p,
+.governance-summary p,
+.teacher-summary p {
+  margin-bottom: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.score-badge {
+  display: grid;
+  min-width: 64px;
+  height: 64px;
+  place-items: center;
+  border-radius: 8px;
+  color: #ffffff;
+  background: var(--accent);
+  font-size: 20px;
+  font-weight: 900;
+}
+
+.score-badge.muted {
+  color: #475569;
+  background: #e2e8f0;
+}
+
+.diagnostic-list,
+.remediation-steps,
+.teacher-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.diagnostic-item,
+.remediation-step {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: var(--shadow);
+}
+
+.diagnostic-item h3 {
+  margin-bottom: 12px;
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+.ok-feedback {
+  background: #ecfdf5;
+}
+
+.warn-feedback {
+  background: #fff7ed;
+}
+
 .result-card {
   padding: 20px;
 }
@@ -520,6 +615,113 @@ textarea:focus {
   background: #ccfbf1;
   font-size: 12px;
   font-weight: 700;
+}
+
+.warning-tag {
+  color: #92400e;
+  background: #fef3c7;
+}
+
+.concept-grid,
+.weak-concept-list,
+.check-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.concept-card,
+.weak-concept-list div,
+.check-list div,
+.assignment-item {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.concept-card span,
+.weak-concept-list span,
+.check-list span {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.concept-card meter {
+  width: 100%;
+}
+
+.concept-card small,
+.weak-concept-list small,
+.check-list small,
+.assignment-item small,
+.remediation-step small {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.remediation-step {
+  position: relative;
+  padding-left: 52px;
+}
+
+.remediation-step > span {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 50%;
+  color: #ffffff;
+  background: var(--primary);
+  font-weight: 800;
+}
+
+.remediation-step p {
+  color: #334155;
+  line-height: 1.6;
+}
+
+.check-list div.passed span {
+  color: var(--ok);
+}
+
+.check-list div.failed {
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+
+.plain-list {
+  margin: 0;
+  padding-left: 20px;
+  color: #334155;
+  line-height: 1.7;
+}
+
+.teacher-table {
+  display: grid;
+  gap: 8px;
+}
+
+.teacher-table div {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) repeat(3, minmax(120px, 1fr));
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.teacher-table span {
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .mastery-list {
@@ -927,7 +1129,14 @@ textarea:focus {
   .workspace-grid,
   .daily-grid,
   .result-grid,
-  .agent-node-grid {
+  .agent-node-grid,
+  .agent-artifact-list,
+  .diagnostic-list,
+  .remediation-steps,
+  .teacher-grid,
+  .concept-grid,
+  .weak-concept-list,
+  .check-list {
     grid-template-columns: 1fr;
   }
 }
@@ -956,6 +1165,10 @@ textarea:focus {
   .section-heading,
   .plan-card,
   .daily-overview,
+  .diagnostic-summary,
+  .remediation-head,
+  .governance-summary,
+  .teacher-summary,
   .data-flow-item {
     display: grid;
   }
@@ -981,6 +1194,10 @@ textarea:focus {
   }
 
   .data-flow-item {
+    grid-template-columns: 1fr;
+  }
+
+  .teacher-table div {
     grid-template-columns: 1fr;
   }
 

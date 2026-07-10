@@ -41,7 +41,7 @@ export async function migrateDatabase({ log = console.log } = {}) {
     for (const filename of files) {
       const version = filename.match(/^(\d+)/)?.[1];
       const sql = fs.readFileSync(path.join(MIGRATION_DIR, filename), "utf8");
-      const checksum = crypto.createHash("sha256").update(sql).digest("hex");
+      const checksum = migrationChecksum(sql);
       const previous = applied.get(version);
       if (previous) {
         if (previous.filename !== filename || previous.checksum !== checksum) {
@@ -84,6 +84,16 @@ export function splitSqlStatements(sql) {
     .split(/;\s*(?:\r?\n|$)/)
     .map((statement) => statement.trim())
     .filter(Boolean);
+}
+
+export function migrationChecksum(sql) {
+  return crypto.createHash("sha256")
+    .update(normalizeMigrationSql(sql))
+    .digest("hex");
+}
+
+function normalizeMigrationSql(sql) {
+  return String(sql).replace(/\r\n?/g, "\n");
 }
 
 const invokedDirectly = process.argv[1]

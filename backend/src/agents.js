@@ -10,6 +10,16 @@ export const agents = [
     role: "把薄弱点、打卡进度、错题原因映射到知识维度，输出下一轮补救优先级。"
   },
   {
+    id: "knowledge-graph-agent",
+    name: "知识图谱智能体",
+    role: "把学习主题拆成知识点、先修关系、难度和资源绑定，支撑诊断、推荐与复测。"
+  },
+  {
+    id: "diagnostic-pretest-agent",
+    name: "诊断前测智能体",
+    role: "根据知识图谱和薄弱维度生成前测题，记录概念掌握证据和错因标签。"
+  },
+  {
     id: "planner-agent",
     name: "路径规划智能体",
     role: "根据画像和诊断结果拆解阶段目标，生成每日任务和复习节奏。"
@@ -23,6 +33,16 @@ export const agents = [
     id: "assessment-agent",
     name: "测评评分智能体",
     role: "根据用户答案自动评分，选择题即时判分，代码题可调用 Docker 沙箱运行测试。"
+  },
+  {
+    id: "governance-agent",
+    name: "内容治理智能体",
+    role: "检查生成资源的知识点绑定、答案一致性、难度匹配、泄题风险和安全边界。"
+  },
+  {
+    id: "teacher-agent",
+    name: "教师分析智能体",
+    role: "汇总学习风险、薄弱知识点、补救作业和班级/个人观察报告，服务教师干预。"
   },
   {
     id: "coach-agent",

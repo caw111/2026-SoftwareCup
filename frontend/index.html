@@ -21,8 +21,12 @@
           <a class="nav-link active" href="#home" data-view="home">生成方案首页</a>
           <a class="nav-link" href="#plans" data-view="plans">已生成方案</a>
           <a class="nav-link" href="#daily" data-view="daily">每日学习</a>
+          <a class="nav-link" href="#diagnostic" data-view="diagnostic">诊断前测</a>
           <a class="nav-link" href="#knowledge" data-view="knowledge">知识掌握</a>
+          <a class="nav-link" href="#remediation" data-view="remediation">补救推荐</a>
           <a class="nav-link" href="#practice" data-view="practice">练习测评</a>
+          <a class="nav-link" href="#governance" data-view="governance">质量治理</a>
+          <a class="nav-link" href="#teacher" data-view="teacher">教师端</a>
           <a class="nav-link" href="#agents" data-view="agents">Agent 协作</a>
           <a class="nav-link" href="#coach" data-view="coach">AI 导师</a>
         </nav>
@@ -162,6 +166,19 @@
           </div>
         </section>
 
+        <section id="diagnostic" class="view">
+          <div class="section-heading">
+            <div>
+              <h2>诊断前测</h2>
+              <p>先测知识状态，再决定补救路径和后续出题难度。</p>
+            </div>
+            <span id="diagnosticMode">等待方案</span>
+          </div>
+          <div id="diagnosticPanel" class="empty-state">
+            <p>生成或选择学习方案后，这里会出现前测题。</p>
+          </div>
+        </section>
+
         <section id="knowledge" class="view">
           <div class="section-heading">
             <div>
@@ -172,6 +189,19 @@
           </div>
           <div id="knowledgePanel" class="result-grid empty-state">
             <p>完成打卡或测评后会出现掌握度证据。</p>
+          </div>
+        </section>
+
+        <section id="remediation" class="view">
+          <div class="section-heading">
+            <div>
+              <h2>补救推荐</h2>
+              <p>根据诊断、错因和掌握度生成“讲解-例题-变式-复测”路径。</p>
+            </div>
+            <span id="remediationMode">等待诊断</span>
+          </div>
+          <div id="remediationPanel" class="empty-state">
+            <p>完成诊断或测评后会出现补救建议。</p>
           </div>
         </section>
 
@@ -188,6 +218,32 @@
           </div>
           <div id="practicePanel" class="empty-state">
             <p>先生成方案并完成部分每日任务，再开始测评。</p>
+          </div>
+        </section>
+
+        <section id="governance" class="view">
+          <div class="section-heading">
+            <div>
+              <h2>质量治理</h2>
+              <p>检查资源绑定、评分闭环、答案泄露和教学安全边界。</p>
+            </div>
+            <span id="governanceMode">等待方案</span>
+          </div>
+          <div id="governancePanel" class="empty-state">
+            <p>生成方案后会出现内容治理报告。</p>
+          </div>
+        </section>
+
+        <section id="teacher" class="view">
+          <div class="section-heading">
+            <div>
+              <h2>教师端</h2>
+              <p>面向教师查看薄弱知识点、风险预警和可下发补救作业。</p>
+            </div>
+            <span id="teacherMode">等待学习数据</span>
+          </div>
+          <div id="teacherPanel" class="empty-state">
+            <p>生成方案后会出现教师观察报告。</p>
           </div>
         </section>
 
@@ -212,6 +268,23 @@
             <span id="coachMode">等待学习上下文</span>
           </div>
           <div class="panel coach-panel">
+            <label>
+              导师模式
+              <select id="tutorMode">
+                <option value="hint" selected>分层提示</option>
+                <option value="inquiry">追问引导</option>
+                <option value="explain">讲解巩固</option>
+              </select>
+            </label>
+            <label>
+              提示层级
+              <select id="hintLevel">
+                <option value="1" selected>只给方向</option>
+                <option value="2">给关键条件</option>
+                <option value="3">给半成品步骤</option>
+                <option value="4">完整讲解后复述</option>
+              </select>
+            </label>
             <textarea id="coachQuestion" rows="3" placeholder="例如：我还是不懂模型训练流程，请结合今天的任务讲一遍"></textarea>
             <button id="coachButton" class="primary-button" type="button">问 AI 导师</button>
             <div id="coachAnswer" class="coach-answer">生成学习方案后，可以基于当前学习上下文继续追问。</div>

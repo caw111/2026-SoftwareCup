@@ -38,6 +38,10 @@ export async function createPlanRecord(userId, plan) {
       );
     }
 
+    await upsertConceptMastery(connection, userId, plan.id, plan.data?.adaptiveState?.concepts || []);
+    await insertContentReview(connection, userId, plan.id, plan.data?.governanceReport);
+    await insertTeacherReport(connection, userId, plan.id, plan.data?.teacherDashboard);
+
     await connection.execute(
       `INSERT INTO user_workspaces (user_id, active_plan_id)
        VALUES (?, ?)
@@ -188,6 +192,29 @@ export async function updatePlanNotesRecord(userId, planId, notes) {
   return result.affectedRows > 0;
 }
 
+export async function updatePlanContentRecord(userId, planId, payload) {
+  return withTransaction(async (connection) => {
+    const assignments = ["content_json = ?", "version = version + 1"];
+    const values = [JSON.stringify(payload.data || {})];
+    if (Array.isArray(payload.masteryEvidence)) {
+      assignments.unshift("mastery_evidence_json = ?");
+      values.unshift(JSON.stringify(payload.masteryEvidence));
+    }
+    const [result] = await connection.execute(
+      `UPDATE learning_plans
+          SET ${assignments.join(", ")}
+        WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
+      [...values, planId, userId]
+    );
+    if (!result.affectedRows) return false;
+
+    await upsertConceptMastery(connection, userId, planId, payload.data?.adaptiveState?.concepts || []);
+    await insertContentReview(connection, userId, planId, payload.data?.governanceReport);
+    await insertTeacherReport(connection, userId, planId, payload.data?.teacherDashboard);
+    return true;
+  });
+}
+
 export async function updateTaskProgressRecord(userId, planId, taskKey, completed) {
   const [result] = await getDatabasePool().execute(
     `UPDATE plan_tasks t
@@ -212,6 +239,61 @@ export async function resetPlanProgressRecord(userId, planId) {
     [planId, userId]
   );
   return result.affectedRows;
+}
+
+async function upsertConceptMastery(connection, userId, planId, concepts) {
+  for (const concept of concepts) {
+    await connection.execute(
+      `INSERT INTO concept_mastery
+         (user_id, plan_id, concept_id, concept_name, dimension, mastery_score, evidence_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         concept_name = VALUES(concept_name),
+         dimension = VALUES(dimension),
+         mastery_score = VALUES(mastery_score),
+         evidence_json = VALUES(evidence_json),
+         updated_at = CURRENT_TIMESTAMP(3)`,
+      [
+        userId,
+        planId,
+        String(concept.conceptId || concept.id || "").slice(0, 120),
+        String(concept.title || concept.conceptTitle || "").slice(0, 255),
+        String(concept.dimension || "").slice(0, 100),
+        Number(concept.masteryScore || concept.score || 0),
+        JSON.stringify({
+          evidence: concept.evidence || "",
+          source: concept.source || "adaptive-state"
+        })
+      ]
+    );
+  }
+}
+
+async function insertContentReview(connection, userId, planId, report) {
+  if (!report || typeof report !== "object") return;
+  await connection.execute(
+    `INSERT INTO content_reviews
+       (user_id, plan_id, reviewer_agent, risk_level, quality_score, checks_json)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      userId,
+      planId,
+      String(report.agent || "内容治理智能体").slice(0, 100),
+      String(report.riskLevel || "unknown").slice(0, 20),
+      Number(report.score || 0),
+      JSON.stringify(report.checks || [])
+    ]
+  );
+}
+
+async function insertTeacherReport(connection, userId, planId, report) {
+  if (!report || typeof report !== "object") return;
+  await connection.execute(
+    `INSERT INTO teacher_reports
+       (user_id, plan_id, report_json)
+     VALUES (?, ?, ?)`,
+    [userId, planId, JSON.stringify(report)]
+  );
 }
 
 function extractTasks(plan) {

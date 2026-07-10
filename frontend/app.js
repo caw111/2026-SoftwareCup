@@ -28,9 +28,19 @@ const els = {
   generationFlow: document.querySelector("#generationFlow"),
   knowledgePanel: document.querySelector("#knowledgePanel"),
   masteryMode: document.querySelector("#masteryMode"),
+  diagnosticPanel: document.querySelector("#diagnosticPanel"),
+  diagnosticMode: document.querySelector("#diagnosticMode"),
+  remediationPanel: document.querySelector("#remediationPanel"),
+  remediationMode: document.querySelector("#remediationMode"),
   practicePanel: document.querySelector("#practicePanel"),
   regenerateQuizButton: document.querySelector("#regenerateQuizButton"),
-  judgeStatus: document.querySelector("#judgeStatus")
+  judgeStatus: document.querySelector("#judgeStatus"),
+  governancePanel: document.querySelector("#governancePanel"),
+  governanceMode: document.querySelector("#governanceMode"),
+  teacherPanel: document.querySelector("#teacherPanel"),
+  teacherMode: document.querySelector("#teacherMode"),
+  tutorMode: document.querySelector("#tutorMode"),
+  hintLevel: document.querySelector("#hintLevel")
 };
 
 els.healthButton.addEventListener("click", checkHealth);
@@ -225,8 +235,12 @@ function normalizeNewPlan(data) {
 function renderAll() {
   renderSavedPlans();
   renderDailyPlan();
+  renderDiagnostic();
   renderKnowledge();
+  renderRemediation();
   renderPractice();
+  renderGovernance();
+  renderTeacher();
   renderAgents();
 }
 
@@ -460,6 +474,129 @@ function resetProgress() {
   renderAll();
 }
 
+function renderDiagnostic() {
+  const plan = getCurrentPlan();
+  const diagnostic = plan?.data?.diagnosticPretest;
+  if (!plan || !diagnostic?.items?.length) {
+    els.diagnosticPanel.className = "empty-state";
+    els.diagnosticPanel.innerHTML = "<p>生成或选择学习方案后，这里会出现诊断前测。</p>";
+    els.diagnosticMode.textContent = "等待方案";
+    return;
+  }
+
+  const result = plan.data.diagnosticResult;
+  state.diagnosticStartedAt = state.diagnosticStartedAt || {};
+  state.diagnosticStartedAt[plan.id] = state.diagnosticStartedAt[plan.id] || Date.now();
+  els.diagnosticMode.textContent = result
+    ? `最近诊断 ${result.score}/${result.maxScore} · ${result.percent}% · 能力 ${result.abilityEstimate ?? 0}`
+    : "尚未完成诊断";
+  els.diagnosticPanel.className = "diagnostic-board";
+  els.diagnosticPanel.innerHTML = `
+    <section class="diagnostic-summary">
+      <div>
+        <strong>${escapeHtml(diagnostic.title)}</strong>
+        <p>${escapeHtml(diagnostic.objective || "")}</p>
+      </div>
+      ${result ? `<span class="score-badge">${result.percent}%</span>` : "<span class=\"score-badge muted\">待测</span>"}
+    </section>
+    <div class="diagnostic-list">
+      ${diagnostic.items.map((item, index) => renderDiagnosticItem(item, index, result)).join("")}
+    </div>
+    <button id="submitDiagnosticButton" class="primary-button" type="button">提交诊断并更新画像</button>
+  `;
+  els.diagnosticPanel.querySelector("#submitDiagnosticButton").addEventListener("click", evaluateDiagnostic);
+}
+
+function renderDiagnosticItem(item, index, result) {
+  const last = result?.results?.find((row) => row.questionId === item.id);
+  const selectedIndex = last?.selectedIndex;
+  return `
+    <article class="diagnostic-item">
+      <div class="quiz-head">
+        <span>诊断 ${index + 1} · ${escapeHtml(item.dimension)}</span>
+        <span>${escapeHtml(item.conceptTitle || "")} · 难度 ${Number(item.difficulty || 1)} · ${Number(item.timeLimitSec || 90)} 秒</span>
+      </div>
+      <h3>${escapeHtml(item.question)}</h3>
+      <div class="option-list">
+        ${(item.options || []).map((option, optionIndex) => `
+          <label class="option-item">
+            <input type="radio" name="diagnostic-${escapeHtml(item.id)}" value="${optionIndex}" ${selectedIndex === optionIndex ? "checked" : ""} />
+            <span>${escapeHtml(option)}</span>
+          </label>
+        `).join("")}
+      </div>
+      ${last ? `
+        <div class="feedback ${last.correct ? "ok-feedback" : "warn-feedback"}">
+          ${last.correct ? "诊断正确。" : "诊断未通过。"}${escapeHtml(last.explanation || "")}
+        </div>
+      ` : ""}
+    </article>
+  `;
+}
+
+async function evaluateDiagnostic() {
+  const plan = getCurrentPlan();
+  if (!plan?.data?.diagnosticPretest?.items?.length) return;
+  const answers = {};
+  const startedAt = state.diagnosticStartedAt?.[plan.id] || Date.now();
+  const elapsed = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+  const perQuestionSeconds = Math.max(1, Math.round(elapsed / plan.data.diagnosticPretest.items.length));
+  for (const item of plan.data.diagnosticPretest.items) {
+    const selected = els.diagnosticPanel.querySelector(`input[name="diagnostic-${cssEscape(item.id)}"]:checked`);
+    if (selected) {
+      answers[item.id] = {
+        selectedIndex: Number(selected.value),
+        timeSpentSec: perQuestionSeconds,
+        hintCount: 0
+      };
+    }
+  }
+  if (Object.keys(answers).length !== plan.data.diagnosticPretest.items.length) {
+    els.diagnosticMode.textContent = "请先完成全部诊断题";
+    return;
+  }
+
+  const button = els.diagnosticPanel.querySelector("#submitDiagnosticButton");
+  button.disabled = true;
+  button.textContent = "诊断评分中";
+  try {
+    const result = await request("/api/diagnostic/evaluate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ plan: plan.data, answers })
+    });
+    plan.data.diagnosticResult = result;
+    plan.data.adaptiveState = result.adaptiveState;
+    plan.data.remediationPlan = result.remediationPlan;
+    plan.masteryEvidence = plan.masteryEvidence || [];
+    plan.masteryEvidence.push({
+      type: "diagnostic",
+      score: result.score,
+      maxScore: result.maxScore,
+      percent: result.percent,
+      at: result.evaluatedAt
+    });
+    saveState();
+    if (state.databaseReady) {
+      await request(`/api/plans/${encodeURIComponent(plan.id)}/content`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data: plan.data, masteryEvidence: plan.masteryEvidence })
+      });
+    }
+    renderDiagnostic();
+    renderKnowledge();
+    renderRemediation();
+    renderTeacher();
+    setView("knowledge");
+  } catch (error) {
+    els.diagnosticMode.textContent = `诊断失败：${error.message}`;
+  } finally {
+    button.disabled = false;
+    button.textContent = "提交诊断并更新画像";
+  }
+}
+
 function renderKnowledge() {
   const plan = getCurrentPlan();
   if (!plan) {
@@ -471,13 +608,15 @@ function renderKnowledge() {
 
   const mastery = computeMastery(plan);
   const summary = progressSummaryFor(plan);
-  els.masteryMode.textContent = `基于 ${summary.done} 项打卡和 ${Object.keys(state.quizResults || {}).length} 道测评`;
+  const concepts = plan.data?.adaptiveState?.concepts || plan.data?.knowledgeGraph?.concepts || [];
+  const diagnosticText = plan.data?.diagnosticResult ? `，诊断 ${plan.data.diagnosticResult.percent}%` : "";
+  els.masteryMode.textContent = `基于 ${summary.done} 项打卡、${Object.keys(state.quizResults || {}).length} 道测评${diagnosticText}`;
   els.knowledgePanel.className = "result-grid";
   els.knowledgePanel.innerHTML = `
     <article class="result-card radar-card">
       <h3>知识点掌握雷达图</h3>
       <canvas id="masteryRadar" width="360" height="300" aria-label="知识点掌握雷达图"></canvas>
-      <p class="hint-text">初始值来自自评；打卡提供学习证据，测评正确率提供掌握证据。</p>
+      <p class="hint-text">初始值来自自评；诊断、打卡和测评会共同更新掌握度证据。</p>
     </article>
     <article class="result-card">
       <h3>掌握度证据</h3>
@@ -492,6 +631,27 @@ function renderKnowledge() {
       </div>
     </article>
     <article class="result-card full">
+      <h3>知识图谱与先修关系</h3>
+      <div class="concept-grid">
+        ${concepts.map((concept) => `
+          <div class="concept-card">
+            <span>${escapeHtml(concept.dimension || "")} · ${escapeHtml(concept.status || "待观察")}</span>
+            <strong>${escapeHtml(concept.title || concept.conceptTitle || "")}</strong>
+            <meter min="0" max="100" value="${Number(concept.masteryScore || 0)}"></meter>
+            <small>掌握度 ${Number(concept.masteryScore || 0)} · 置信度 ${Math.round(Number(concept.confidence || 0) * 100)}% · ${escapeHtml(concept.nextAction || concept.source || "profile-estimate")}</small>
+          </div>
+        `).join("")}
+      </div>
+    </article>
+    ${plan.data?.diagnosticResult ? `
+      <article class="result-card full">
+        <h3>诊断错因</h3>
+        <div class="tag-list">
+          ${(plan.data.diagnosticResult.mistakeProfile?.dominantTags || []).map((item) => `<span class="tag warning-tag">${escapeHtml(item.tag)} × ${item.count}</span>`).join("") || "<span class=\"tag\">暂无明显错因</span>"}
+        </div>
+      </article>
+    ` : ""}
+    <article class="result-card full">
       <h3>学习者画像</h3>
       <p>${escapeHtml(plan.data.learnerProfile?.summary || "")}</p>
       <div class="tag-list">
@@ -504,6 +664,7 @@ function renderKnowledge() {
 
 function computeMastery(plan) {
   const base = plan.data?.learnerProfile?.mastery || [];
+  const adaptiveDimensions = plan.data?.adaptiveState?.dimensionMastery || [];
   const summary = progressSummaryFor(plan);
   const quizResults = Object.values(state.quizResults || {});
   return base.map((item) => {
@@ -511,18 +672,234 @@ function computeMastery(plan) {
     const avgQuiz = relatedResults.length
       ? Math.round(relatedResults.reduce((sum, result) => sum + scorePercent(result), 0) / relatedResults.length)
       : null;
+    const adaptive = adaptiveDimensions.find((dimension) => dimension.dimension === item.dimension);
+    const baseScore = Number(adaptive?.score ?? item.score ?? 50);
     const progressBoost = Math.min(18, Math.round(summary.percent * 0.18));
     const quizWeight = avgQuiz === null ? 0 : Math.round((avgQuiz - 60) * 0.35);
-    const score = clamp(Number(item.score || 50) + progressBoost + quizWeight);
+    const score = clamp(baseScore + progressBoost + quizWeight);
     const evidence = avgQuiz === null
-      ? `自评基础 ${item.score || 50} + 打卡进度 ${summary.percent}%`
-      : `自评基础 ${item.score || 50} + 打卡 ${summary.percent}% + 测评 ${avgQuiz}%`;
+      ? `${adaptive?.evidence || `自评基础 ${item.score || 50}`} + 打卡进度 ${summary.percent}%`
+      : `${adaptive?.evidence || `自评基础 ${item.score || 50}`} + 打卡 ${summary.percent}% + 测评 ${avgQuiz}%`;
     return { ...item, score, evidence };
   });
 }
 
 function scorePercent(result) {
   return result.maxScore ? Math.round((Number(result.score || 0) / Number(result.maxScore)) * 100) : Number(result.score || 0);
+}
+
+function renderRemediation() {
+  const plan = getCurrentPlan();
+  const remediation = plan?.data?.remediationPlan;
+  if (!plan || !remediation) {
+    els.remediationPanel.className = "empty-state";
+    els.remediationPanel.innerHTML = "<p>完成诊断或测评后会出现补救建议。</p>";
+    els.remediationMode.textContent = "等待诊断";
+    return;
+  }
+  els.remediationMode.textContent = remediation.target ? `优先补救：${remediation.target}` : "已生成补救路径";
+  els.remediationPanel.className = "remediation-board";
+  els.remediationPanel.innerHTML = `
+    <section class="remediation-head">
+      <div>
+        <strong>${escapeHtml(remediation.target || plan.data.input?.topic || "当前主题")}</strong>
+        <p>${escapeHtml(remediation.reason || "")}</p>
+      </div>
+      <button id="useRemediationPrompt" class="ghost-button" type="button">带入导师</button>
+    </section>
+    <div class="weak-concept-list">
+      ${(remediation.weakConcepts || []).map((concept) => `
+        <div>
+          <span>${escapeHtml(concept.dimension || "")}</span>
+          <strong>${escapeHtml(concept.title || concept.conceptTitle || "")}</strong>
+          <small>掌握度 ${Number(concept.masteryScore || 0)} · ${escapeHtml(concept.reason || "")}</small>
+        </div>
+      `).join("")}
+    </div>
+    <div class="remediation-steps">
+      ${(remediation.sequence || []).map((step, index) => `
+        <article class="remediation-step">
+          <span>${index + 1}</span>
+          <strong>${escapeHtml(step.step)}</strong>
+          <p>${escapeHtml(step.action)}</p>
+          <small>${escapeHtml(step.expectedEvidence)}</small>
+        </article>
+      `).join("")}
+    </div>
+    <article class="result-card full">
+      <h3>个性化微讲义</h3>
+      <div class="concept-grid">
+        ${(remediation.microLessons || []).map((lesson) => `
+          <div class="concept-card">
+            <span>${escapeHtml(lesson.conceptId || "")}</span>
+            <strong>${escapeHtml(lesson.title)}</strong>
+            <small>${escapeHtml(lesson.content)}</small>
+          </div>
+        `).join("")}
+      </div>
+    </article>
+    <article class="result-card full">
+      <h3>变式与复测</h3>
+      <div class="concept-grid">
+        ${(remediation.variantItems || []).concat(remediation.retestItems || []).map((item) => `
+          <div class="concept-card">
+            <span>${escapeHtml(item.type || "practice")}</span>
+            <strong>${escapeHtml(item.title || item.id || "复测题")}</strong>
+            <small>${escapeHtml(item.prompt || item.expected || "")}</small>
+          </div>
+        `).join("")}
+      </div>
+    </article>
+    <article class="result-card full">
+      <h3>提示阶梯</h3>
+      <ul class="plain-list">
+        ${(remediation.hintLadder || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+      </ul>
+    </article>
+  `;
+  const promptButton = els.remediationPanel.querySelector("#useRemediationPrompt");
+  promptButton?.addEventListener("click", () => {
+    els.coachQuestion.value = remediation.coachPrompts?.[0] || `请围绕 ${remediation.target} 帮我做补救学习。`;
+    els.tutorMode.value = "inquiry";
+    setView("coach");
+  });
+}
+
+function renderGovernance() {
+  const plan = getCurrentPlan();
+  const report = plan?.data?.governanceReport;
+  if (!plan || !report) {
+    els.governancePanel.className = "empty-state";
+    els.governancePanel.innerHTML = "<p>生成方案后会出现内容治理报告。</p>";
+    els.governanceMode.textContent = "等待方案";
+    return;
+  }
+  els.governanceMode.textContent = `质量分 ${report.score} · ${riskLabel(report.riskLevel)}`;
+  els.governancePanel.className = "governance-board";
+  els.governancePanel.innerHTML = `
+    <section class="governance-summary">
+      <span class="score-badge ${report.riskLevel === "low" ? "" : "muted"}">${Number(report.score || 0)}</span>
+      <div>
+        <strong>${escapeHtml(report.agent || "内容治理智能体")}</strong>
+        <p>${escapeHtml(report.summary || "")}</p>
+      </div>
+    </section>
+    <div class="check-list">
+      ${(report.checks || []).map((check) => `
+        <div class="${check.passed ? "passed" : "failed"}">
+          <span>${check.passed ? "通过" : "待修正"}</span>
+          <strong>${escapeHtml(check.label)}</strong>
+          <small>${escapeHtml(check.detail)}</small>
+        </div>
+      `).join("")}
+    </div>
+    <article class="result-card full">
+      <h3>治理策略</h3>
+      <ul class="plain-list">
+        ${(report.moderationPolicy || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+      </ul>
+    </article>
+    <article class="result-card full">
+      <h3>一致性校验</h3>
+      <ul class="plain-list">
+        ${(report.consistencyChecks || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+      </ul>
+      ${(report.requiredFixes || []).length ? `<p class="warning">待修正：${escapeHtml(report.requiredFixes.join("、"))}</p>` : "<p class=\"ok-text\">暂无必须修正项。</p>"}
+    </article>
+  `;
+}
+
+function renderTeacher() {
+  if (!state.plans.length) {
+    els.teacherPanel.className = "empty-state";
+    els.teacherPanel.innerHTML = "<p>生成方案后会出现教师观察报告。</p>";
+    els.teacherMode.textContent = "等待学习数据";
+    return;
+  }
+  const currentPlan = getCurrentPlan() || state.plans[0];
+  const report = currentPlan.data?.teacherDashboard || buildTeacherFallbackReport(currentPlan);
+  const classRows = state.plans.map((plan) => {
+    const summary = progressSummaryFor(plan);
+    const weak = plan.data?.adaptiveState?.weakestConcepts?.[0]
+      || plan.data?.teacherDashboard?.weakConcepts?.[0]
+      || plan.data?.learnerProfile?.weakestDimensions?.[0];
+    return { plan, summary, weak };
+  });
+  const needHelp = classRows.filter((row) => Number(row.weak?.masteryScore || row.weak?.score || 80) < 60).length;
+  els.teacherMode.textContent = `${state.plans.length} 个方案 · ${needHelp} 个需关注`;
+  els.teacherPanel.className = "teacher-board";
+  els.teacherPanel.innerHTML = `
+    <section class="teacher-summary">
+      <div>
+        <strong>${escapeHtml(report.title || "教师观察报告")}</strong>
+        <p>${escapeHtml(report.exportSummary || "")}</p>
+      </div>
+      <span class="status-pill ${report.overview?.riskLevel === "需要干预" ? "bad" : "ok"}">${escapeHtml(report.overview?.riskLevel || "正常跟进")}</span>
+    </section>
+    <div class="teacher-grid">
+      <article class="result-card">
+        <h3>建议作业</h3>
+        ${(report.suggestedAssignments || []).map((item) => `
+          <div class="assignment-item">
+            <strong>${escapeHtml(item.title)}</strong>
+            <small>${escapeHtml(item.requirement)} · 目标 ${Number(item.targetScore || 80)} 分</small>
+          </div>
+        `).join("")}
+      </article>
+      <article class="result-card">
+        <h3>教师干预</h3>
+        <ul class="plain-list">
+          ${(report.interventions || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+        </ul>
+      </article>
+    </div>
+    <div class="teacher-grid">
+      <article class="result-card">
+        <h3>分组建议</h3>
+        ${(report.classGroups || []).map((group) => `
+          <div class="assignment-item">
+            <strong>${escapeHtml(group.name)} · ${Number(group.count || 0)} 项</strong>
+            <small>${escapeHtml(group.rule)}</small>
+          </div>
+        `).join("")}
+      </article>
+      <article class="result-card">
+        <h3>干预队列</h3>
+        ${(report.interventionQueue || []).map((item) => `
+          <div class="assignment-item">
+            <strong>${escapeHtml(item.concept)}</strong>
+            <small>${escapeHtml(item.reason)} · ${escapeHtml(item.action)}</small>
+          </div>
+        `).join("") || "<p class=\"hint-text\">暂无一对一干预项。</p>"}
+      </article>
+    </div>
+    <article class="result-card full">
+      <h3>学习对象概览</h3>
+      <div class="teacher-table">
+        ${classRows.map((row) => `
+          <div>
+            <strong>${escapeHtml(row.plan.title)}</strong>
+            <span>进度 ${row.summary.percent}%</span>
+            <span>薄弱：${escapeHtml(row.weak?.title || row.weak?.conceptTitle || row.weak?.dimension || "待观察")}</span>
+            <span>${Number(row.weak?.masteryScore || row.weak?.score || 80) < 60 ? "需干预" : "正常"}</span>
+          </div>
+        `).join("")}
+      </div>
+    </article>
+    <article class="result-card full">
+      <h3>报告导出字段</h3>
+      <div class="teacher-table">
+        ${(report.exportRows || []).map((row) => `
+          <div>
+            <strong>${escapeHtml(row.concept)}</strong>
+            <span>${escapeHtml(row.dimension)}</span>
+            <span>掌握 ${Number(row.masteryScore || 0)} / 置信 ${Math.round(Number(row.confidence || 0) * 100)}%</span>
+            <span>${escapeHtml(row.action || "")}</span>
+          </div>
+        `).join("")}
+      </div>
+    </article>
+  `;
 }
 
 function renderPractice() {
@@ -833,10 +1210,20 @@ async function evaluateQuiz(questionId) {
         result,
         at: new Date().toISOString()
       });
+      updateRemediationFromQuiz(plan, question, result);
     }
     saveState();
+    if (state.databaseReady && plan) {
+      request(`/api/plans/${encodeURIComponent(plan.id)}/content`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data: plan.data, masteryEvidence: plan.masteryEvidence || [] })
+      }).catch(reportPersistenceError);
+    }
     renderPractice();
     renderKnowledge();
+    renderRemediation();
+    renderTeacher();
     renderSavedPlans();
   } catch (error) {
     alert(`评分失败：${error.message}`);
@@ -846,6 +1233,42 @@ async function evaluateQuiz(questionId) {
       button.textContent = "提交给评分智能体";
     }
   }
+}
+
+function updateRemediationFromQuiz(plan, question, result) {
+  if (result.correct) return;
+  const remediation = plan.data.remediationPlan || {
+    generatedAt: new Date().toISOString(),
+    target: question.dimension || "当前薄弱点",
+    reason: "根据最近错题自动生成补救路径。",
+    weakConcepts: [],
+    sequence: [],
+    coachPrompts: []
+  };
+  const conceptTitle = question.progressContext?.learnedTask || question.dimension || "错题知识点";
+  remediation.target = conceptTitle;
+  remediation.reason = `最近测评在「${question.dimension || "综合能力"}」出现错误，建议立即做错因补救。`;
+  remediation.weakConcepts = [
+    {
+      conceptId: question.id,
+      title: conceptTitle,
+      dimension: question.dimension,
+      masteryScore: scorePercent(result),
+      reason: result.feedback || "测评未通过"
+    },
+    ...(remediation.weakConcepts || []).filter((item) => item.conceptId !== question.id)
+  ].slice(0, 4);
+  remediation.sequence = [
+    { step: "错因定位", action: result.feedback || "先解释为什么选错或代码未通过。", expectedEvidence: "能说出错误发生在哪一步。" },
+    { step: "回看讲义", action: `回到 ${question.dimension || "对应维度"} 的微讲义，补齐定义、条件和反例。`, expectedEvidence: "能写出一句自己的解释。" },
+    { step: "变式练习", action: "重新生成同知识点变式题，并限制只看提示不看答案。", expectedEvidence: "变式题达到 80% 以上。" },
+    { step: "复测", action: "完成下一轮测评，把结果写入掌握度证据链。", expectedEvidence: "复测正确或能清楚复盘错因。" }
+  ];
+  remediation.coachPrompts = [
+    `我刚做错了这道题：${question.question}。请先追问我错因，不要直接给答案。`,
+    `围绕 ${question.dimension || "这个知识点"} 给我一道变式题。`
+  ];
+  plan.data.remediationPlan = remediation;
 }
 
 function readQuizAnswer(question) {
@@ -1060,6 +1483,24 @@ function renderAgentGraph(loop) {
         </div>
       `).join("")}
     </div>
+    <div class="agent-artifact-list">
+      ${(loop.artifacts || []).map((artifact) => `
+        <article class="agent-item">
+          <strong>${escapeHtml(artifact.id)} · v${Number(artifact.version || 1)}</strong>
+          <p>${escapeHtml(artifact.owner)} 产出 ${escapeHtml(artifact.type)}，状态：${escapeHtml(artifact.status)}</p>
+          <small>审阅：${escapeHtml((artifact.reviewers || []).join("、"))}</small>
+        </article>
+      `).join("")}
+    </div>
+    <div class="agent-artifact-list">
+      ${(loop.revisionCycles || []).map((cycle) => `
+        <article class="agent-item">
+          <strong>第 ${Number(cycle.round || 1)} 轮审阅 · ${escapeHtml(cycle.reviewer)}</strong>
+          <p>${escapeHtml(cycle.issue)}</p>
+          <small>${escapeHtml(cycle.decision)}</small>
+        </article>
+      `).join("")}
+    </div>
   `;
 }
 
@@ -1080,15 +1521,32 @@ async function askTutor() {
       profile: plan.data.learnerProfile?.summary,
       progress: progressSummaryFor(plan),
       notes: plan.notes,
+      diagnostic: plan.data.diagnosticResult,
+      weakestConcepts: plan.data.adaptiveState?.weakestConcepts,
+      remediation: plan.data.remediationPlan,
       quizResults: state.quizResults
     }) : "";
     const data = await request("/api/tutor", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, context })
+      body: JSON.stringify({
+        question,
+        context,
+        mode: els.tutorMode.value,
+        hintLevel: Number(els.hintLevel.value || 1),
+        history: state.tutorHistory || []
+      })
     });
     els.coachAnswer.innerHTML = escapeHtml(data.answer).replaceAll("\n", "<br />");
-    els.coachMode.textContent = data.mode === "llm" ? "大模型回答" : "本地提示";
+    state.tutorHistory = [
+      ...(state.tutorHistory || []),
+      { role: "student", content: question, at: new Date().toISOString() },
+      { role: "tutor", content: data.answer, mode: data.tutorMode, hintLevel: data.hintLevel, at: new Date().toISOString() }
+    ].slice(-12);
+    saveState();
+    els.coachMode.textContent = data.mode === "llm"
+      ? `大模型回答 · ${tutorModeLabel(data.tutorMode)} · 提示 ${data.hintLevel}`
+      : `本地提示 · ${tutorModeLabel(data.tutorMode)} · 提示 ${data.hintLevel}`;
   } catch (error) {
     els.coachAnswer.textContent = `导师回答失败：${error.message}`;
   } finally {
@@ -1168,6 +1626,37 @@ function progressSummaryFor(plan) {
   return { total, done, percent: total ? Math.round((done / total) * 100) : 0 };
 }
 
+function riskLabel(value) {
+  return {
+    low: "低风险",
+    medium: "中风险",
+    high: "高风险"
+  }[value] || value || "待评估";
+}
+
+function tutorModeLabel(value) {
+  return {
+    hint: "分层提示",
+    inquiry: "追问引导",
+    explain: "讲解巩固"
+  }[value] || "分层提示";
+}
+
+function buildTeacherFallbackReport(plan) {
+  const weak = plan.data?.adaptiveState?.weakestConcepts || plan.data?.knowledgeGraph?.concepts?.slice(0, 2) || [];
+  return {
+    title: `${plan.data?.input?.topic || plan.title} 教师观察报告`,
+    exportSummary: weak.length ? `建议关注 ${weak.map((item) => item.title || item.conceptTitle).join("、")}。` : "等待更多学习证据。",
+    overview: { riskLevel: weak.some((item) => Number(item.masteryScore || 80) < 60) ? "需要干预" : "正常跟进" },
+    suggestedAssignments: weak.slice(0, 2).map((item) => ({
+      title: `${item.title || item.conceptTitle} 补救小练`,
+      requirement: "1 个微讲义 + 2 道变式题 + 1 次复测",
+      targetScore: 80
+    })),
+    interventions: ["查看诊断错因后分组讲解。", "低于 60 分的知识点安排复测。"]
+  };
+}
+
 function getCurrentPlan() {
   return state.plans.find((plan) => plan.id === state.currentPlanId) || null;
 }
@@ -1199,7 +1688,8 @@ function serializeState() {
     currentPlanId: state.currentPlanId || null,
     quiz: state.quiz || [],
     quizResults: state.quizResults || {},
-    agents: state.agents || []
+    agents: state.agents || [],
+    tutorHistory: state.tutorHistory || []
   };
 }
 
@@ -1212,10 +1702,11 @@ function loadState() {
       quiz: saved?.quiz || [],
       quizResults: saved?.quizResults || {},
       agents: saved?.agents || [],
+      tutorHistory: saved?.tutorHistory || [],
       databaseReady: false
     };
   } catch {
-    return { plans: [], currentPlanId: null, quiz: [], quizResults: {}, agents: [], databaseReady: false };
+    return { plans: [], currentPlanId: null, quiz: [], quizResults: {}, agents: [], tutorHistory: [], databaseReady: false };
   }
 }
 
