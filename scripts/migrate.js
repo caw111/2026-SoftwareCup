@@ -1,0 +1,108 @@
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { closeDatabasePool, getDatabasePool, isDatabaseConfigured } from "../backend/src/db/pool.js";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const MIGRATION_DIR = path.join(ROOT, "database", "migrations");
+
+export async function migrateDatabase({ log = console.log } = {}) {
+  if (!isDatabaseConfigured()) {
+    throw new Error("MySQL 未配置，无法执行迁移");
+  }
+
+  const pool = getDatabasePool();
+  const connection = await pool.getConnection();
+  let locked = false;
+  try {
+    const [lockRows] = await connection.query("SELECT GET_LOCK('softwarecup_schema_migrations', 30) AS acquired");
+    locked = Number(lockRows[0]?.acquired) === 1;
+    if (!locked) throw new Error("等待数据库迁移锁超时");
+
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        version VARCHAR(100) PRIMARY KEY,
+        filename VARCHAR(255) NOT NULL,
+        checksum CHAR(64) NOT NULL,
+        executed_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+
+    const files = fs.readdirSync(MIGRATION_DIR)
+      .filter((name) => /^\d+.*\.sql$/i.test(name))
+      .sort((a, b) => a.localeCompare(b, "en"));
+    const [appliedRows] = await connection.query(
+      "SELECT version, filename, checksum FROM schema_migrations ORDER BY version"
+    );
+    const applied = new Map(appliedRows.map((row) => [row.version, row]));
+
+    for (const filename of files) {
+      const version = filename.match(/^(\d+)/)?.[1];
+      const sql = fs.readFileSync(path.join(MIGRATION_DIR, filename), "utf8");
+      const checksum = crypto.createHash("sha256").update(sql).digest("hex");
+      const previous = applied.get(version);
+      if (previous) {
+        if (previous.filename !== filename || previous.checksum !== checksum) {
+          throw new Error(`迁移 ${version} 已执行，但文件名或校验值发生变化`);
+        }
+        continue;
+      }
+
+      log(`执行数据库迁移 ${filename}`);
+      for (const statement of splitSqlStatements(sql)) {
+        await connection.query(statement);
+      }
+      await connection.execute(
+        "INSERT INTO schema_migrations (version, filename, checksum) VALUES (?, ?, ?)",
+        [version, filename, checksum]
+      );
+    }
+
+    return { ok: true, total: files.length, applied: applied.size };
+  } finally {
+    if (locked) {
+      await connection.query("SELECT RELEASE_LOCK('softwarecup_schema_migrations')");
+    }
+    connection.release();
+  }
+}
+
+export async function databaseMigrationStatus() {
+  const pool = getDatabasePool();
+  const [rows] = await pool.query(
+    `SELECT version, filename, checksum, executed_at
+       FROM schema_migrations
+      ORDER BY version`
+  );
+  return rows;
+}
+
+export function splitSqlStatements(sql) {
+  return sql
+    .split(/;\s*(?:\r?\n|$)/)
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+}
+
+const invokedDirectly = process.argv[1]
+  && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (invokedDirectly) {
+  const statusOnly = process.argv.includes("--status");
+  try {
+    if (statusOnly) {
+      const rows = await databaseMigrationStatus();
+      console.table(rows);
+    } else {
+      const result = await migrateDatabase();
+      console.log(`数据库迁移完成，共发现 ${result.total} 个迁移文件。`);
+    }
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  } finally {
+    await closeDatabasePool();
+  }
+}

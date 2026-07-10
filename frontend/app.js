@@ -80,20 +80,29 @@ async function checkJudgeStatus() {
 
 async function loadDiskState() {
   try {
-    const diskState = await request("/api/workspace-state");
-    if (diskState?.plans?.length) {
-      state.plans = diskState.plans;
-      state.currentPlanId = diskState.currentPlanId || diskState.plans[0]?.id || null;
-      state.quiz = diskState.quiz || [];
-      state.quizResults = diskState.quizResults || {};
-      state.agents = diskState.agents || state.agents || [];
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeState()));
-      renderAll();
+    let databaseState = await request("/api/workspace");
+    if (!databaseState?.plans?.length && state.plans.length) {
+      await request("/api/workspace/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(serializeState())
+      });
+      databaseState = await request("/api/workspace");
     }
-    state.diskReady = true;
+    applyDatabaseState(databaseState);
+    state.databaseReady = true;
   } catch {
-    state.diskReady = false;
+    state.databaseReady = false;
   }
+}
+
+function applyDatabaseState(databaseState) {
+  state.plans = databaseState?.plans || [];
+  state.currentPlanId = databaseState?.currentPlanId || state.plans[0]?.id || null;
+  state.quiz = databaseState?.quiz || [];
+  state.quizResults = databaseState?.quizResults || {};
+  saveState();
+  renderAll();
 }
 
 function syncRoute() {
@@ -174,8 +183,15 @@ async function generatePlan(event) {
   try {
     const data = await requestGeneratedPlan(payload);
     const plan = normalizeNewPlan(data);
-    state.plans.unshift(plan);
-    state.currentPlanId = plan.id;
+    const saved = state.databaseReady
+      ? await request("/api/plans", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan })
+      })
+      : { plan };
+    state.plans.unshift(saved.plan);
+    state.currentPlanId = saved.plan.id;
     state.quiz = [];
     state.quizResults = {};
     saveState();
@@ -244,13 +260,27 @@ function renderSavedPlans() {
   }).join("");
 
   els.savedPlans.querySelectorAll("[data-open-plan]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.currentPlanId = button.dataset.openPlan;
-      state.quiz = [];
-      state.quizResults = {};
-      saveState();
-      renderAll();
-      setView("daily");
+    button.addEventListener("click", async () => {
+      try {
+        if (state.databaseReady) {
+          await request("/api/workspace/current-plan", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ planId: button.dataset.openPlan })
+          });
+          const databaseState = await request("/api/workspace");
+          applyDatabaseState(databaseState);
+        } else {
+          state.currentPlanId = button.dataset.openPlan;
+          state.quiz = [];
+          state.quizResults = {};
+          saveState();
+          renderAll();
+        }
+        setView("daily");
+      } catch (error) {
+        reportPersistenceError(error);
+      }
     });
   });
   els.savedPlans.querySelectorAll("[data-delete-plan]").forEach((button) => {
@@ -269,15 +299,29 @@ function quizStatusFor(plan) {
   return `最近测评 ${score}/${max}${weakText}`;
 }
 
-function deletePlan(id) {
-  state.plans = state.plans.filter((plan) => plan.id !== id);
-  if (state.currentPlanId === id) {
-    state.currentPlanId = state.plans[0]?.id || null;
-    state.quiz = [];
-    state.quizResults = {};
+async function deletePlan(id) {
+  try {
+    if (state.databaseReady) {
+      await request(`/api/plans/${encodeURIComponent(id)}`, { method: "DELETE" });
+    }
+    state.plans = state.plans.filter((plan) => plan.id !== id);
+    if (state.currentPlanId === id) {
+      state.currentPlanId = state.plans[0]?.id || null;
+      state.quiz = [];
+      state.quizResults = {};
+      if (state.databaseReady && state.currentPlanId) {
+        await request("/api/workspace/current-plan", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ planId: state.currentPlanId })
+        });
+      }
+    }
+    saveState();
+    renderAll();
+  } catch (error) {
+    reportPersistenceError(error);
   }
-  saveState();
-  renderAll();
 }
 
 function renderDailyPlan() {
@@ -351,10 +395,22 @@ function updateProgress(event) {
   const plan = getCurrentPlan();
   if (!plan) return;
   plan.progress = plan.progress || {};
-  plan.progress[event.target.dataset.progressId] = event.target.checked;
+  const taskKey = event.target.dataset.progressId;
+  const completed = event.target.checked;
+  plan.progress[taskKey] = completed;
   state.quiz = [];
   state.quizResults = {};
   saveState();
+  if (state.databaseReady) {
+    request(
+      `/api/plans/${encodeURIComponent(plan.id)}/tasks/${encodeURIComponent(taskKey)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ completed })
+      }
+    ).catch(reportPersistenceError);
+  }
   updateProgressSummary();
   renderSavedPlans();
   renderKnowledge();
@@ -376,6 +432,17 @@ function updateNotes(event) {
   if (!plan) return;
   plan.notes = event.target.value;
   saveState();
+  if (!state.databaseReady) return;
+  clearTimeout(persistTimer);
+  const planId = plan.id;
+  const notes = plan.notes;
+  persistTimer = setTimeout(() => {
+    request(`/api/plans/${encodeURIComponent(planId)}/notes`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notes })
+    }).catch(reportPersistenceError);
+  }, 350);
 }
 
 function resetProgress() {
@@ -385,6 +452,11 @@ function resetProgress() {
   state.quiz = [];
   state.quizResults = {};
   saveState();
+  if (state.databaseReady) {
+    request(`/api/plans/${encodeURIComponent(plan.id)}/progress`, {
+      method: "DELETE"
+    }).catch(reportPersistenceError);
+  }
   renderAll();
 }
 
@@ -708,6 +780,7 @@ async function loadQuiz(regenerate) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        ...(state.databaseReady ? { planId: plan.id } : {}),
         input: plan.data.input,
         plan: plan.data,
         progress: plan.progress,
@@ -737,10 +810,13 @@ async function evaluateQuiz(questionId) {
   }
 
   try {
-    const result = await request("/api/evaluate", {
+    const endpoint = question.databaseId
+      ? `/api/quiz-questions/${encodeURIComponent(question.databaseId)}/attempts`
+      : "/api/evaluate";
+    const result = await request(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, answer })
+      body: JSON.stringify(question.databaseId ? { answer } : { question, answer })
     });
     state.quizResults[questionId] = result;
     const plan = getCurrentPlan();
@@ -1099,7 +1175,10 @@ function getCurrentPlan() {
 async function request(path, options) {
   let response;
   try {
-    response = await fetch(`${API_BASE}${path}`, options);
+    response = await fetch(`${API_BASE}${path}`, {
+      credentials: "include",
+      ...(options || {})
+    });
   } catch (error) {
     throw new Error(`无法连接后端服务 ${API_BASE}。请确认 npm run dev 正在运行，并刷新页面后重试。`);
   }
@@ -1112,7 +1191,6 @@ async function request(path, options) {
 
 function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeState()));
-  scheduleDiskSave();
 }
 
 function serializeState() {
@@ -1125,20 +1203,6 @@ function serializeState() {
   };
 }
 
-function scheduleDiskSave() {
-  if (!state.diskReady) return;
-  clearTimeout(persistTimer);
-  persistTimer = setTimeout(() => {
-    fetch(`${API_BASE}/api/workspace-state`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(serializeState())
-    }).catch(() => {
-      state.diskReady = false;
-    });
-  }, 350);
-}
-
 function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
@@ -1148,11 +1212,17 @@ function loadState() {
       quiz: saved?.quiz || [],
       quizResults: saved?.quizResults || {},
       agents: saved?.agents || [],
-      diskReady: false
+      databaseReady: false
     };
   } catch {
-    return { plans: [], currentPlanId: null, quiz: [], quizResults: {}, agents: [], diskReady: false };
+    return { plans: [], currentPlanId: null, quiz: [], quizResults: {}, agents: [], databaseReady: false };
   }
+}
+
+function reportPersistenceError(error) {
+  els.serviceStatus.textContent = "数据库同步失败";
+  els.modelStatus.textContent = error.message;
+  els.statusDot.classList.remove("ok");
 }
 
 function formatDate(value) {
