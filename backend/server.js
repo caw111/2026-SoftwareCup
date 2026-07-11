@@ -230,7 +230,8 @@ const server = http.createServer(async (req, res) => {
         plan,
         progress,
         Number(body.variant || 0),
-        history
+        history,
+        body.options || {}
       );
       const quizResult = {
         ...generated,

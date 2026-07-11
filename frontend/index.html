@@ -25,8 +25,12 @@
           <a class="nav-link" href="#knowledge" data-view="knowledge">知识掌握</a>
           <a class="nav-link" href="#remediation" data-view="remediation">补救推荐</a>
           <a class="nav-link" href="#practice" data-view="practice">练习测评</a>
+          <a class="nav-link" href="#mistakes" data-view="mistakes">错题本</a>
+          <a class="nav-link" href="#exam" data-view="exam">考试模式</a>
+          <a class="nav-link" href="#project" data-view="project">项目任务</a>
+          <a class="nav-link" href="#report" data-view="report">学习报告</a>
+          <a class="nav-link" href="#settings" data-view="settings">学习设置</a>
           <a class="nav-link" href="#governance" data-view="governance">质量治理</a>
-          <a class="nav-link" href="#teacher" data-view="teacher">教师端</a>
           <a class="nav-link" href="#agents" data-view="agents">Agent 协作</a>
           <a class="nav-link" href="#coach" data-view="coach">AI 导师</a>
         </nav>
@@ -234,16 +238,68 @@
           </div>
         </section>
 
-        <section id="teacher" class="view">
+        <section id="mistakes" class="view">
           <div class="section-heading">
             <div>
-              <h2>教师端</h2>
-              <p>面向教师查看薄弱知识点、风险预警和可下发补救作业。</p>
+              <h2>错题本</h2>
+              <p>沉淀错因、提示使用和复测记录，用来驱动下一轮个性化出题。</p>
             </div>
-            <span id="teacherMode">等待学习数据</span>
+            <span id="mistakeMode">等待错题</span>
           </div>
-          <div id="teacherPanel" class="empty-state">
-            <p>生成方案后会出现教师观察报告。</p>
+          <div id="mistakePanel" class="empty-state">
+            <p>提交练习或诊断后，这里会自动汇总错题。</p>
+          </div>
+        </section>
+
+        <section id="exam" class="view">
+          <div class="section-heading">
+            <div>
+              <h2>考试模式</h2>
+              <p>按题量、题型、难度和时长生成一次性测评，提交后形成复测证据。</p>
+            </div>
+            <span id="examMode">未开始</span>
+          </div>
+          <div id="examPanel" class="empty-state">
+            <p>选择方案后可以生成一次模拟考试。</p>
+          </div>
+        </section>
+
+        <section id="project" class="view">
+          <div class="section-heading">
+            <div>
+              <h2>项目任务</h2>
+              <p>把知识图谱转成可提交的小项目，包含步骤、验收标准和交付物。</p>
+            </div>
+            <span id="projectMode">等待方案</span>
+          </div>
+          <div id="projectPanel" class="empty-state">
+            <p>生成方案后会出现项目化练习。</p>
+          </div>
+        </section>
+
+        <section id="report" class="view">
+          <div class="section-heading">
+            <div>
+              <h2>学习报告</h2>
+              <p>汇总学习画像、掌握度、错题、补救路径、考试和项目记录，可导出。</p>
+            </div>
+            <span id="reportMode">等待学习数据</span>
+          </div>
+          <div id="reportPanel" class="empty-state">
+            <p>生成方案并完成测评后可导出报告。</p>
+          </div>
+        </section>
+
+        <section id="settings" class="view">
+          <div class="section-heading">
+            <div>
+              <h2>学习设置</h2>
+              <p>设置默认出题、提示、难度和学习偏好，同时查看行为记录。</p>
+            </div>
+            <span id="settingsMode">本地保存</span>
+          </div>
+          <div id="settingsPanel" class="empty-state">
+            <p>加载中...</p>
           </div>
         </section>
 

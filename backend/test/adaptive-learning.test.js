@@ -7,7 +7,7 @@ import {
   buildGovernanceReport,
   buildKnowledgeGraph,
   buildRemediationPlan,
-  buildTeacherAnalytics,
+  buildPersonalLearningInsights,
   evaluateDiagnosticPretest
 } from "../src/adaptive-learning.js";
 
@@ -64,7 +64,7 @@ test("知识图谱、诊断前测和补救路径可生成并评分", () => {
   assert.equal(result.remediationPlan.retestItems.length > 0, true);
 });
 
-test("治理报告和教师报告包含可展示的核心字段", () => {
+test("治理报告和个人学习洞察包含可展示的核心字段", () => {
   const graph = buildKnowledgeGraph(input, learnerProfile);
   const adaptiveState = buildAdaptiveState({ learnerProfile, knowledgeGraph: graph });
   const remediationPlan = buildRemediationPlan(input, graph, learnerProfile);
@@ -77,7 +77,7 @@ test("治理报告和教师报告包含可展示的核心字段", () => {
     dailyPlan: [{ tasks: ["a", "b", "c"] }],
     knowledgeGraph: graph
   });
-  const teacherDashboard = buildTeacherAnalytics({
+  const personalInsights = buildPersonalLearningInsights({
     input,
     learnerProfile,
     dailyPlan: [{ tasks: ["a", "b", "c"] }],
@@ -90,7 +90,7 @@ test("治理报告和教师报告包含可展示的核心字段", () => {
   assert.equal(remediationPlan.sequence.length, 4);
   assert.equal(governanceReport.checks.length >= 8, true);
   assert.equal(governanceReport.score > 0, true);
-  assert.equal(teacherDashboard.suggestedAssignments.length > 0, true);
-  assert.equal(teacherDashboard.classGroups.length, 3);
-  assert.equal(Array.isArray(teacherDashboard.exportRows), true);
+  assert.equal(personalInsights.suggestedPractice.length > 0, true);
+  assert.equal(personalInsights.focusTracks.length, 3);
+  assert.equal(Array.isArray(personalInsights.reportRows), true);
 });

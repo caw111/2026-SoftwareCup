@@ -40,7 +40,7 @@ export async function createPlanRecord(userId, plan) {
 
     await upsertConceptMastery(connection, userId, plan.id, plan.data?.adaptiveState?.concepts || []);
     await insertContentReview(connection, userId, plan.id, plan.data?.governanceReport);
-    await insertTeacherReport(connection, userId, plan.id, plan.data?.teacherDashboard);
+    await insertInsightReport(connection, userId, plan.id, plan.data?.personalInsights);
 
     await connection.execute(
       `INSERT INTO user_workspaces (user_id, active_plan_id)
@@ -210,7 +210,7 @@ export async function updatePlanContentRecord(userId, planId, payload) {
 
     await upsertConceptMastery(connection, userId, planId, payload.data?.adaptiveState?.concepts || []);
     await insertContentReview(connection, userId, planId, payload.data?.governanceReport);
-    await insertTeacherReport(connection, userId, planId, payload.data?.teacherDashboard);
+    await insertInsightReport(connection, userId, planId, payload.data?.personalInsights);
     return true;
   });
 }
@@ -286,7 +286,7 @@ async function insertContentReview(connection, userId, planId, report) {
   );
 }
 
-async function insertTeacherReport(connection, userId, planId, report) {
+async function insertInsightReport(connection, userId, planId, report) {
   if (!report || typeof report !== "object") return;
   await connection.execute(
     `INSERT INTO teacher_reports

@@ -491,7 +491,7 @@ textarea:focus {
 .diagnostic-board,
 .remediation-board,
 .governance-board,
-.teacher-board {
+.personal-board {
   display: grid;
   gap: 14px;
 }
@@ -499,7 +499,7 @@ textarea:focus {
 .diagnostic-summary,
 .remediation-head,
 .governance-summary,
-.teacher-summary {
+.personal-summary {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -514,7 +514,7 @@ textarea:focus {
 .diagnostic-summary strong,
 .remediation-head strong,
 .governance-summary strong,
-.teacher-summary strong {
+.personal-summary strong {
   display: block;
   margin-bottom: 6px;
   font-size: 18px;
@@ -523,7 +523,7 @@ textarea:focus {
 .diagnostic-summary p,
 .remediation-head p,
 .governance-summary p,
-.teacher-summary p {
+.personal-summary p {
   margin-bottom: 0;
   color: var(--muted);
   line-height: 1.6;
@@ -548,7 +548,7 @@ textarea:focus {
 
 .diagnostic-list,
 .remediation-steps,
-.teacher-grid {
+.personal-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
@@ -703,12 +703,72 @@ textarea:focus {
   line-height: 1.7;
 }
 
-.teacher-table {
+.settings-board {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: var(--shadow);
+}
+
+.settings-board.compact {
+  padding: 14px;
+  box-shadow: none;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 12px;
+}
+
+.settings-grid label {
+  display: grid;
+  gap: 6px;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.settings-grid input,
+.settings-grid select {
+  width: 100%;
+}
+
+.toggle-line {
+  display: flex !important;
+  grid-template-columns: none !important;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  color: #334155;
+  font-weight: 800;
+}
+
+.toggle-line input {
+  width: auto;
+}
+
+.report-text {
+  width: 100%;
+  min-height: 520px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font: 13px/1.65 Consolas, "Microsoft YaHei", monospace;
+  resize: vertical;
+}
+
+.report-table {
   display: grid;
   gap: 8px;
 }
 
-.teacher-table div {
+.report-table div {
   display: grid;
   grid-template-columns: minmax(180px, 1.4fr) repeat(3, minmax(120px, 1fr));
   gap: 10px;
@@ -719,7 +779,7 @@ textarea:focus {
   background: #f8fafc;
 }
 
-.teacher-table span {
+.report-table span {
   color: var(--muted);
   font-size: 13px;
 }
@@ -1133,7 +1193,8 @@ textarea:focus {
   .agent-artifact-list,
   .diagnostic-list,
   .remediation-steps,
-  .teacher-grid,
+  .personal-grid,
+  .settings-grid,
   .concept-grid,
   .weak-concept-list,
   .check-list {
@@ -1168,7 +1229,7 @@ textarea:focus {
   .diagnostic-summary,
   .remediation-head,
   .governance-summary,
-  .teacher-summary,
+  .personal-summary,
   .data-flow-item {
     display: grid;
   }
@@ -1197,7 +1258,7 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
-  .teacher-table div {
+  .report-table div {
     grid-template-columns: 1fr;
   }
 

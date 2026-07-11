@@ -597,19 +597,19 @@ export function buildGovernanceReport({ input, learnerProfile, path, resources, 
       "不直接替学生完成主观题最终答案，优先给提示和追问。",
       "大模型生成内容必须保留知识点、难度、证据来源和可复测路径。",
       "代码题评测使用服务端沙箱或本地 runner，避免浏览器端执行学生代码。",
-      "教师端可审核低质量资源，必要时退回资源生成智能体重写。"
+      "个人工作台可查看质量风险，必要时触发资源生成智能体重写。"
     ]
   };
 }
 
-export function buildTeacherAnalytics({ input, learnerProfile, dailyPlan, assessment, knowledgeGraph, governanceReport, adaptiveState }) {
+export function buildPersonalLearningInsights({ input, learnerProfile, dailyPlan, assessment, knowledgeGraph, governanceReport, adaptiveState }) {
   const weakConcepts = ensureArray(adaptiveState?.weakestConcepts, [])
     .concat(ensureArray(knowledgeGraph?.concepts, []).sort((a, b) => a.masteryScore - b.masteryScore).slice(0, 3))
     .slice(0, 6);
   const highRisk = weakConcepts.filter((item) => Number(item.masteryScore) < 60 || Number(item.confidence) < 0.45);
-  const riskLevel = highRisk.length ? "需要干预" : "正常跟进";
-  const assignmentPackages = weakConcepts.slice(0, 3).map((concept) => ({
-    title: `${concept.title || concept.conceptTitle} 补救作业包`,
+  const riskLevel = highRisk.length ? "需要立即补强" : "按计划推进";
+  const practicePackages = weakConcepts.slice(0, 3).map((concept) => ({
+    title: `${concept.title || concept.conceptTitle} 个人补强包`,
     requirement: "1 个微讲义 + 1 个半成品例题 + 2 道变式题 + 1 次复测",
     targetScore: concept.difficulty >= 4 ? 85 : 80,
     conceptId: concept.conceptId || concept.id,
@@ -617,7 +617,7 @@ export function buildTeacherAnalytics({ input, learnerProfile, dailyPlan, assess
   }));
   return {
     generatedAt: new Date().toISOString(),
-    title: `${input.topic || "学习主题"} 教师观察报告`,
+    title: `${input.topic || "学习主题"} 个人学习洞察`,
     overview: {
       learnerProfile: learnerProfile?.summary || "",
       planDays: ensureArray(dailyPlan, []).length,
@@ -627,18 +627,18 @@ export function buildTeacherAnalytics({ input, learnerProfile, dailyPlan, assess
       highRiskCount: highRisk.length
     },
     weakConcepts,
-    classGroups: [
-      { name: "概念补救组", rule: "概念理解或先修基础低于 70 分", count: weakConcepts.filter((item) => ["概念理解", "先修基础"].includes(item.dimension)).length },
-      { name: "迁移练习组", rule: "方法迁移或实践应用低于 75 分", count: weakConcepts.filter((item) => ["方法迁移", "实践应用"].includes(item.dimension)).length },
-      { name: "复盘表达组", rule: "表达复盘或学习自驱低于 75 分", count: weakConcepts.filter((item) => ["表达复盘", "学习自驱"].includes(item.dimension)).length }
+    focusTracks: [
+      { name: "概念补强", rule: "概念理解或先修基础低于 70 分", count: weakConcepts.filter((item) => ["概念理解", "先修基础"].includes(item.dimension)).length },
+      { name: "迁移练习", rule: "方法迁移或实践应用低于 75 分", count: weakConcepts.filter((item) => ["方法迁移", "实践应用"].includes(item.dimension)).length },
+      { name: "复盘表达", rule: "表达复盘或学习自驱低于 75 分", count: weakConcepts.filter((item) => ["表达复盘", "学习自驱"].includes(item.dimension)).length }
     ],
-    suggestedAssignments: assignmentPackages,
-    interventionQueue: highRisk.map((concept) => ({
+    suggestedPractice: practicePackages,
+    focusQueue: highRisk.map((concept) => ({
       concept: concept.title || concept.conceptTitle,
       reason: `掌握度 ${concept.masteryScore}，置信度 ${Math.round((concept.confidence || 0) * 100)}%`,
-      action: "课后 5 分钟一对一追问定义、反例和错因。"
+      action: "先用分层提示复述定义、反例和错因，再做 2 道变式题。"
     })),
-    exportRows: weakConcepts.map((concept) => ({
+    reportRows: weakConcepts.map((concept) => ({
       topic: input.topic || "",
       concept: concept.title || concept.conceptTitle,
       dimension: concept.dimension,
@@ -646,13 +646,13 @@ export function buildTeacherAnalytics({ input, learnerProfile, dailyPlan, assess
       confidence: concept.confidence,
       action: concept.nextAction || nextActionForConcept(concept.masteryScore, concept.confidence)
     })),
-    interventions: [
-      "课前 5 分钟查看诊断低分知识点，优先提问定义和反例。",
-      "把同错因学生分组，统一布置变式练习。",
-      "测评连续两轮低于 60 分时，教师端标记为需要一对一干预。",
-      "教师可审核内容治理报告中的待修正项，再下发作业。"
+    nextActions: [
+      "每天开始前先查看最低掌握度知识点，优先复述定义、适用条件和反例。",
+      "每轮练习后把错题写入错题本，标注错因、提示层级和复测时间。",
+      "测评连续两轮低于 60 分时，自动切换到补救路径并降低下一轮题目难度。",
+      "质量治理报告存在待修正项时，先重写资源或更换例题，再继续练习。"
     ],
-    exportSummary: `建议教师关注 ${weakConcepts.map((item) => item.title || item.conceptTitle).slice(0, 4).join("、")}。`
+    exportSummary: `建议优先补强 ${weakConcepts.map((item) => item.title || item.conceptTitle).slice(0, 4).join("、")}。`
   };
 }
 

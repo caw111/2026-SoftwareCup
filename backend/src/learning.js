@@ -14,7 +14,7 @@ import {
   buildGovernanceReport,
   buildKnowledgeGraph,
   buildRemediationPlan,
-  buildTeacherAnalytics
+  buildPersonalLearningInsights
 } from "./adaptive-learning.js";
 
 export function normalizeInput(body) {
@@ -145,7 +145,7 @@ export function runLocalAgents(input) {
     dailyPlan,
     knowledgeGraph
   });
-  const teacherDashboard = buildTeacherAnalytics({
+  const personalInsights = buildPersonalLearningInsights({
     input,
     learnerProfile,
     dailyPlan,
@@ -174,7 +174,7 @@ export function runLocalAgents(input) {
     generationLoop,
     remediationPlan,
     governanceReport,
-    teacherDashboard,
+    personalInsights,
     resourcePackage,
     dailyPlan,
     tutorCards
@@ -286,7 +286,7 @@ async function runLocalAgentsWithEvents(input, emit) {
     knowledgeGraph
   }));
 
-  const teacherDashboard = buildTeacherAnalytics({
+  const personalInsights = buildPersonalLearningInsights({
     input,
     learnerProfile,
     dailyPlan,
@@ -326,7 +326,7 @@ async function runLocalAgentsWithEvents(input, emit) {
     },
     remediationPlan,
     governanceReport,
-    teacherDashboard,
+    personalInsights,
     resourcePackage,
     dailyPlan,
     tutorCards
@@ -479,11 +479,11 @@ function buildAssessment(input, learnerProfile, dailyPlan) {
 
 export async function generateAdaptiveQuiz(input, plan, progress = {}, variant = 0, history = [], options = {}) {
   const summary = summarizeProgress(plan, progress);
-  const quizOptions = {
+  const quizOptions = normalizeQuizOptions({
     ...options,
-    includeCode: shouldIncludeProgrammingQuestion(input, plan, progress, history),
-    codeLanguage: inferProgrammingLanguage(input, plan, history)
-  };
+    includeCode: options.includeCode ?? shouldIncludeProgrammingQuestion(input, plan, progress, history),
+    codeLanguage: options.codeLanguage || inferProgrammingLanguage(input, plan, history)
+  });
   if (quizOptions.includeCode && JUDGE_AUTO_BOOTSTRAP) {
     bootstrapJudgeRuntime().catch((error) => {
       console.warn(`判题沙箱准备失败：${friendlyJudgeError(error)}`);
@@ -492,23 +492,103 @@ export async function generateAdaptiveQuiz(input, plan, progress = {}, variant =
   const localQuiz = buildProgressQuiz(input, plan, progress, variant, history, quizOptions);
 
   if (!MODEL_CONFIG.apiKey) {
-    return { quiz: localQuiz, mode: "local-bank", llmUsed: false, includeCode: quizOptions.includeCode, judge: getJudgeRuntimeStatus() };
+    return { quiz: localQuiz, mode: "local-bank", llmUsed: false, includeCode: quizOptions.includeCode, quizOptions, judge: getJudgeRuntimeStatus() };
   }
 
   try {
     const llmQuiz = await callLargeModelForQuiz(input, plan, progress, summary, variant, history, quizOptions);
-    return { quiz: normalizeGeneratedQuiz(llmQuiz, localQuiz, summary, variant, quizOptions), mode: "llm-quiz", llmUsed: true, includeCode: quizOptions.includeCode, judge: getJudgeRuntimeStatus() };
+    return { quiz: normalizeGeneratedQuiz(llmQuiz, localQuiz, summary, variant, quizOptions), mode: "llm-quiz", llmUsed: true, includeCode: quizOptions.includeCode, quizOptions, judge: getJudgeRuntimeStatus() };
   } catch (error) {
     return {
       quiz: localQuiz,
       mode: "local-bank-fallback",
       llmUsed: false,
       includeCode: quizOptions.includeCode,
+      quizOptions,
       judge: getJudgeRuntimeStatus(),
       warning: "大模型出题失败，已使用本地专业题库。",
       detail: error instanceof Error ? error.message : String(error)
     };
   }
+}
+
+function normalizeQuizOptions(options = {}) {
+  const rawTypeCounts = options.typeCounts || {};
+  const parsedCounts = {
+    choice: boundedInteger(rawTypeCounts.choice ?? options.choiceCount, 0, 20, 0),
+    short: boundedInteger(rawTypeCounts.short ?? options.shortCount, 0, 20, 0),
+    code: boundedInteger(rawTypeCounts.code ?? options.codeCount, 0, 20, 0)
+  };
+  const hasExplicitCounts = Object.values(parsedCounts).some((count) => count > 0);
+  const requestedCount = boundedInteger(
+    options.questionCount ?? options.count,
+    1,
+    20,
+    hasExplicitCounts ? parsedCounts.choice + parsedCounts.short + parsedCounts.code : 4
+  );
+  const explicitTypes = new Set(ensureArray(options.types, []).filter((type) => ["choice", "short", "code"].includes(type)));
+  let includeCode = Boolean(options.includeCode) || parsedCounts.code > 0 || explicitTypes.has("code");
+  const typeCounts = hasExplicitCounts
+    ? parsedCounts
+    : includeCode
+      ? { choice: Math.max(1, requestedCount - 2), short: 1, code: 1 }
+      : { choice: Math.max(1, requestedCount - 1), short: Math.min(1, requestedCount - 1), code: 0 };
+
+  if (explicitTypes.size) {
+    for (const type of ["choice", "short", "code"]) {
+      if (!explicitTypes.has(type)) typeCounts[type] = 0;
+    }
+    if (!explicitTypes.has("code")) includeCode = false;
+  }
+  if (options.includeCode === false) {
+    typeCounts.code = 0;
+    includeCode = false;
+  }
+  if (!includeCode) typeCounts.code = 0;
+
+  balanceTypeCounts(typeCounts, requestedCount, includeCode);
+  return {
+    questionCount: typeCounts.choice + typeCounts.short + typeCounts.code,
+    typeCounts,
+    types: Object.entries(typeCounts).filter(([, count]) => count > 0).map(([type]) => type),
+    includeCode: typeCounts.code > 0,
+    codeLanguage: normalizeCodeLanguage(options.codeLanguage || "python"),
+    difficulty: ["easy", "medium", "hard", "adaptive"].includes(options.difficulty) ? options.difficulty : "adaptive",
+    knowledgeScope: ["current", "weak", "all"].includes(options.knowledgeScope) ? options.knowledgeScope : "current",
+    showHints: options.showHints !== false,
+    showAnswerMode: options.showAnswerMode || "after-submit",
+    includeSimilar: Boolean(options.includeSimilar),
+    includeRetest: Boolean(options.includeRetest),
+    focusDimension: clean(options.focusDimension, 80),
+    timeLimitSec: boundedInteger(options.timeLimitSec, 0, 10800, 0)
+  };
+}
+
+function boundedInteger(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return Math.max(min, Math.min(max, Math.round(fallback)));
+  return Math.max(min, Math.min(max, Math.round(number)));
+}
+
+function balanceTypeCounts(typeCounts, requestedCount, includeCode) {
+  const fillOrder = includeCode ? ["choice", "short", "code"] : ["choice", "short"];
+  if (!fillOrder.some((type) => typeCounts[type] > 0)) typeCounts.choice = requestedCount;
+  while (typeCounts.choice + typeCounts.short + typeCounts.code < requestedCount) {
+    const type = fillOrder[(typeCounts.choice + typeCounts.short + typeCounts.code) % fillOrder.length];
+    typeCounts[type] += 1;
+  }
+  while (typeCounts.choice + typeCounts.short + typeCounts.code > requestedCount) {
+    const type = [...fillOrder].reverse().find((item) => typeCounts[item] > 0) || "choice";
+    typeCounts[type] -= 1;
+  }
+}
+
+function describeQuizStructure(options) {
+  return [
+    options.typeCounts.choice ? `${options.typeCounts.choice} 道 choice 选择题` : "",
+    options.typeCounts.short ? `${options.typeCounts.short} 道 short 简答题` : "",
+    options.typeCounts.code ? `${options.typeCounts.code} 道 code 编程题` : ""
+  ].filter(Boolean).join("、");
 }
 
 function shouldIncludeProgrammingQuestion(input, plan, progress, history) {
@@ -542,6 +622,7 @@ function inferProgrammingLanguage(input, plan, history) {
 }
 
 async function callLargeModelForQuiz(input, plan, progress, summary, variant, history, options) {
+  const quizConfig = normalizeQuizOptions(options);
   const completedDays = (plan?.dailyPlan || []).map((day) => ({
     day: day.day,
     title: day.title,
@@ -575,9 +656,9 @@ async function callLargeModelForQuiz(input, plan, progress, summary, variant, hi
 }
 
 硬性要求：
-1. 生成 4 道题，必须和当前主题 ${input.topic} 的专业知识强相关，不要泛泛学习方法题。
+1. 生成 ${quizConfig.questionCount} 道题，必须和当前主题 ${input.topic} 的专业知识强相关，不要泛泛学习方法题。
 2. 必须利用 completedDays 和 recentHistory，避免重复 recentHistory 中的题干。
-3. ${options.includeCode ? `当前学习内容适合编程训练，题型结构必须严格为：2 道 choice 选择题、1 道 short 简答题、1 道 code 编程题；编程题语言必须是 ${options.codeLanguage}，tests 要可由服务端判题沙箱运行。` : "当前学习内容暂不适合编程训练，题型结构为 3 道 choice 选择题、1 道 short 简答题。"}
+3. 题型结构必须严格为：${describeQuizStructure(quizConfig)}${quizConfig.includeCode ? `；编程题语言必须是 ${quizConfig.codeLanguage}，tests 要可由服务端判题沙箱运行。` : "。"}
 4. 选择题要有明确干扰项；简答题要给 referenceAnswer 和 keywords；代码题只考一个函数。
 5. 编程题测试格式统一为 {"function":"函数名","args":[参数1,参数2],"expected":期望返回值}；不要使用标准输入输出题。
 6. 题干中自然体现当前进度或错题薄弱点，但不要机械复制上下文。
@@ -590,8 +671,9 @@ ${JSON.stringify({
   weakDimensions: plan?.learnerProfile?.weakestDimensions || [],
   recentHistory,
   variant,
-  includeProgrammingQuestion: options.includeCode,
-  requiredCodeLanguage: options.codeLanguage
+  includeProgrammingQuestion: quizConfig.includeCode,
+  requiredCodeLanguage: quizConfig.codeLanguage,
+  quizConfig
 })}`;
 
   const content = await requestChatCompletion([
@@ -617,7 +699,7 @@ function normalizeGeneratedQuiz(items, fallback, summary, variant, options) {
     .filter((item) => item && ["choice", "short", "code"].includes(item.type))
     .filter((item) => options.includeCode || item.type !== "code")
     .map((item, index) => normalizeQuizItem(item, summary, variant, index, options));
-  const structured = pickQuizByStructure(normalized, options.includeCode);
+  const structured = pickQuizByOptions(normalized, options);
   return structured || fallback;
 }
 
@@ -631,6 +713,29 @@ function pickQuizByStructure(items, includeCode) {
   }
   if (choices.length < 3 || shorts.length < 1) return null;
   return [choices[0], choices[1], choices[2], shorts[0]];
+}
+
+function pickQuizByOptions(items, options = {}) {
+  const config = normalizeQuizOptions(options);
+  const usableItems = config.includeCode ? items : items.filter((item) => item.type !== "code");
+  if (!usableItems.length) return null;
+  const selected = [];
+  for (const type of ["choice", "short", "code"]) {
+    const wanted = config.typeCounts[type] || 0;
+    if (!wanted) continue;
+    const typed = usableItems.filter((item) => item.type === type);
+    if (!typed.length) continue;
+    for (let index = 0; index < wanted; index += 1) {
+      selected.push({ ...typed[index % typed.length], recycledVariant: Math.floor(index / typed.length) });
+    }
+  }
+  let fillIndex = 0;
+  while (selected.length < config.questionCount) {
+    const candidate = usableItems[fillIndex % usableItems.length];
+    selected.push({ ...candidate, recycledVariant: Math.floor(fillIndex / usableItems.length) + 1 });
+    fillIndex += 1;
+  }
+  return selected.slice(0, config.questionCount);
 }
 
 function normalizeQuizItem(item, summary, variant, index, options = {}) {
@@ -805,7 +910,8 @@ function buildProgressQuiz(input, plan, progress = {}, variant = 0, history = []
     variant,
     summary,
     learnedTask,
-    missedDimensions
+    missedDimensions,
+    quizOptions: options
   }));
 }
 
@@ -969,24 +1075,48 @@ function selectProfessionalQuizBank(topic, focus, dayLabel, learnedTask, options
 }
 
 function selectAdaptiveQuizItems(items, offset, history, missedDimensions, options = {}) {
-  const usableItems = options.includeCode ? items : items.filter((item) => item.type !== "code");
+  const quizConfig = normalizeQuizOptions(options);
+  const usableItems = quizConfig.includeCode ? items : items.filter((item) => item.type !== "code");
+  if (!usableItems.length) return [];
   const previousBaseIds = new Set(
     history
       .map((item) => String(item.questionId || "").split("-").slice(0, -4).join("-"))
       .filter(Boolean)
   );
-  const prioritized = missedDimensions.length
-    ? usableItems.filter((item) => missedDimensions.includes(item.dimension)).concat(usableItems.filter((item) => !missedDimensions.includes(item.dimension)))
+  const focusDimensions = [quizConfig.focusDimension, ...missedDimensions].filter(Boolean);
+  const prioritized = focusDimensions.length
+    ? usableItems.filter((item) => focusDimensions.includes(item.dimension)).concat(usableItems.filter((item) => !focusDimensions.includes(item.dimension)))
     : usableItems;
-  const rotated = prioritized.slice(offset % prioritized.length).concat(prioritized.slice(0, offset % prioritized.length));
+  const difficultyFiltered = filterByRequestedDifficulty(prioritized, quizConfig.difficulty);
+  const scoped = quizConfig.knowledgeScope === "weak" && focusDimensions.length
+    ? difficultyFiltered.filter((item) => focusDimensions.includes(item.dimension)).concat(difficultyFiltered.filter((item) => !focusDimensions.includes(item.dimension)))
+    : difficultyFiltered;
+  const poolSource = scoped.length ? scoped : usableItems;
+  const rotated = poolSource.slice(offset % poolSource.length).concat(poolSource.slice(0, offset % poolSource.length));
   const fresh = rotated.filter((item) => !previousBaseIds.has(item.id));
-  const pool = fresh.length >= 4 ? fresh : rotated;
-  const selected = pickQuizByStructure(pool, Boolean(options.includeCode));
+  const pool = fresh.length >= quizConfig.questionCount ? fresh : rotated;
+  const selected = pickQuizByOptions(pool, quizConfig);
   if (selected) return selected;
-  return pool.slice(0, 4);
+  return pool.slice(0, quizConfig.questionCount);
+}
+
+function filterByRequestedDifficulty(items, difficulty) {
+  if (!items.length || difficulty === "adaptive") return items;
+  const range = {
+    easy: [1, 2],
+    medium: [2, 3],
+    hard: [3, 5]
+  }[difficulty] || [1, 5];
+  const filtered = items.filter((item) => {
+    const level = Number(item.difficulty || (item.type === "code" ? 4 : item.type === "short" ? 3 : 2));
+    return level >= range[0] && level <= range[1];
+  });
+  return filtered.length ? filtered : items;
 }
 
 function applyQuizContext(item, context) {
+  const quizOptions = normalizeQuizOptions(context.quizOptions || {});
+  const estimatedTimeSec = item.estimatedTimeSec || (item.type === "code" ? 900 : item.type === "short" ? 240 : 90);
   const missedText = context.missedDimensions.length
     ? `上一轮薄弱维度：${context.missedDimensions.join("、")}。`
     : "上一轮暂无明显错题维度。";
@@ -996,12 +1126,21 @@ function applyQuizContext(item, context) {
     id: `${item.id}-${context.summary.currentDay || 1}-${context.summary.done}-${context.variant || 0}-${context.index}`,
     conceptId: item.conceptId || slugify(`${item.dimension || "general"}-${item.id}`).slice(0, 80),
     difficulty: item.difficulty || (item.type === "code" ? 4 : item.type === "short" ? 3 : 2),
-    estimatedTimeSec: item.estimatedTimeSec || (item.type === "code" ? 900 : item.type === "short" ? 240 : 90),
-    hintLadder: item.hintLadder || [
+    estimatedTimeSec,
+    timeLimitSec: quizOptions.timeLimitSec || item.timeLimitSec || estimatedTimeSec,
+    hintLadder: quizOptions.showHints === false ? [] : item.hintLadder || [
       "先判断题目考查的知识点。",
       "再写出适用条件或关键公式。",
       "最后排除与条件冲突的选项或步骤。"
     ],
+    quizOptions: {
+      difficulty: quizOptions.difficulty,
+      knowledgeScope: quizOptions.knowledgeScope,
+      focusDimension: quizOptions.focusDimension,
+      showAnswerMode: quizOptions.showAnswerMode,
+      includeSimilar: quizOptions.includeSimilar,
+      includeRetest: quizOptions.includeRetest
+    },
     scoringSignals: {
       usesProgress: true,
       usesMistakeHistory: context.missedDimensions.length > 0,
@@ -1071,7 +1210,7 @@ function buildGenerationLoop(input, learnerProfile, path, resources, assessment)
       { id: "resource-agent", agent: "资源生成智能体", status: "done", action: "生成讲义、例题、练习和解析", input: "路径约束与学习偏好", output: `生成 ${resources.length} 类资源` },
       { id: "assessment-agent", agent: "测评评分智能体", status: "done", action: "生成选择题并定义评分规则", input: "资源草案与进度信号", output: `生成 ${assessment.quiz.length} 道选择题` },
       { id: "governance-agent", agent: "内容治理智能体", status: "done", action: "审查知识点绑定、证据来源和答案泄露风险", input: "资源、测评、图谱与每日任务", output: "形成质量治理报告" },
-      { id: "teacher-agent", agent: "教师分析智能体", status: "done", action: "汇总薄弱知识点和干预建议", input: "掌握度、错因、质量报告", output: "形成教师观察报告" },
+      { id: "insight-agent", agent: "个人洞察智能体", status: "done", action: "汇总薄弱知识点和下一步行动", input: "掌握度、错因、质量报告", output: "形成个人学习洞察" },
       { id: "coach-agent", agent: "学习陪练智能体", status: "done", action: "整合为可追问上下文", input: "方案、资源、测评规则", output: "形成后续答疑上下文" }
     ],
     flows: [
@@ -1083,7 +1222,7 @@ function buildGenerationLoop(input, learnerProfile, path, resources, assessment)
       { from: "路径规划智能体", to: "资源生成智能体", payload: "阶段路径、每日任务约束" },
       { from: "资源生成智能体", to: "测评评分智能体", payload: "讲义、例题、练习知识点" },
       { from: "测评评分智能体", to: "内容治理智能体", payload: "题目、标准答案、解析和安全边界" },
-      { from: "内容治理智能体", to: "教师分析智能体", payload: "质量评分、风险项和可干预知识点" },
+      { from: "内容治理智能体", to: "个人洞察智能体", payload: "质量评分、风险项和需补强知识点" },
       { from: "测评评分智能体", to: "学习画像智能体", payload: "得分、错因、维度证据" },
       { from: "学习画像智能体", to: "学习陪练智能体", payload: "更新后的画像和下一步建议" }
     ],
@@ -1092,21 +1231,21 @@ function buildGenerationLoop(input, learnerProfile, path, resources, assessment)
       { id: "knowledge-graph-v1", owner: "知识图谱智能体", type: "concept-graph", version: 1, status: "accepted", reviewers: ["诊断前测智能体", "内容治理智能体"] },
       { id: "diagnostic-pretest-v1", owner: "诊断前测智能体", type: "assessment", version: 1, status: "accepted", reviewers: ["内容治理智能体"] },
       { id: "daily-plan-v1", owner: "路径规划智能体", type: "plan", version: 1, status: "accepted", reviewers: ["资源生成智能体"] },
-      { id: "resource-pack-v1", owner: "资源生成智能体", type: "resources", version: 1, status: "needs-review", reviewers: ["内容治理智能体", "教师分析智能体"] },
-      { id: "quality-report-v1", owner: "内容治理智能体", type: "governance", version: 1, status: "accepted", reviewers: ["教师分析智能体"] }
+      { id: "resource-pack-v1", owner: "资源生成智能体", type: "resources", version: 1, status: "needs-review", reviewers: ["内容治理智能体", "个人洞察智能体"] },
+      { id: "quality-report-v1", owner: "内容治理智能体", type: "governance", version: 1, status: "accepted", reviewers: ["个人洞察智能体"] }
     ],
     revisionCycles: [
       {
         round: 1,
         reviewer: "内容治理智能体",
         issue: "检查题目答案、知识点绑定、难度梯度和泄题风险。",
-        decision: "通过基础质量门禁；若教师端发现风险，可退回资源生成智能体重写。"
+        decision: "通过基础质量门禁；若个人质量面板发现风险，可退回资源生成智能体重写。"
       },
       {
         round: 2,
-        reviewer: "教师分析智能体",
-        issue: "根据薄弱知识点确认补救作业是否可下发。",
-        decision: "生成作业包、分组建议和干预队列。"
+        reviewer: "个人洞察智能体",
+        issue: "根据薄弱知识点确认补救练习是否可执行。",
+        decision: "生成个人补强包、复测建议和下一步行动。"
       }
     ],
     review: {
@@ -1227,7 +1366,7 @@ function pickKnownPlanFields(plan) {
     "generationLoop",
     "remediationPlan",
     "governanceReport",
-    "teacherDashboard",
+    "personalInsights",
     "resourcePackage",
     "dailyPlan",
     "tutorCards"
@@ -1248,7 +1387,7 @@ function normalizePlanShape(plan, fallback) {
     generationLoop: normalizeGenerationLoop(plan.generationLoop, fallback.generationLoop),
     remediationPlan: plan.remediationPlan || fallback.remediationPlan,
     governanceReport: plan.governanceReport || fallback.governanceReport,
-    teacherDashboard: plan.teacherDashboard || fallback.teacherDashboard,
+    personalInsights: plan.personalInsights || fallback.personalInsights,
     resourcePackage: plan.resourcePackage || fallback.resourcePackage,
     dailyPlan: ensureArray(plan.dailyPlan, fallback.dailyPlan),
     tutorCards: ensureArray(plan.tutorCards, fallback.tutorCards)
