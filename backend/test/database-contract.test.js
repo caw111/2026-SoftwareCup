@@ -4,9 +4,16 @@ import path from "node:path";
 import test from "node:test";
 
 import { publicQuestion } from "../src/repositories/quiz-repository.js";
-import { splitSqlStatements } from "../../scripts/migrate.js";
+import { migrationChecksum, splitSqlStatements } from "../../scripts/migrate.js";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
+
+test("migration checksum ignores platform line endings", () => {
+  assert.equal(
+    migrationChecksum("CREATE TABLE a (id INT);\nCREATE TABLE b (id INT);\n"),
+    migrationChecksum("CREATE TABLE a (id INT);\r\nCREATE TABLE b (id INT);\r\n")
+  );
+});
 
 test("数据库迁移包含全部核心业务表", () => {
   const migrationDir = path.join(ROOT, "database", "migrations");
@@ -23,6 +30,9 @@ test("数据库迁移包含全部核心业务表", () => {
     "quiz_sessions",
     "quiz_questions",
     "quiz_attempts",
+    "concept_mastery",
+    "content_reviews",
+    "teacher_reports",
     "legacy_imports"
   ]) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
