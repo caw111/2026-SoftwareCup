@@ -30,9 +30,7 @@ export async function migrateDatabase({ log = console.log } = {}) {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
 
-    const files = fs.readdirSync(MIGRATION_DIR)
-      .filter((name) => /^\d+.*\.sql$/i.test(name))
-      .sort((a, b) => a.localeCompare(b, "en"));
+    const files = migrationFiles();
     const [appliedRows] = await connection.query(
       "SELECT version, filename, checksum FROM schema_migrations ORDER BY version"
     );
@@ -42,10 +40,18 @@ export async function migrateDatabase({ log = console.log } = {}) {
       const version = filename.match(/^(\d+)/)?.[1];
       const sql = fs.readFileSync(path.join(MIGRATION_DIR, filename), "utf8");
       const checksum = migrationChecksum(sql);
+      const legacyChecksum = legacyMigrationChecksum(sql);
       const previous = applied.get(version);
       if (previous) {
-        if (previous.filename !== filename || previous.checksum !== checksum) {
+        const checksumMatches = previous.checksum === checksum || previous.checksum === legacyChecksum;
+        if (previous.filename !== filename || !checksumMatches) {
           throw new Error(`迁移 ${version} 已执行，但文件名或校验值发生变化`);
+        }
+        if (previous.checksum !== checksum) {
+          await connection.execute(
+            "UPDATE schema_migrations SET checksum = ? WHERE version = ?",
+            [checksum, version]
+          );
         }
         continue;
       }
@@ -79,6 +85,12 @@ export async function databaseMigrationStatus() {
   return rows;
 }
 
+export function migrationFiles() {
+  return fs.readdirSync(MIGRATION_DIR)
+    .filter((name) => /^\d+_[a-z0-9_]+\.sql$/i.test(name))
+    .sort((a, b) => a.localeCompare(b, "en"));
+}
+
 export function splitSqlStatements(sql) {
   return sql
     .split(/;\s*(?:\r?\n|$)/)
@@ -89,6 +101,12 @@ export function splitSqlStatements(sql) {
 export function migrationChecksum(sql) {
   return crypto.createHash("sha256")
     .update(normalizeMigrationSql(sql))
+    .digest("hex");
+}
+
+export function legacyMigrationChecksum(sql) {
+  return crypto.createHash("sha256")
+    .update(String(sql))
     .digest("hex");
 }
 

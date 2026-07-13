@@ -4,7 +4,12 @@ import path from "node:path";
 import test from "node:test";
 
 import { publicQuestion } from "../src/repositories/quiz-repository.js";
-import { migrationChecksum, splitSqlStatements } from "../../scripts/migrate.js";
+import {
+  legacyMigrationChecksum,
+  migrationChecksum,
+  migrationFiles,
+  splitSqlStatements
+} from "../../scripts/migrate.js";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 
@@ -12,6 +17,24 @@ test("migration checksum ignores platform line endings", () => {
   assert.equal(
     migrationChecksum("CREATE TABLE a (id INT);\nCREATE TABLE b (id INT);\n"),
     migrationChecksum("CREATE TABLE a (id INT);\r\nCREATE TABLE b (id INT);\r\n")
+  );
+  assert.notEqual(
+    migrationChecksum("CREATE TABLE a (id INT);\r\n"),
+    legacyMigrationChecksum("CREATE TABLE a (id INT);\r\n")
+  );
+});
+
+test("migration runner only includes canonical sql migration files", () => {
+  assert.deepEqual(
+    migrationFiles(),
+    [
+      "001_create_users.sql",
+      "002_create_learning_plans.sql",
+      "003_create_plan_tasks.sql",
+      "004_create_quizzes.sql",
+      "005_create_legacy_imports.sql",
+      "006_create_learning_evidence.sql"
+    ]
   );
 });
 
