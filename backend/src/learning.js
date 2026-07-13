@@ -8,6 +8,15 @@ import { requestChatCompletion, parseJsonFromModel } from "./llm.js";
 
 import { bootstrapJudgeRuntime, friendlyJudgeError, getJudgeRuntimeStatus } from "./judge.js";
 
+import {
+  buildAdaptiveState,
+  buildDiagnosticPretest,
+  buildGovernanceReport,
+  buildKnowledgeGraph,
+  buildRemediationPlan,
+  buildPersonalLearningInsights
+} from "./adaptive-learning.js";
+
 export function normalizeInput(body) {
   return {
     topic: clean(body.topic) || "机器学习基础",
@@ -118,11 +127,33 @@ export async function streamLearningPlan(res, input) {
 
 export function runLocalAgents(input) {
   const learnerProfile = buildLearnerProfile(input);
+  const knowledgeGraph = buildKnowledgeGraph(input, learnerProfile);
+  const diagnosticPretest = buildDiagnosticPretest(input, learnerProfile, knowledgeGraph);
+  const adaptiveState = buildAdaptiveState({ learnerProfile, knowledgeGraph });
   const path = buildLearningPath(input);
   const dailyPlan = buildDailyPlan(input, learnerProfile);
   const assessment = buildAssessment(input, learnerProfile, dailyPlan);
-  const resources = buildResources(input, learnerProfile, assessment);
+  const resources = buildResources(input, learnerProfile, assessment, knowledgeGraph);
   const generationLoop = buildGenerationLoop(input, learnerProfile, path, resources, assessment);
+  const remediationPlan = buildRemediationPlan(input, knowledgeGraph, learnerProfile);
+  const governanceReport = buildGovernanceReport({
+    input,
+    learnerProfile,
+    path,
+    resources,
+    assessment,
+    dailyPlan,
+    knowledgeGraph
+  });
+  const personalInsights = buildPersonalLearningInsights({
+    input,
+    learnerProfile,
+    dailyPlan,
+    assessment,
+    knowledgeGraph,
+    governanceReport,
+    adaptiveState
+  });
   const resourcePackage = buildResourcePackage(input, learnerProfile, path, resources, assessment, generationLoop);
   const tutorCards = buildTutorCards(input, learnerProfile);
   const profile = {
@@ -134,10 +165,16 @@ export function runLocalAgents(input) {
   return {
     profile,
     learnerProfile,
+    knowledgeGraph,
+    diagnosticPretest,
+    adaptiveState,
     path,
     resources,
     assessment,
     generationLoop,
+    remediationPlan,
+    governanceReport,
+    personalInsights,
     resourcePackage,
     dailyPlan,
     tutorCards
@@ -173,6 +210,24 @@ async function runLocalAgentsWithEvents(input, emit) {
     outputOf: (profile) => `识别薄弱维度：${profile.weakestDimensions.map((item) => item.dimension).join("、")}`
   }, () => buildLearnerProfile(input));
 
+  const knowledgeGraph = await runStage({
+    agentId: "knowledge-graph-agent",
+    agent: "知识图谱智能体",
+    action: "把学习主题拆成可诊断、可推荐、可复测的知识节点",
+    input: "学习画像、薄弱维度、学习主题",
+    outputOf: (graph) => `生成 ${graph.concepts.length} 个知识节点和 ${graph.edges.length} 条先修关系`
+  }, () => buildKnowledgeGraph(input, learnerProfile));
+
+  const diagnosticPretest = await runStage({
+    agentId: "diagnostic-pretest-agent",
+    agent: "诊断前测智能体",
+    action: "围绕薄弱知识点生成首轮诊断题",
+    input: "知识图谱、学习画像、薄弱维度",
+    outputOf: (diagnostic) => `生成 ${diagnostic.items.length} 道诊断前测题`
+  }, () => buildDiagnosticPretest(input, learnerProfile, knowledgeGraph));
+
+  const adaptiveState = buildAdaptiveState({ learnerProfile, knowledgeGraph });
+
   const path = await runStage({
     agentId: "planner-agent",
     agent: "路径规划智能体",
@@ -203,7 +258,7 @@ async function runLocalAgentsWithEvents(input, emit) {
     action: "生成讲义、例题、练习和复盘模板",
     input: "路径、任务、测评规则",
     outputOf: (items) => `生成 ${items.length} 类学习资源`
-  }, () => buildResources(input, learnerProfile, assessment));
+  }, () => buildResources(input, learnerProfile, assessment, knowledgeGraph));
 
   const generationLoop = await runStage({
     agentId: "quality-agent",
@@ -212,6 +267,34 @@ async function runLocalAgentsWithEvents(input, emit) {
     input: "画像、路径、资源、测评题",
     outputOf: (loop) => `质量分 ${loop.qualityScore}，数据流 ${loop.flows.length} 条`
   }, () => buildGenerationLoop(input, learnerProfile, path, resources, assessment));
+
+  const remediationPlan = buildRemediationPlan(input, knowledgeGraph, learnerProfile);
+
+  const governanceReport = await runStage({
+    agentId: "governance-agent",
+    agent: "内容治理智能体",
+    action: "检查资源包的知识点绑定、证据来源、答案泄露和测评闭环",
+    input: "知识图谱、资源、测评题、每日任务",
+    outputOf: (report) => `质量分 ${report.score}，风险等级 ${report.riskLevel}`
+  }, () => buildGovernanceReport({
+    input,
+    learnerProfile,
+    path,
+    resources,
+    assessment,
+    dailyPlan,
+    knowledgeGraph
+  }));
+
+  const personalInsights = buildPersonalLearningInsights({
+    input,
+    learnerProfile,
+    dailyPlan,
+    assessment,
+    knowledgeGraph,
+    governanceReport,
+    adaptiveState
+  });
 
   const resourcePackage = await runStage({
     agentId: "package-agent",
@@ -231,6 +314,9 @@ async function runLocalAgentsWithEvents(input, emit) {
   return {
     profile,
     learnerProfile,
+    knowledgeGraph,
+    diagnosticPretest,
+    adaptiveState,
     path,
     resources,
     assessment,
@@ -238,6 +324,9 @@ async function runLocalAgentsWithEvents(input, emit) {
       ...generationLoop,
       trace
     },
+    remediationPlan,
+    governanceReport,
+    personalInsights,
     resourcePackage,
     dailyPlan,
     tutorCards
@@ -319,29 +408,60 @@ function buildLearningPath(input) {
   ];
 }
 
-function buildResources(input, learnerProfile, assessment) {
+function buildResources(input, learnerProfile, assessment, knowledgeGraph) {
   const focus = learnerProfile.weakestDimensions[0].dimension;
+  const concepts = ensureArray(knowledgeGraph?.concepts, []);
+  const focusedConcepts = concepts
+    .filter((concept) => concept.dimension === focus)
+    .concat(concepts)
+    .filter((concept, index, array) => array.findIndex((item) => item.id === concept.id) === index)
+    .slice(0, 6);
+  const grounded = focusedConcepts.map((concept, index) => ({
+    type: index % 2 === 0 ? "知识点微讲义" : "变式练习",
+    conceptId: concept.id,
+    sourceConcepts: [concept.id, ...(concept.prerequisites || [])],
+    title: `${concept.title} ${index % 2 === 0 ? "微讲义" : "变式练习"}`,
+    objective: concept.standard || `掌握 ${concept.title}`,
+    difficulty: concept.difficulty,
+    misconceptions: concept.misconceptions || [],
+    content: index % 2 === 0
+      ? `围绕“${concept.title}”完成定义、适用条件、反例和一个 ${input.topic} 场景解释，重点修正：${(concept.misconceptions || []).slice(0, 2).join("、") || "常见误区"}。`
+      : `完成 2 道与“${concept.title}”相关的变式题，要求写出判断依据、错因标签和复测结果。`
+  }));
   return [
     {
       type: "微讲义",
+      conceptId: focusedConcepts[0]?.id,
+      sourceConcepts: focusedConcepts.slice(0, 3).map((concept) => concept.id),
       title: `${input.topic} 核心概念速览`,
+      objective: "建立主题总览，并连接后续细粒度知识点。",
       content: `按“概念定义-现实类比-关键步骤-易错点”的结构学习 ${input.topic}，每个概念都写出自己的例子。`
     },
     {
       type: "例题讲解",
+      conceptId: focusedConcepts[1]?.id,
+      sourceConcepts: focusedConcepts.slice(0, 4).map((concept) => concept.id),
       title: `${input.topic} 场景化案例`,
+      objective: "把概念迁移到真实问题结构。",
       content: `选择一个熟悉场景，说明 ${input.topic} 如何解决问题，并标出输入、处理、输出和评估方式。`
     },
     {
       type: "进度匹配练习",
+      conceptId: focusedConcepts[2]?.id,
+      sourceConcepts: focusedConcepts.map((concept) => concept.id),
       title: `${focus} 专项选择题组`,
+      objective: "用题目证据更新掌握度。",
       content: `练习会优先覆盖已打卡任务和薄弱维度，当前默认生成 ${assessment.quiz.length} 道选择题。`
     },
     {
       type: "复盘模板",
+      conceptId: focusedConcepts[3]?.id,
+      sourceConcepts: focusedConcepts.map((concept) => concept.id),
       title: "错因记录表",
+      objective: "沉淀错因、提示使用和复测结果。",
       content: "记录错题、卡点、正确思路、下次提醒和需要补学的知识点，用于下一次画像更新。"
-    }
+    },
+    ...grounded
   ];
 }
 
@@ -359,11 +479,11 @@ function buildAssessment(input, learnerProfile, dailyPlan) {
 
 export async function generateAdaptiveQuiz(input, plan, progress = {}, variant = 0, history = [], options = {}) {
   const summary = summarizeProgress(plan, progress);
-  const quizOptions = {
+  const quizOptions = normalizeQuizOptions({
     ...options,
-    includeCode: shouldIncludeProgrammingQuestion(input, plan, progress, history),
-    codeLanguage: inferProgrammingLanguage(input, plan, history)
-  };
+    includeCode: options.includeCode ?? shouldIncludeProgrammingQuestion(input, plan, progress, history),
+    codeLanguage: options.codeLanguage || inferProgrammingLanguage(input, plan, history)
+  });
   if (quizOptions.includeCode && JUDGE_AUTO_BOOTSTRAP) {
     bootstrapJudgeRuntime().catch((error) => {
       console.warn(`判题沙箱准备失败：${friendlyJudgeError(error)}`);
@@ -372,23 +492,103 @@ export async function generateAdaptiveQuiz(input, plan, progress = {}, variant =
   const localQuiz = buildProgressQuiz(input, plan, progress, variant, history, quizOptions);
 
   if (!MODEL_CONFIG.apiKey) {
-    return { quiz: localQuiz, mode: "local-bank", llmUsed: false, includeCode: quizOptions.includeCode, judge: getJudgeRuntimeStatus() };
+    return { quiz: localQuiz, mode: "local-bank", llmUsed: false, includeCode: quizOptions.includeCode, quizOptions, judge: getJudgeRuntimeStatus() };
   }
 
   try {
     const llmQuiz = await callLargeModelForQuiz(input, plan, progress, summary, variant, history, quizOptions);
-    return { quiz: normalizeGeneratedQuiz(llmQuiz, localQuiz, summary, variant, quizOptions), mode: "llm-quiz", llmUsed: true, includeCode: quizOptions.includeCode, judge: getJudgeRuntimeStatus() };
+    return { quiz: normalizeGeneratedQuiz(llmQuiz, localQuiz, summary, variant, quizOptions), mode: "llm-quiz", llmUsed: true, includeCode: quizOptions.includeCode, quizOptions, judge: getJudgeRuntimeStatus() };
   } catch (error) {
     return {
       quiz: localQuiz,
       mode: "local-bank-fallback",
       llmUsed: false,
       includeCode: quizOptions.includeCode,
+      quizOptions,
       judge: getJudgeRuntimeStatus(),
       warning: "大模型出题失败，已使用本地专业题库。",
       detail: error instanceof Error ? error.message : String(error)
     };
   }
+}
+
+function normalizeQuizOptions(options = {}) {
+  const rawTypeCounts = options.typeCounts || {};
+  const parsedCounts = {
+    choice: boundedInteger(rawTypeCounts.choice ?? options.choiceCount, 0, 20, 0),
+    short: boundedInteger(rawTypeCounts.short ?? options.shortCount, 0, 20, 0),
+    code: boundedInteger(rawTypeCounts.code ?? options.codeCount, 0, 20, 0)
+  };
+  const hasExplicitCounts = Object.values(parsedCounts).some((count) => count > 0);
+  const requestedCount = boundedInteger(
+    options.questionCount ?? options.count,
+    1,
+    20,
+    hasExplicitCounts ? parsedCounts.choice + parsedCounts.short + parsedCounts.code : 4
+  );
+  const explicitTypes = new Set(ensureArray(options.types, []).filter((type) => ["choice", "short", "code"].includes(type)));
+  let includeCode = Boolean(options.includeCode) || parsedCounts.code > 0 || explicitTypes.has("code");
+  const typeCounts = hasExplicitCounts
+    ? parsedCounts
+    : includeCode
+      ? { choice: Math.max(1, requestedCount - 2), short: 1, code: 1 }
+      : { choice: Math.max(1, requestedCount - 1), short: Math.min(1, requestedCount - 1), code: 0 };
+
+  if (explicitTypes.size) {
+    for (const type of ["choice", "short", "code"]) {
+      if (!explicitTypes.has(type)) typeCounts[type] = 0;
+    }
+    if (!explicitTypes.has("code")) includeCode = false;
+  }
+  if (options.includeCode === false) {
+    typeCounts.code = 0;
+    includeCode = false;
+  }
+  if (!includeCode) typeCounts.code = 0;
+
+  balanceTypeCounts(typeCounts, requestedCount, includeCode);
+  return {
+    questionCount: typeCounts.choice + typeCounts.short + typeCounts.code,
+    typeCounts,
+    types: Object.entries(typeCounts).filter(([, count]) => count > 0).map(([type]) => type),
+    includeCode: typeCounts.code > 0,
+    codeLanguage: normalizeCodeLanguage(options.codeLanguage || "python"),
+    difficulty: ["easy", "medium", "hard", "adaptive"].includes(options.difficulty) ? options.difficulty : "adaptive",
+    knowledgeScope: ["current", "weak", "all"].includes(options.knowledgeScope) ? options.knowledgeScope : "current",
+    showHints: options.showHints !== false,
+    showAnswerMode: options.showAnswerMode || "after-submit",
+    includeSimilar: Boolean(options.includeSimilar),
+    includeRetest: Boolean(options.includeRetest),
+    focusDimension: clean(options.focusDimension, 80),
+    timeLimitSec: boundedInteger(options.timeLimitSec, 0, 10800, 0)
+  };
+}
+
+function boundedInteger(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return Math.max(min, Math.min(max, Math.round(fallback)));
+  return Math.max(min, Math.min(max, Math.round(number)));
+}
+
+function balanceTypeCounts(typeCounts, requestedCount, includeCode) {
+  const fillOrder = includeCode ? ["choice", "short", "code"] : ["choice", "short"];
+  if (!fillOrder.some((type) => typeCounts[type] > 0)) typeCounts.choice = requestedCount;
+  while (typeCounts.choice + typeCounts.short + typeCounts.code < requestedCount) {
+    const type = fillOrder[(typeCounts.choice + typeCounts.short + typeCounts.code) % fillOrder.length];
+    typeCounts[type] += 1;
+  }
+  while (typeCounts.choice + typeCounts.short + typeCounts.code > requestedCount) {
+    const type = [...fillOrder].reverse().find((item) => typeCounts[item] > 0) || "choice";
+    typeCounts[type] -= 1;
+  }
+}
+
+function describeQuizStructure(options) {
+  return [
+    options.typeCounts.choice ? `${options.typeCounts.choice} 道 choice 选择题` : "",
+    options.typeCounts.short ? `${options.typeCounts.short} 道 short 简答题` : "",
+    options.typeCounts.code ? `${options.typeCounts.code} 道 code 编程题` : ""
+  ].filter(Boolean).join("、");
 }
 
 function shouldIncludeProgrammingQuestion(input, plan, progress, history) {
@@ -422,6 +622,7 @@ function inferProgrammingLanguage(input, plan, history) {
 }
 
 async function callLargeModelForQuiz(input, plan, progress, summary, variant, history, options) {
+  const quizConfig = normalizeQuizOptions(options);
   const completedDays = (plan?.dailyPlan || []).map((day) => ({
     day: day.day,
     title: day.title,
@@ -455,9 +656,9 @@ async function callLargeModelForQuiz(input, plan, progress, summary, variant, hi
 }
 
 硬性要求：
-1. 生成 4 道题，必须和当前主题 ${input.topic} 的专业知识强相关，不要泛泛学习方法题。
+1. 生成 ${quizConfig.questionCount} 道题，必须和当前主题 ${input.topic} 的专业知识强相关，不要泛泛学习方法题。
 2. 必须利用 completedDays 和 recentHistory，避免重复 recentHistory 中的题干。
-3. ${options.includeCode ? `当前学习内容适合编程训练，题型结构必须严格为：2 道 choice 选择题、1 道 short 简答题、1 道 code 编程题；编程题语言必须是 ${options.codeLanguage}，tests 要可由服务端判题沙箱运行。` : "当前学习内容暂不适合编程训练，题型结构为 3 道 choice 选择题、1 道 short 简答题。"}
+3. 题型结构必须严格为：${describeQuizStructure(quizConfig)}${quizConfig.includeCode ? `；编程题语言必须是 ${quizConfig.codeLanguage}，tests 要可由服务端判题沙箱运行。` : "。"}
 4. 选择题要有明确干扰项；简答题要给 referenceAnswer 和 keywords；代码题只考一个函数。
 5. 编程题测试格式统一为 {"function":"函数名","args":[参数1,参数2],"expected":期望返回值}；不要使用标准输入输出题。
 6. 题干中自然体现当前进度或错题薄弱点，但不要机械复制上下文。
@@ -470,8 +671,9 @@ ${JSON.stringify({
   weakDimensions: plan?.learnerProfile?.weakestDimensions || [],
   recentHistory,
   variant,
-  includeProgrammingQuestion: options.includeCode,
-  requiredCodeLanguage: options.codeLanguage
+  includeProgrammingQuestion: quizConfig.includeCode,
+  requiredCodeLanguage: quizConfig.codeLanguage,
+  quizConfig
 })}`;
 
   const content = await requestChatCompletion([
@@ -497,7 +699,7 @@ function normalizeGeneratedQuiz(items, fallback, summary, variant, options) {
     .filter((item) => item && ["choice", "short", "code"].includes(item.type))
     .filter((item) => options.includeCode || item.type !== "code")
     .map((item, index) => normalizeQuizItem(item, summary, variant, index, options));
-  const structured = pickQuizByStructure(normalized, options.includeCode);
+  const structured = pickQuizByOptions(normalized, options);
   return structured || fallback;
 }
 
@@ -511,6 +713,29 @@ function pickQuizByStructure(items, includeCode) {
   }
   if (choices.length < 3 || shorts.length < 1) return null;
   return [choices[0], choices[1], choices[2], shorts[0]];
+}
+
+function pickQuizByOptions(items, options = {}) {
+  const config = normalizeQuizOptions(options);
+  const usableItems = config.includeCode ? items : items.filter((item) => item.type !== "code");
+  if (!usableItems.length) return null;
+  const selected = [];
+  for (const type of ["choice", "short", "code"]) {
+    const wanted = config.typeCounts[type] || 0;
+    if (!wanted) continue;
+    const typed = usableItems.filter((item) => item.type === type);
+    if (!typed.length) continue;
+    for (let index = 0; index < wanted; index += 1) {
+      selected.push({ ...typed[index % typed.length], recycledVariant: Math.floor(index / typed.length) });
+    }
+  }
+  let fillIndex = 0;
+  while (selected.length < config.questionCount) {
+    const candidate = usableItems[fillIndex % usableItems.length];
+    selected.push({ ...candidate, recycledVariant: Math.floor(fillIndex / usableItems.length) + 1 });
+    fillIndex += 1;
+  }
+  return selected.slice(0, config.questionCount);
 }
 
 function normalizeQuizItem(item, summary, variant, index, options = {}) {
@@ -685,7 +910,8 @@ function buildProgressQuiz(input, plan, progress = {}, variant = 0, history = []
     variant,
     summary,
     learnedTask,
-    missedDimensions
+    missedDimensions,
+    quizOptions: options
   }));
 }
 
@@ -849,24 +1075,48 @@ function selectProfessionalQuizBank(topic, focus, dayLabel, learnedTask, options
 }
 
 function selectAdaptiveQuizItems(items, offset, history, missedDimensions, options = {}) {
-  const usableItems = options.includeCode ? items : items.filter((item) => item.type !== "code");
+  const quizConfig = normalizeQuizOptions(options);
+  const usableItems = quizConfig.includeCode ? items : items.filter((item) => item.type !== "code");
+  if (!usableItems.length) return [];
   const previousBaseIds = new Set(
     history
       .map((item) => String(item.questionId || "").split("-").slice(0, -4).join("-"))
       .filter(Boolean)
   );
-  const prioritized = missedDimensions.length
-    ? usableItems.filter((item) => missedDimensions.includes(item.dimension)).concat(usableItems.filter((item) => !missedDimensions.includes(item.dimension)))
+  const focusDimensions = [quizConfig.focusDimension, ...missedDimensions].filter(Boolean);
+  const prioritized = focusDimensions.length
+    ? usableItems.filter((item) => focusDimensions.includes(item.dimension)).concat(usableItems.filter((item) => !focusDimensions.includes(item.dimension)))
     : usableItems;
-  const rotated = prioritized.slice(offset % prioritized.length).concat(prioritized.slice(0, offset % prioritized.length));
+  const difficultyFiltered = filterByRequestedDifficulty(prioritized, quizConfig.difficulty);
+  const scoped = quizConfig.knowledgeScope === "weak" && focusDimensions.length
+    ? difficultyFiltered.filter((item) => focusDimensions.includes(item.dimension)).concat(difficultyFiltered.filter((item) => !focusDimensions.includes(item.dimension)))
+    : difficultyFiltered;
+  const poolSource = scoped.length ? scoped : usableItems;
+  const rotated = poolSource.slice(offset % poolSource.length).concat(poolSource.slice(0, offset % poolSource.length));
   const fresh = rotated.filter((item) => !previousBaseIds.has(item.id));
-  const pool = fresh.length >= 4 ? fresh : rotated;
-  const selected = pickQuizByStructure(pool, Boolean(options.includeCode));
+  const pool = fresh.length >= quizConfig.questionCount ? fresh : rotated;
+  const selected = pickQuizByOptions(pool, quizConfig);
   if (selected) return selected;
-  return pool.slice(0, 4);
+  return pool.slice(0, quizConfig.questionCount);
+}
+
+function filterByRequestedDifficulty(items, difficulty) {
+  if (!items.length || difficulty === "adaptive") return items;
+  const range = {
+    easy: [1, 2],
+    medium: [2, 3],
+    hard: [3, 5]
+  }[difficulty] || [1, 5];
+  const filtered = items.filter((item) => {
+    const level = Number(item.difficulty || (item.type === "code" ? 4 : item.type === "short" ? 3 : 2));
+    return level >= range[0] && level <= range[1];
+  });
+  return filtered.length ? filtered : items;
 }
 
 function applyQuizContext(item, context) {
+  const quizOptions = normalizeQuizOptions(context.quizOptions || {});
+  const estimatedTimeSec = item.estimatedTimeSec || (item.type === "code" ? 900 : item.type === "short" ? 240 : 90);
   const missedText = context.missedDimensions.length
     ? `上一轮薄弱维度：${context.missedDimensions.join("、")}。`
     : "上一轮暂无明显错题维度。";
@@ -874,6 +1124,28 @@ function applyQuizContext(item, context) {
   return {
     ...item,
     id: `${item.id}-${context.summary.currentDay || 1}-${context.summary.done}-${context.variant || 0}-${context.index}`,
+    conceptId: item.conceptId || slugify(`${item.dimension || "general"}-${item.id}`).slice(0, 80),
+    difficulty: item.difficulty || (item.type === "code" ? 4 : item.type === "short" ? 3 : 2),
+    estimatedTimeSec,
+    timeLimitSec: quizOptions.timeLimitSec || item.timeLimitSec || estimatedTimeSec,
+    hintLadder: quizOptions.showHints === false ? [] : item.hintLadder || [
+      "先判断题目考查的知识点。",
+      "再写出适用条件或关键公式。",
+      "最后排除与条件冲突的选项或步骤。"
+    ],
+    quizOptions: {
+      difficulty: quizOptions.difficulty,
+      knowledgeScope: quizOptions.knowledgeScope,
+      focusDimension: quizOptions.focusDimension,
+      showAnswerMode: quizOptions.showAnswerMode,
+      includeSimilar: quizOptions.includeSimilar,
+      includeRetest: quizOptions.includeRetest
+    },
+    scoringSignals: {
+      usesProgress: true,
+      usesMistakeHistory: context.missedDimensions.length > 0,
+      retestRecommendedBelow: 70
+    },
     question: `${progressPrefix}\n${missedText}\n${item.question}`,
     relatedDay: context.summary.currentDay || 1,
     progressContext: {
@@ -931,20 +1203,50 @@ function buildGenerationLoop(input, learnerProfile, path, resources, assessment)
     qualityScore,
     stages: [
       { id: "profile-agent", agent: "学习画像智能体", status: "done", action: "读取表单目标、基础、偏好和薄弱点", input: "用户学习需求", output: `初始画像：${weakest}` },
+      { id: "knowledge-graph-agent", agent: "知识图谱智能体", status: "done", action: "拆解知识节点和先修关系", input: "学习画像与学习主题", output: "形成可诊断、可推荐、可复测的知识图谱" },
+      { id: "diagnostic-pretest-agent", agent: "诊断前测智能体", status: "done", action: "生成首轮诊断题", input: "知识图谱与薄弱维度", output: "形成诊断前测和错因标签" },
       { id: "diagnosis-agent", agent: "知识诊断智能体", status: "done", action: "把薄弱点映射到知识维度", input: "画像与薄弱点文本", output: `优先补救：${learnerProfile.weakestDimensions[0].dimension}` },
       { id: "planner-agent", agent: "路径规划智能体", status: "done", action: "拆分阶段路径和每日任务", input: "诊断结果、周期、每日时间", output: `生成 ${path.length} 个阶段` },
       { id: "resource-agent", agent: "资源生成智能体", status: "done", action: "生成讲义、例题、练习和解析", input: "路径约束与学习偏好", output: `生成 ${resources.length} 类资源` },
       { id: "assessment-agent", agent: "测评评分智能体", status: "done", action: "生成选择题并定义评分规则", input: "资源草案与进度信号", output: `生成 ${assessment.quiz.length} 道选择题` },
+      { id: "governance-agent", agent: "内容治理智能体", status: "done", action: "审查知识点绑定、证据来源和答案泄露风险", input: "资源、测评、图谱与每日任务", output: "形成质量治理报告" },
+      { id: "insight-agent", agent: "个人洞察智能体", status: "done", action: "汇总薄弱知识点和下一步行动", input: "掌握度、错因、质量报告", output: "形成个人学习洞察" },
       { id: "coach-agent", agent: "学习陪练智能体", status: "done", action: "整合为可追问上下文", input: "方案、资源、测评规则", output: "形成后续答疑上下文" }
     ],
     flows: [
       { from: "用户输入", to: "学习画像智能体", payload: "目标、水平、周期、偏好、薄弱点" },
-      { from: "学习画像智能体", to: "知识诊断智能体", payload: "初始画像、掌握度预估、行为信号" },
+      { from: "学习画像智能体", to: "知识图谱智能体", payload: "初始画像、掌握度预估、薄弱维度" },
+      { from: "知识图谱智能体", to: "诊断前测智能体", payload: "知识节点、先修关系、概念难度" },
+      { from: "诊断前测智能体", to: "知识诊断智能体", payload: "诊断题、错因标签、待测概念" },
       { from: "知识诊断智能体", to: "路径规划智能体", payload: "薄弱维度和补救优先级" },
       { from: "路径规划智能体", to: "资源生成智能体", payload: "阶段路径、每日任务约束" },
       { from: "资源生成智能体", to: "测评评分智能体", payload: "讲义、例题、练习知识点" },
+      { from: "测评评分智能体", to: "内容治理智能体", payload: "题目、标准答案、解析和安全边界" },
+      { from: "内容治理智能体", to: "个人洞察智能体", payload: "质量评分、风险项和需补强知识点" },
       { from: "测评评分智能体", to: "学习画像智能体", payload: "得分、错因、维度证据" },
       { from: "学习画像智能体", to: "学习陪练智能体", payload: "更新后的画像和下一步建议" }
+    ],
+    artifacts: [
+      { id: "learner-profile-v1", owner: "学习画像智能体", type: "profile", version: 1, status: "accepted", reviewers: ["知识诊断智能体"] },
+      { id: "knowledge-graph-v1", owner: "知识图谱智能体", type: "concept-graph", version: 1, status: "accepted", reviewers: ["诊断前测智能体", "内容治理智能体"] },
+      { id: "diagnostic-pretest-v1", owner: "诊断前测智能体", type: "assessment", version: 1, status: "accepted", reviewers: ["内容治理智能体"] },
+      { id: "daily-plan-v1", owner: "路径规划智能体", type: "plan", version: 1, status: "accepted", reviewers: ["资源生成智能体"] },
+      { id: "resource-pack-v1", owner: "资源生成智能体", type: "resources", version: 1, status: "needs-review", reviewers: ["内容治理智能体", "个人洞察智能体"] },
+      { id: "quality-report-v1", owner: "内容治理智能体", type: "governance", version: 1, status: "accepted", reviewers: ["个人洞察智能体"] }
+    ],
+    revisionCycles: [
+      {
+        round: 1,
+        reviewer: "内容治理智能体",
+        issue: "检查题目答案、知识点绑定、难度梯度和泄题风险。",
+        decision: "通过基础质量门禁；若个人质量面板发现风险，可退回资源生成智能体重写。"
+      },
+      {
+        round: 2,
+        reviewer: "个人洞察智能体",
+        issue: "根据薄弱知识点确认补救练习是否可执行。",
+        decision: "生成个人补强包、复测建议和下一步行动。"
+      }
     ],
     review: {
       passed: qualityScore >= 80,
@@ -1053,7 +1355,22 @@ function mergeLearningPlan(localPlan, llmPlan) {
 }
 
 function pickKnownPlanFields(plan) {
-  const fields = ["learnerProfile", "path", "resources", "assessment", "generationLoop", "resourcePackage", "dailyPlan", "tutorCards"];
+  const fields = [
+    "learnerProfile",
+    "knowledgeGraph",
+    "diagnosticPretest",
+    "adaptiveState",
+    "path",
+    "resources",
+    "assessment",
+    "generationLoop",
+    "remediationPlan",
+    "governanceReport",
+    "personalInsights",
+    "resourcePackage",
+    "dailyPlan",
+    "tutorCards"
+  ];
   return Object.fromEntries(fields.filter((field) => plan?.[field]).map((field) => [field, plan[field]]));
 }
 
@@ -1061,10 +1378,16 @@ function normalizePlanShape(plan, fallback) {
   return {
     ...plan,
     learnerProfile: normalizeLearnerProfile(plan.learnerProfile, fallback.learnerProfile),
+    knowledgeGraph: normalizeKnowledgeGraph(plan.knowledgeGraph, fallback.knowledgeGraph),
+    diagnosticPretest: normalizeDiagnosticPretest(plan.diagnosticPretest, fallback.diagnosticPretest),
+    adaptiveState: plan.adaptiveState || fallback.adaptiveState,
     path: ensureArray(plan.path, fallback.path),
     resources: ensureArray(plan.resources, fallback.resources),
     assessment: normalizeAssessment(plan.assessment, fallback.assessment),
     generationLoop: normalizeGenerationLoop(plan.generationLoop, fallback.generationLoop),
+    remediationPlan: plan.remediationPlan || fallback.remediationPlan,
+    governanceReport: plan.governanceReport || fallback.governanceReport,
+    personalInsights: plan.personalInsights || fallback.personalInsights,
     resourcePackage: plan.resourcePackage || fallback.resourcePackage,
     dailyPlan: ensureArray(plan.dailyPlan, fallback.dailyPlan),
     tutorCards: ensureArray(plan.tutorCards, fallback.tutorCards)
@@ -1081,6 +1404,26 @@ function normalizeLearnerProfile(profile, fallback) {
     tags: ensureArray(profile.tags, fallback.tags),
     behaviorSignals: ensureArray(profile.behaviorSignals, fallback.behaviorSignals),
     strategyPriorities: ensureArray(profile.strategyPriorities, fallback.strategyPriorities)
+  };
+}
+
+function normalizeKnowledgeGraph(graph, fallback) {
+  if (!graph) return fallback;
+  return {
+    ...fallback,
+    ...graph,
+    dimensions: ensureArray(graph.dimensions, fallback.dimensions),
+    concepts: ensureArray(graph.concepts, fallback.concepts),
+    edges: ensureArray(graph.edges, fallback.edges)
+  };
+}
+
+function normalizeDiagnosticPretest(diagnostic, fallback) {
+  if (!diagnostic) return fallback;
+  return {
+    ...fallback,
+    ...diagnostic,
+    items: ensureArray(diagnostic.items, fallback.items)
   };
 }
 

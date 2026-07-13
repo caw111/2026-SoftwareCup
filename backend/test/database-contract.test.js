@@ -4,9 +4,39 @@ import path from "node:path";
 import test from "node:test";
 
 import { publicQuestion } from "../src/repositories/quiz-repository.js";
-import { splitSqlStatements } from "../../scripts/migrate.js";
+import {
+  legacyMigrationChecksum,
+  migrationChecksum,
+  migrationFiles,
+  splitSqlStatements
+} from "../../scripts/migrate.js";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
+
+test("migration checksum ignores platform line endings", () => {
+  assert.equal(
+    migrationChecksum("CREATE TABLE a (id INT);\nCREATE TABLE b (id INT);\n"),
+    migrationChecksum("CREATE TABLE a (id INT);\r\nCREATE TABLE b (id INT);\r\n")
+  );
+  assert.notEqual(
+    migrationChecksum("CREATE TABLE a (id INT);\r\n"),
+    legacyMigrationChecksum("CREATE TABLE a (id INT);\r\n")
+  );
+});
+
+test("migration runner only includes canonical sql migration files", () => {
+  assert.deepEqual(
+    migrationFiles(),
+    [
+      "001_create_users.sql",
+      "002_create_learning_plans.sql",
+      "003_create_plan_tasks.sql",
+      "004_create_quizzes.sql",
+      "005_create_legacy_imports.sql",
+      "006_create_learning_evidence.sql"
+    ]
+  );
+});
 
 test("数据库迁移包含全部核心业务表", () => {
   const migrationDir = path.join(ROOT, "database", "migrations");
@@ -23,6 +53,9 @@ test("数据库迁移包含全部核心业务表", () => {
     "quiz_sessions",
     "quiz_questions",
     "quiz_attempts",
+    "concept_mastery",
+    "content_reviews",
+    "teacher_reports",
     "legacy_imports"
   ]) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
