@@ -65,7 +65,6 @@ const els = {
   generationFlow: document.querySelector("#generationFlow"),
   topicInput: document.querySelector("#topicInput"),
   courseTitleMini: document.querySelector("#courseTitleMini"),
-  courseSubtitleMini: document.querySelector("#courseSubtitleMini"),
   courseProgressMini: document.querySelector("#courseProgressMini"),
   courseProgressMeter: document.querySelector("#courseProgressMeter"),
   courseOutline: document.querySelector("#courseOutline"),
@@ -73,6 +72,18 @@ const els = {
   courseHeroTitle: document.querySelector("#courseHeroTitle"),
   courseHeroSummary: document.querySelector("#courseHeroSummary"),
   courseHeroMeta: document.querySelector("#courseHeroMeta"),
+  courseHeroStats: document.querySelector("#courseHeroStats"),
+  todayLearning: document.querySelector("#todayLearning"),
+  todayTitle: document.querySelector("#todayTitle"),
+  todayGoal: document.querySelector("#todayGoal"),
+  todayMeta: document.querySelector("#todayMeta"),
+  continueTodayButton: document.querySelector("#continueTodayButton"),
+  overviewProgress: document.querySelector("#overviewProgress"),
+  overviewProgressMeter: document.querySelector("#overviewProgressMeter"),
+  overviewCompleted: document.querySelector("#overviewCompleted"),
+  overviewMastery: document.querySelector("#overviewMastery"),
+  overviewStreak: document.querySelector("#overviewStreak"),
+  currentAdvice: document.querySelector("#currentAdvice"),
   knowledgePanel: document.querySelector("#knowledgePanel"),
   masteryMode: document.querySelector("#masteryMode"),
   diagnosticPanel: document.querySelector("#diagnosticPanel"),
@@ -108,6 +119,12 @@ els.practicePanel.addEventListener("keydown", handleCodeTextareaKeydown, true);
 window.addEventListener("hashchange", syncRoute);
 document.querySelectorAll(".nav-link").forEach((link) => {
   link.addEventListener("click", () => setView(link.dataset.view));
+});
+document.querySelectorAll("[data-scroll-target]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const target = document.querySelector(`#${button.dataset.scrollTarget}`);
+    target?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
 });
 document.querySelectorAll("[data-topic-chip]").forEach((button) => {
   button.addEventListener("click", () => {
@@ -206,13 +223,23 @@ function setView(view, options = {}) {
   document.querySelectorAll(".course-mode").forEach((section) => {
     section.classList.toggle("active", section.dataset.mode === activeCourseMode);
   });
+  const group = courseModeGroup(activeView);
   document.querySelectorAll(".nav-link").forEach((link) => {
-    link.classList.toggle("active", link.dataset.view === activeView);
+    const linkGroup = link.dataset.group;
+    link.classList.toggle("active", link.dataset.view === activeView || (linkGroup && linkGroup === group));
   });
   document.body.dataset.view = shellView;
   document.body.dataset.courseMode = isCourseMode ? activeCourseMode : "";
   if (!options.replace) location.hash = activeView;
   renderCourseChrome();
+}
+
+function courseModeGroup(view) {
+  if (view === "daily") return "path";
+  if (view === "knowledge" || view === "remediation") return "mastery";
+  if (["practice", "mistakes", "exam", "diagnostic"].includes(view)) return "assessment";
+  if (view === "report") return "report";
+  return view;
 }
 
 async function checkHealth() {
@@ -346,38 +373,113 @@ function renderCourseChrome() {
   const plan = getCurrentPlan();
   if (!plan) {
     els.courseTitleMini.textContent = "选择一门课程";
-    els.courseSubtitleMini.textContent = "生成或打开课程后开始学习。";
     els.courseProgressMini.textContent = "0%";
     els.courseProgressMeter.value = 0;
-    els.courseHeroCover.textContent = "LM";
     els.courseHeroMeta.textContent = "Course";
     els.courseHeroTitle.textContent = "选择一门课程";
     els.courseHeroSummary.textContent = "从首页生成课程，或在“我的课程”中继续学习。";
-    els.courseOutline.innerHTML = "<div class=\"outline-item\"><strong>暂无目录</strong><span>等待课程生成</span></div>";
+    els.courseHeroStats.innerHTML = "";
+    els.todayTitle.textContent = "等待课程生成";
+    els.todayGoal.textContent = "生成课程后，这里会显示当前章节、学习目标和继续学习入口。";
+    els.todayMeta.innerHTML = "";
+    els.continueTodayButton.disabled = true;
+    els.overviewProgress.textContent = "0%";
+    els.overviewProgressMeter.value = 0;
+    els.overviewCompleted.textContent = "0 / 0";
+    els.overviewMastery.textContent = "--";
+    els.overviewStreak.textContent = "0 天";
+    els.currentAdvice.textContent = "生成课程后，这里会根据进度给出下一步建议。";
     return;
   }
 
   const summary = progressSummaryFor(plan);
+  const current = currentLearningDay(plan);
+  const mastery = averageMastery(plan);
+  const streak = learningStreak(plan);
   const description = plan.data?.learnerProfile?.summary
     || plan.data?.input?.goal
-    || "这门课程会把章节、练习、测验和导师问答串成一条学习路径。";
+    || "这门课程会把章节、练习、测验和帮助问答串成一条学习路径。";
+  const input = plan.data?.input || {};
+  const status = summary.percent >= 100 ? "已完成" : summary.done > 0 ? "进行中" : "未开始";
   els.courseTitleMini.textContent = plan.title;
-  els.courseSubtitleMini.textContent = description;
   els.courseProgressMini.textContent = `${summary.percent}%`;
   els.courseProgressMeter.value = summary.percent;
-  els.courseHeroCover.textContent = courseInitials(plan.title);
-  els.courseHeroMeta.textContent = `${plan.category || "个性化课程"} · ${formatDate(plan.createdAt)}`;
+  els.courseHeroMeta.textContent = `${status} · ${formatDate(plan.createdAt)}`;
   els.courseHeroTitle.textContent = plan.title;
   els.courseHeroSummary.textContent = description;
-  els.courseOutline.innerHTML = (plan.data?.dailyPlan || []).slice(0, 8).map((day) => `
-    <button class="outline-item" type="button" data-outline-day="${Number(day.day || 0)}">
-      <strong>${escapeHtml(day.title || `第 ${day.day} 章`)}</strong>
-      <span>${escapeHtml(day.estimate || "")}${day.focus ? ` · ${escapeHtml(day.focus)}` : ""}</span>
-    </button>
-  `).join("") || "<div class=\"outline-item\"><strong>暂无目录</strong><span>等待课程生成</span></div>";
-  els.courseOutline.querySelectorAll("[data-outline-day]").forEach((button) => {
-    button.addEventListener("click", () => setView("daily"));
-  });
+  els.courseHeroStats.innerHTML = [
+    ["难度", input.level || "入门"],
+    ["每日时长", input.dailyMinutes || current.day?.estimate || "45 分钟"],
+    ["学习方式", input.style || "案例驱动"],
+    ["任务进度", `${summary.done}/${summary.total}`]
+  ].map(([label, value]) => `<span><b>${label}</b>${escapeHtml(value)}</span>`).join("");
+
+  els.todayTitle.textContent = current.day?.title || plan.title;
+  els.todayGoal.textContent = current.day?.checkpoint || current.day?.focus || input.goal || "完成当前章节的核心任务。";
+  els.todayMeta.innerHTML = [
+    `当前章节：Day ${current.day?.day || 1}`,
+    current.day?.estimate || input.dailyMinutes || "45 分钟",
+    `${current.day?.tasks?.length || 0} 个任务`
+  ].map((item) => `<span>${escapeHtml(item)}</span>`).join("");
+  els.continueTodayButton.disabled = false;
+  els.continueTodayButton.onclick = () => {
+    setView("daily");
+    const detail = document.querySelector(`[data-day-id="${cssEscape(current.dayKey)}"]`);
+    if (detail) {
+      detail.open = true;
+      detail.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  };
+
+  els.overviewProgress.textContent = `${summary.percent}%`;
+  els.overviewProgressMeter.value = summary.percent;
+  els.overviewCompleted.textContent = `${summary.done} / ${summary.total}`;
+  els.overviewMastery.textContent = mastery === null ? "--" : `${mastery}%`;
+  els.overviewStreak.textContent = `${streak} 天`;
+  els.currentAdvice.textContent = buildCurrentAdvice(plan, current, summary);
+}
+
+function currentLearningDay(plan) {
+  const days = plan?.data?.dailyPlan || [];
+  if (!days.length) return { day: null, dayKey: "day-1", index: 0 };
+  const progress = plan.progress || {};
+  const index = days.findIndex((day) => !isDayComplete(day, progress));
+  const safeIndex = index === -1 ? days.length - 1 : index;
+  const day = days[safeIndex];
+  return { day, dayKey: `day-${day.day}`, index: safeIndex };
+}
+
+function isDayComplete(day, progress) {
+  const tasks = day?.tasks || [];
+  return tasks.length > 0 && tasks.every((_, index) => progress[progressId(day.day, index)]);
+}
+
+function averageMastery(plan) {
+  const concepts = plan?.data?.adaptiveState?.concepts
+    || plan?.data?.knowledgeGraph?.concepts
+    || plan?.data?.learnerProfile?.mastery
+    || [];
+  if (!concepts.length) return null;
+  const total = concepts.reduce((sum, item) => sum + Number(item.masteryScore ?? item.score ?? 0), 0);
+  return Math.round(total / concepts.length);
+}
+
+function learningStreak(plan) {
+  const days = plan?.data?.dailyPlan || [];
+  const progress = plan?.progress || {};
+  let streak = 0;
+  for (const day of days) {
+    if (!isDayComplete(day, progress)) break;
+    streak += 1;
+  }
+  return streak;
+}
+
+function buildCurrentAdvice(plan, current, summary) {
+  if (summary.percent >= 100) return "课程任务已完成，可以进入学习报告复盘整体表现。";
+  if (plan.data?.remediationPlan?.target) return `优先复习：${plan.data.remediationPlan.target}。`;
+  if (current.day?.title) return `先完成「${current.day.title}」中的未完成任务，再生成一次测验。`;
+  return "先完成今天的学习任务，再进行测验与复习。";
 }
 
 function renderSavedPlans() {
@@ -541,68 +643,36 @@ function renderDailyPlan() {
   const plan = getCurrentPlan();
   if (!plan?.data?.dailyPlan?.length) {
     els.dailyPanel.className = "empty-state";
-    els.dailyPanel.innerHTML = "<p>生成或选择学习方案后，这里会出现每日任务。</p>";
+    els.dailyPanel.innerHTML = "<p>生成或选择课程后，这里会出现按顺序展开的学习路径。</p>";
     els.progressSummary.textContent = "等待生成";
     return;
   }
 
   const data = plan.data;
-  els.dailyPanel.className = "daily-board";
+  const current = currentLearningDay(plan);
+  els.dailyPanel.className = "learning-path";
   els.dailyPanel.innerHTML = `
-    <section class="daily-overview">
-      <div>
-        <strong>${escapeHtml(plan.title)}</strong>
-        <p>${escapeHtml(data.learnerProfile?.summary || "")}</p>
-      </div>
-      <button class="ghost-button" type="button" id="resetProgressButton">重置进度</button>
-    </section>
-    <div class="daily-grid">
-      ${data.dailyPlan.map((day) => renderDayCard(day, plan.progress || {})).join("")}
+    <div class="timeline-list">
+      ${data.dailyPlan.map((day, index) => renderDayCard(day, plan.progress || {}, index, current.index)).join("")}
     </div>
     <section class="study-notes">
       <label>
         学习笔记与错因记录
         <textarea id="studyNotes" rows="5" placeholder="写下今天的卡点、错因、收获。">${escapeHtml(plan.notes || "")}</textarea>
       </label>
+      <button class="text-button" type="button" id="resetProgressButton">重置进度</button>
     </section>
   `;
 
   els.dailyPanel.querySelectorAll("input[type='checkbox']").forEach((checkbox) => {
     checkbox.addEventListener("change", updateProgress);
   });
-  els.dailyPanel.querySelectorAll("[data-start-practice]").forEach((button) => {
+  els.dailyPanel.querySelectorAll("[data-day-action]").forEach((button) => {
     button.addEventListener("click", () => {
-      setView("practice");
-      loadQuiz(false, {
-        questionCount: 3,
-        typeCounts: { choice: 2, short: 1, code: 0 },
-        knowledgeScope: "current",
-        focusDay: Number(button.dataset.startPractice || 0)
-      });
-    });
-  });
-  els.dailyPanel.querySelectorAll("[data-start-quiz]").forEach((button) => {
-    button.addEventListener("click", () => {
-      setView("practice");
-      loadQuiz(true, {
-        questionCount: 4,
-        typeCounts: { choice: 3, short: 1, code: 0 },
-        knowledgeScope: "current",
-        focusDay: Number(button.dataset.startQuiz || 0)
-      });
-    });
-  });
-  els.dailyPanel.querySelectorAll("[data-ask-chapter-tutor]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const day = data.dailyPlan.find((item) => String(item.day) === button.dataset.askChapterTutor);
-      els.coachQuestion.value = `请围绕“${day?.title || plan.title}”用提问方式带我学习，并先检查我是否理解关键概念。`;
-      els.tutorMode.value = "inquiry";
-      setView("coach");
-    });
-  });
-  els.dailyPanel.querySelectorAll("[data-outline-day]").forEach((button) => {
-    button.addEventListener("click", () => {
-      button.closest(".day-card")?.querySelector(".task-item input")?.focus();
+      const details = button.closest("details");
+      if (details) details.open = true;
+      const firstUnchecked = details?.querySelector(".task-item input:not(:checked)");
+      (firstUnchecked || details?.querySelector(".task-item input"))?.focus();
     });
   });
   els.dailyPanel.querySelector("#studyNotes").addEventListener("input", updateNotes);
@@ -610,34 +680,38 @@ function renderDailyPlan() {
   updateProgressSummary();
 }
 
-function renderDayCard(day, progress) {
+function renderDayCard(day, progress, index = 0, currentIndex = 0) {
   const tasks = day.tasks || [];
+  const complete = isDayComplete(day, progress);
+  const current = index === currentIndex && !complete;
+  const locked = index > currentIndex;
+  const stateClass = complete ? "completed" : current ? "current" : locked ? "locked" : "pending";
+  const actionText = complete ? "复习本节" : current ? "继续学习" : "未解锁";
   return `
-    <article class="day-card">
-      <div class="day-card-head">
-        <span>Day ${day.day}</span>
+    <details class="timeline-day ${stateClass}" data-day-id="day-${day.day}" ${index === currentIndex ? "open" : ""}>
+      <summary>
+        <span class="timeline-dot" aria-hidden="true"></span>
+        <span class="timeline-day-kicker">Day ${day.day}</span>
         <strong>${escapeHtml(day.title)}</strong>
-        <em>${escapeHtml(day.estimate || "")} · ${escapeHtml(day.focus || "")}</em>
+        <small>${escapeHtml(day.estimate || "")} · ${tasks.length} 个任务 · ${locked ? "待解锁" : complete ? "已完成" : "进行中"}</small>
+      </summary>
+      <div class="timeline-day-body">
+        <p class="timeline-focus">${escapeHtml(day.focus || day.checkpoint || "")}</p>
+        <div class="task-list">
+          ${tasks.map((task, taskIndex) => {
+            const id = progressId(day.day, taskIndex);
+            return `
+              <label class="task-item">
+                <input type="checkbox" data-progress-id="${id}" ${progress[id] ? "checked" : ""} ${locked ? "disabled" : ""} />
+                <span>${escapeHtml(task)}</span>
+              </label>
+            `;
+          }).join("")}
+        </div>
+        <p class="checkpoint">${escapeHtml(day.checkpoint || "")}</p>
+        <button class="primary-button timeline-action" type="button" data-day-action="${day.day}" ${locked ? "disabled" : ""}>${actionText}</button>
       </div>
-      <div class="task-list">
-        ${tasks.map((task, index) => {
-          const id = progressId(day.day, index);
-          return `
-            <label class="task-item">
-              <input type="checkbox" data-progress-id="${id}" ${progress[id] ? "checked" : ""} />
-              <span>${escapeHtml(task)}</span>
-            </label>
-          `;
-        }).join("")}
-      </div>
-      <p class="checkpoint">${escapeHtml(day.checkpoint || "")}</p>
-      <div class="chapter-actions">
-        <button class="ghost-button" type="button" data-outline-day="${day.day}">阅读</button>
-        <button class="ghost-button" type="button" data-start-practice="${day.day}">练习</button>
-        <button class="ghost-button" type="button" data-start-quiz="${day.day}">测验</button>
-        <button class="ghost-button" type="button" data-ask-chapter-tutor="${day.day}">AI 导师</button>
-      </div>
-    </article>
+    </details>
   `;
 }
 
@@ -665,7 +739,7 @@ function updateProgress(event) {
       }
     ).catch(reportPersistenceError);
   }
-  updateProgressSummary();
+  renderDailyPlan();
   renderCourseChrome();
   renderSavedPlans();
   renderKnowledge();
@@ -2539,7 +2613,7 @@ async function askTutor() {
   }
   els.coachButton.disabled = true;
   els.coachButton.textContent = "思考中";
-  els.coachAnswer.textContent = "AI 导师正在结合当前学习方案、进度和测评结果回答...";
+  els.coachAnswer.textContent = "学习助手正在结合当前课程、进度和测评结果回答...";
 
   try {
     const plan = getCurrentPlan();
@@ -2578,7 +2652,7 @@ async function askTutor() {
     els.coachAnswer.textContent = `导师回答失败：${error.message}`;
   } finally {
     els.coachButton.disabled = false;
-    els.coachButton.textContent = "问 AI 导师";
+    els.coachButton.textContent = "获得帮助";
   }
 }
 

@@ -153,11 +153,10 @@
 
         <section id="course" class="view course-view">
           <aside class="course-sidebar">
-            <button class="nav-link sidebar-new" type="button" data-view="home">＋ New Course</button>
+            <button class="nav-link sidebar-new" type="button" data-view="plans">← 返回我的课程</button>
             <div class="sidebar-course-card">
               <span class="mini-label">当前课程</span>
               <h2 id="courseTitleMini">选择一门课程</h2>
-              <p id="courseSubtitleMini">生成或打开课程后开始学习。</p>
               <div class="mini-progress">
                 <span id="courseProgressMini">0%</span>
                 <meter id="courseProgressMeter" min="0" max="100" value="0"></meter>
@@ -165,50 +164,45 @@
             </div>
 
             <nav class="course-mode-nav" aria-label="学习模式">
-              <button class="nav-link active" type="button" data-view="daily">课程章节</button>
-              <button class="nav-link" type="button" data-view="diagnostic">课前测</button>
-              <button class="nav-link" type="button" data-view="knowledge">掌握度</button>
-              <button class="nav-link" type="button" data-view="remediation">个性化复习</button>
-              <button class="nav-link" type="button" data-view="practice">Quiz</button>
-              <button class="nav-link" type="button" data-view="mistakes">Review</button>
-              <button class="nav-link" type="button" data-view="exam">Final Exam</button>
-              <button class="nav-link" type="button" data-view="project">Project</button>
-              <button class="nav-link" type="button" data-view="report">Report</button>
-              <button class="nav-link" type="button" data-view="coach">Tutor</button>
+              <button class="course-scroll-link" type="button" data-scroll-target="courseHero">概览</button>
+              <button class="nav-link active" type="button" data-view="daily" data-group="path">学习路径</button>
+              <button class="nav-link" type="button" data-view="knowledge" data-group="mastery">掌握度</button>
+              <button class="nav-link" type="button" data-view="practice" data-group="assessment">测验与复习</button>
+              <button class="nav-link" type="button" data-view="report" data-group="report">学习报告</button>
             </nav>
-
-            <div class="course-outline" id="courseOutline"></div>
-
-            <details class="advanced-drawer">
-              <summary>高级</summary>
-              <button class="nav-link" type="button" data-view="settings">学习设置</button>
-              <button class="nav-link" type="button" data-view="governance">质量治理</button>
-              <button class="nav-link" type="button" data-view="agents">Agent 协作</button>
-            </details>
           </aside>
 
           <div class="course-main">
             <section class="course-hero-panel" id="courseHero">
-              <div class="course-cover" id="courseHeroCover" aria-hidden="true">LM</div>
               <div>
                 <p class="eyebrow" id="courseHeroMeta">Course</p>
                 <h1 id="courseHeroTitle">选择一门课程</h1>
                 <p id="courseHeroSummary">从首页生成课程，或在“我的课程”中继续学习。</p>
+                <div id="courseHeroStats" class="course-hero-stats"></div>
               </div>
             </section>
 
+            <section id="todayLearning" class="today-learning">
+              <div>
+                <span class="mini-label">今天的学习</span>
+                <h2 id="todayTitle">等待课程生成</h2>
+                <p id="todayGoal">生成课程后，这里会显示当前章节、学习目标和继续学习入口。</p>
+                <div id="todayMeta" class="today-meta"></div>
+              </div>
+              <button id="continueTodayButton" class="primary-button" type="button">继续学习</button>
+            </section>
+
             <div class="mode-toolbar">
-              <button class="nav-link" type="button" data-view="daily">章节</button>
-              <button class="nav-link" type="button" data-view="practice">Quiz</button>
-              <button class="nav-link" type="button" data-view="coach">Tutor</button>
-              <button class="nav-link" type="button" data-view="report">Report</button>
+              <button class="nav-link" type="button" data-view="daily" data-group="path">学习路径</button>
+              <button class="nav-link" type="button" data-view="practice" data-group="assessment">测验与复习</button>
+              <button class="nav-link" type="button" data-view="report" data-group="report">学习报告</button>
             </div>
 
             <section class="course-mode active" data-mode="daily">
               <div class="section-heading">
                 <div>
-                  <h2>课程章节</h2>
-                  <p>每日学习路径会随着打卡、测评和复习结果持续更新。</p>
+                  <h2>学习路径</h2>
+                  <p>按顺序完成每一天的任务，路径会随着打卡、测验和复习持续更新。</p>
                 </div>
                 <span id="progressSummary">等待生成</span>
               </div>
@@ -259,12 +253,14 @@
             <section class="course-mode" data-mode="practice">
               <div class="section-heading">
                 <div>
-                  <h2>Quiz</h2>
+                  <h2>测验与复习</h2>
                   <p>题目会根据章节进度、错题和当前设置生成。</p>
                 </div>
                 <div class="heading-actions">
                   <span id="judgeStatus" class="status-pill">服务端判题检测中</span>
                   <button id="regenerateQuizButton" class="ghost-button" type="button">重新出题</button>
+                  <button class="ghost-button nav-link" type="button" data-view="mistakes" data-group="assessment">错题复习</button>
+                  <button class="ghost-button nav-link" type="button" data-view="exam" data-group="assessment">综合考试</button>
                 </div>
               </div>
               <div id="practicePanel" class="empty-state">
@@ -275,7 +271,7 @@
             <section class="course-mode" data-mode="mistakes">
               <div class="section-heading">
                 <div>
-                  <h2>Review</h2>
+                  <h2>错题复习</h2>
                   <p>错题、错因、提示使用和复测记录会自动沉淀到这里。</p>
                 </div>
                 <span id="mistakeMode">等待错题</span>
@@ -288,7 +284,7 @@
             <section class="course-mode" data-mode="exam">
               <div class="section-heading">
                 <div>
-                  <h2>Final Exam</h2>
+                  <h2>综合考试</h2>
                   <p>按题量、题型、难度和时长生成一次综合测评。</p>
                 </div>
                 <span id="examMode">未开始</span>
@@ -301,7 +297,7 @@
             <section class="course-mode" data-mode="project">
               <div class="section-heading">
                 <div>
-                  <h2>Project</h2>
+                  <h2>项目任务</h2>
                   <p>把知识图谱转成可提交的小项目、验收标准和交付物。</p>
                 </div>
                 <span id="projectMode">等待课程</span>
@@ -314,7 +310,7 @@
             <section class="course-mode" data-mode="report">
               <div class="section-heading">
                 <div>
-                  <h2>Report</h2>
+                  <h2>学习报告</h2>
                   <p>汇总学习画像、掌握度、错题、复习路径、考试和项目记录。</p>
                 </div>
                 <span id="reportMode">等待学习数据</span>
@@ -327,8 +323,8 @@
             <section class="course-mode" data-mode="coach">
               <div class="section-heading">
                 <div>
-                  <h2>Tutor</h2>
-                  <p>AI 导师会读取当前课程、打卡进度、笔记和测评结果。</p>
+                  <h2>获得帮助</h2>
+                  <p>学习助手会读取当前课程、打卡进度、笔记和测评结果。</p>
                 </div>
                 <span id="coachMode">等待学习上下文</span>
               </div>
@@ -353,7 +349,7 @@
                   </label>
                 </div>
                 <textarea id="coachQuestion" rows="3" placeholder="例如：我还是不懂模型训练流程，请结合今天的章节讲一遍"></textarea>
-                <button id="coachButton" class="primary-button" type="button">问 AI 导师</button>
+                <button id="coachButton" class="primary-button" type="button">获得帮助</button>
                 <div id="coachAnswer" class="coach-answer">生成课程后，可以基于当前学习上下文继续追问。</div>
               </div>
             </section>
@@ -396,6 +392,41 @@
               <div id="agentList" class="agent-list"></div>
             </section>
           </div>
+
+          <aside class="course-overview-panel" aria-label="学习概览">
+            <section class="overview-block">
+              <span class="mini-label">学习概览</span>
+              <div class="overview-progress">
+                <strong id="overviewProgress">0%</strong>
+                <meter id="overviewProgressMeter" min="0" max="100" value="0"></meter>
+              </div>
+              <dl class="overview-metrics">
+                <div>
+                  <dt>已完成任务</dt>
+                  <dd id="overviewCompleted">0 / 0</dd>
+                </div>
+                <div>
+                  <dt>当前掌握度</dt>
+                  <dd id="overviewMastery">--</dd>
+                </div>
+                <div>
+                  <dt>连续学习</dt>
+                  <dd id="overviewStreak">0 天</dd>
+                </div>
+              </dl>
+            </section>
+
+            <section class="overview-block current-advice">
+              <span class="mini-label">当前建议</span>
+              <p id="currentAdvice">生成课程后，这里会根据进度给出下一步建议。</p>
+            </section>
+
+            <section class="overview-block help-entry">
+              <span class="mini-label">获得帮助</span>
+              <p>卡住时，可以基于当前章节、笔记和测验记录继续追问。</p>
+              <button class="ghost-button nav-link" type="button" data-view="coach">打开帮助</button>
+            </section>
+          </aside>
         </section>
       </main>
     </div>
