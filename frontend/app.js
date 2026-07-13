@@ -5,6 +5,42 @@ const state = loadState();
 let activeView = location.hash.replace("#", "") || "home";
 let flowTimer = null;
 let persistTimer = null;
+const COURSE_MODES = [
+  "daily",
+  "diagnostic",
+  "knowledge",
+  "remediation",
+  "practice",
+  "mistakes",
+  "exam",
+  "project",
+  "report",
+  "coach",
+  "settings",
+  "governance",
+  "agents"
+];
+let activeCourseMode = COURSE_MODES.includes(activeView) ? activeView : "daily";
+const RECOMMENDED_COURSES = [
+  {
+    topic: "机器学习基础",
+    title: "机器学习基础",
+    description: "从问题定义、训练流程到入门预测项目。",
+    chapters: ["问题与数据", "模型训练", "评估指标"]
+  },
+  {
+    topic: "数据结构与算法",
+    title: "数据结构与算法",
+    description: "把数组、链表、栈、队列和复杂度串成练习路径。",
+    chapters: ["线性表", "栈与队列", "复杂度分析"]
+  },
+  {
+    topic: "英语口语提升",
+    title: "英语口语提升",
+    description: "围绕真实场景生成表达、跟读和复盘任务。",
+    chapters: ["日常表达", "场景对话", "口语复盘"]
+  }
+];
 
 const els = {
   form: document.querySelector("#learningForm"),
@@ -24,8 +60,19 @@ const els = {
   coachAnswer: document.querySelector("#coachAnswer"),
   coachMode: document.querySelector("#coachMode"),
   savedPlans: document.querySelector("#savedPlans"),
+  myCourses: document.querySelector("#myCourses"),
   planCount: document.querySelector("#planCount"),
   generationFlow: document.querySelector("#generationFlow"),
+  topicInput: document.querySelector("#topicInput"),
+  courseTitleMini: document.querySelector("#courseTitleMini"),
+  courseSubtitleMini: document.querySelector("#courseSubtitleMini"),
+  courseProgressMini: document.querySelector("#courseProgressMini"),
+  courseProgressMeter: document.querySelector("#courseProgressMeter"),
+  courseOutline: document.querySelector("#courseOutline"),
+  courseHeroCover: document.querySelector("#courseHeroCover"),
+  courseHeroTitle: document.querySelector("#courseHeroTitle"),
+  courseHeroSummary: document.querySelector("#courseHeroSummary"),
+  courseHeroMeta: document.querySelector("#courseHeroMeta"),
   knowledgePanel: document.querySelector("#knowledgePanel"),
   masteryMode: document.querySelector("#masteryMode"),
   diagnosticPanel: document.querySelector("#diagnosticPanel"),
@@ -61,6 +108,22 @@ els.practicePanel.addEventListener("keydown", handleCodeTextareaKeydown, true);
 window.addEventListener("hashchange", syncRoute);
 document.querySelectorAll(".nav-link").forEach((link) => {
   link.addEventListener("click", () => setView(link.dataset.view));
+});
+document.querySelectorAll("[data-topic-chip]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const topic = button.dataset.topicChip;
+    const examples = {
+      AI: "生成式 AI 应用开发",
+      编程: "数据结构与算法",
+      考试: "高等数学期末复习",
+      语言: "英语口语提升",
+      金融: "个人理财基础",
+      设计: "产品设计入门",
+      项目实战: "用 Node.js 做一个学习助手"
+    };
+    els.topicInput.value = examples[topic] || topic;
+    els.topicInput.focus();
+  });
 });
 
 boot();
@@ -128,14 +191,28 @@ function syncRoute() {
 }
 
 function setView(view, options = {}) {
-  activeView = document.querySelector(`#${view}.view`) ? view : "home";
+  const requested = view === "course" ? "daily" : view;
+  const isCourseMode = COURSE_MODES.includes(requested);
+  activeView = isCourseMode
+    ? requested
+    : document.querySelector(`#${requested}.view`)
+      ? requested
+      : "home";
+  if (isCourseMode) activeCourseMode = activeView;
+  const shellView = isCourseMode ? "course" : activeView;
   document.querySelectorAll(".view").forEach((section) => {
-    section.classList.toggle("active", section.id === activeView);
+    section.classList.toggle("active", section.id === shellView);
+  });
+  document.querySelectorAll(".course-mode").forEach((section) => {
+    section.classList.toggle("active", section.dataset.mode === activeCourseMode);
   });
   document.querySelectorAll(".nav-link").forEach((link) => {
     link.classList.toggle("active", link.dataset.view === activeView);
   });
+  document.body.dataset.view = shellView;
+  document.body.dataset.courseMode = isCourseMode ? activeCourseMode : "";
   if (!options.replace) location.hash = activeView;
+  renderCourseChrome();
 }
 
 async function checkHealth() {
@@ -190,9 +267,12 @@ async function loadAgents() {
 
 async function generatePlan(event) {
   event.preventDefault();
-  const submitButton = els.form.querySelector("button[type='submit']");
-  submitButton.disabled = true;
-  submitButton.textContent = "正在生成学习工作台";
+  const submitButtons = [...els.form.querySelectorAll("button[type='submit']")];
+  const submitButton = submitButtons[0];
+  submitButtons.forEach((button) => {
+    button.disabled = true;
+  });
+  submitButton.textContent = "正在生成课程";
 
   const payload = Object.fromEntries(new FormData(els.form).entries());
   startFlowSession();
@@ -216,23 +296,25 @@ async function generatePlan(event) {
     saveState();
     renderAll();
     renderFlow(data.generationLoop, "done");
-    setView("plans");
+    setView("daily");
     els.coachMode.textContent = "已加载学习上下文";
   } catch (error) {
     els.generationFlow.className = "flow-board";
     els.generationFlow.innerHTML = `<p class="warning">生成失败：${escapeHtml(error.message)}</p>`;
   } finally {
-    submitButton.disabled = false;
-    submitButton.textContent = "生成并保存学习方案";
+    submitButtons.forEach((button) => {
+      button.disabled = false;
+    });
+    submitButton.textContent = "生成课程";
   }
 }
 
 function normalizeNewPlan(data) {
   return {
     id: `plan-${Date.now()}`,
-    title: data.resourcePackage?.title || `${data.input?.topic || "学习"}方案`,
+    title: data.resourcePackage?.title || `${data.input?.topic || "学习"}课程`,
     createdAt: new Date().toISOString(),
-    category: data.input?.outputType || "完整学习方案",
+    category: data.input?.outputType || "完整学习课程",
     data,
     progress: {},
     notes: "",
@@ -243,6 +325,7 @@ function normalizeNewPlan(data) {
 }
 
 function renderAll() {
+  renderCourseChrome();
   renderSavedPlans();
   renderDailyPlan();
   renderDiagnostic();
@@ -258,62 +341,164 @@ function renderAll() {
   renderAgents();
 }
 
-function renderSavedPlans() {
-  els.planCount.textContent = `${state.plans.length} 个方案`;
-  if (!state.plans.length) {
-    els.savedPlans.className = "plan-list empty-state";
-    els.savedPlans.innerHTML = "<p>还没有保存的学习方案。</p>";
+function renderCourseChrome() {
+  if (!els.courseHeroTitle) return;
+  const plan = getCurrentPlan();
+  if (!plan) {
+    els.courseTitleMini.textContent = "选择一门课程";
+    els.courseSubtitleMini.textContent = "生成或打开课程后开始学习。";
+    els.courseProgressMini.textContent = "0%";
+    els.courseProgressMeter.value = 0;
+    els.courseHeroCover.textContent = "LM";
+    els.courseHeroMeta.textContent = "Course";
+    els.courseHeroTitle.textContent = "选择一门课程";
+    els.courseHeroSummary.textContent = "从首页生成课程，或在“我的课程”中继续学习。";
+    els.courseOutline.innerHTML = "<div class=\"outline-item\"><strong>暂无目录</strong><span>等待课程生成</span></div>";
     return;
   }
 
-  els.savedPlans.className = "plan-list";
-  els.savedPlans.innerHTML = state.plans.map((plan) => {
-    const summary = progressSummaryFor(plan);
-    const quizStatus = quizStatusFor(plan);
-    const active = plan.id === state.currentPlanId;
-    return `
-      <article class="plan-card ${active ? "active" : ""}">
-        <div>
-          <span class="tag">${escapeHtml(plan.category)}</span>
-          <h3>${escapeHtml(plan.title)}</h3>
-          <p>${escapeHtml(plan.data?.learnerProfile?.summary || "")}</p>
-          <small>${formatDate(plan.createdAt)} · 已完成 ${summary.done}/${summary.total} 项 · ${summary.percent}% · ${escapeHtml(quizStatus)}</small>
-        </div>
-        <div class="plan-actions">
-          <button class="ghost-button" type="button" data-open-plan="${plan.id}">${active ? "当前使用" : "使用方案"}</button>
-          <button class="text-button" type="button" data-delete-plan="${plan.id}">删除</button>
-        </div>
-      </article>
-    `;
-  }).join("");
+  const summary = progressSummaryFor(plan);
+  const description = plan.data?.learnerProfile?.summary
+    || plan.data?.input?.goal
+    || "这门课程会把章节、练习、测验和导师问答串成一条学习路径。";
+  els.courseTitleMini.textContent = plan.title;
+  els.courseSubtitleMini.textContent = description;
+  els.courseProgressMini.textContent = `${summary.percent}%`;
+  els.courseProgressMeter.value = summary.percent;
+  els.courseHeroCover.textContent = courseInitials(plan.title);
+  els.courseHeroMeta.textContent = `${plan.category || "个性化课程"} · ${formatDate(plan.createdAt)}`;
+  els.courseHeroTitle.textContent = plan.title;
+  els.courseHeroSummary.textContent = description;
+  els.courseOutline.innerHTML = (plan.data?.dailyPlan || []).slice(0, 8).map((day) => `
+    <button class="outline-item" type="button" data-outline-day="${Number(day.day || 0)}">
+      <strong>${escapeHtml(day.title || `第 ${day.day} 章`)}</strong>
+      <span>${escapeHtml(day.estimate || "")}${day.focus ? ` · ${escapeHtml(day.focus)}` : ""}</span>
+    </button>
+  `).join("") || "<div class=\"outline-item\"><strong>暂无目录</strong><span>等待课程生成</span></div>";
+  els.courseOutline.querySelectorAll("[data-outline-day]").forEach((button) => {
+    button.addEventListener("click", () => setView("daily"));
+  });
+}
 
-  els.savedPlans.querySelectorAll("[data-open-plan]").forEach((button) => {
+function renderSavedPlans() {
+  const countText = `${state.plans.length} 门课程`;
+  if (els.planCount) els.planCount.textContent = countText;
+
+  const containers = [els.savedPlans, els.myCourses].filter(Boolean);
+  if (!state.plans.length) {
+    const recommendations = RECOMMENDED_COURSES.map(renderRecommendedCourseCard).join("");
+    containers.forEach((container) => {
+      container.className = "course-grid";
+      container.innerHTML = recommendations;
+      bindRecommendedCourseActions(container);
+    });
+    return;
+  }
+
+  const markup = state.plans.map(renderCourseCard).join("");
+  containers.forEach((container) => {
+    container.className = "course-grid";
+    container.innerHTML = markup;
+    bindCourseCardActions(container);
+  });
+}
+
+function renderCourseCard(plan) {
+  const summary = progressSummaryFor(plan);
+  const quizStatus = quizStatusFor(plan);
+  const active = plan.id === state.currentPlanId;
+  const chapters = (plan.data?.dailyPlan || []).slice(0, 3);
+  const description = plan.data?.learnerProfile?.summary
+    || plan.data?.input?.goal
+    || "一门可打卡、可测评、可追问的个性化课程。";
+  return `
+    <article class="plan-card ${active ? "active" : ""}">
+      <div class="plan-card-cover">${escapeHtml(courseInitials(plan.title))}</div>
+      <div>
+        <span class="tag">${escapeHtml(plan.category || "个性化课程")}</span>
+        <h3>${escapeHtml(plan.title)}</h3>
+        <p>${escapeHtml(description)}</p>
+        <small>${formatDate(plan.createdAt)} · 进度 ${summary.done}/${summary.total} · ${summary.percent}% · ${escapeHtml(quizStatus)}</small>
+      </div>
+      <div class="chapter-preview">
+        ${chapters.map((day) => `<span>${escapeHtml(day.title || `第 ${day.day} 章`)}</span>`).join("")}
+      </div>
+      <div class="plan-actions">
+        <button class="ghost-button" type="button" data-open-plan="${escapeHtml(plan.id)}">${active ? "继续学习" : "进入课程"}</button>
+        <button class="text-button" type="button" data-delete-plan="${escapeHtml(plan.id)}">删除</button>
+      </div>
+    </article>
+  `;
+}
+
+function renderRecommendedCourseCard(course) {
+  return `
+    <article class="plan-card recommended-card">
+      <div class="plan-card-cover">${escapeHtml(courseInitials(course.title))}</div>
+      <div>
+        <span class="tag">推荐课程</span>
+        <h3>${escapeHtml(course.title)}</h3>
+        <p>${escapeHtml(course.description)}</p>
+        <small>输入主题后生成章节、Quiz、Tutor 和 Report</small>
+      </div>
+      <div class="chapter-preview">
+        ${course.chapters.map((chapter) => `<span>${escapeHtml(chapter)}</span>`).join("")}
+      </div>
+      <div class="plan-actions">
+        <button class="ghost-button" type="button" data-recommend-topic="${escapeHtml(course.topic)}">用这个主题生成</button>
+      </div>
+    </article>
+  `;
+}
+
+function bindRecommendedCourseActions(container) {
+  container.querySelectorAll("[data-recommend-topic]").forEach((button) => {
+    button.addEventListener("click", () => {
+      els.topicInput.value = button.dataset.recommendTopic;
+      setView("home");
+      els.topicInput.focus();
+    });
+  });
+}
+
+function bindCourseCardActions(container) {
+  container.querySelectorAll("[data-open-plan]").forEach((button) => {
     button.addEventListener("click", async () => {
       try {
-        if (state.databaseReady) {
-          await request("/api/workspace/current-plan", {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ planId: button.dataset.openPlan })
-          });
-          const databaseState = await request("/api/workspace");
-          applyDatabaseState(databaseState);
-        } else {
-          state.currentPlanId = button.dataset.openPlan;
-          state.quiz = [];
-          state.quizResults = {};
-          saveState();
-          renderAll();
-        }
+        await activatePlan(button.dataset.openPlan);
         setView("daily");
       } catch (error) {
         reportPersistenceError(error);
       }
     });
   });
-  els.savedPlans.querySelectorAll("[data-delete-plan]").forEach((button) => {
+  container.querySelectorAll("[data-delete-plan]").forEach((button) => {
     button.addEventListener("click", () => deletePlan(button.dataset.deletePlan));
   });
+}
+
+async function activatePlan(planId) {
+  if (state.databaseReady) {
+    await request("/api/workspace/current-plan", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ planId })
+    });
+    const databaseState = await request("/api/workspace");
+    applyDatabaseState(databaseState);
+  } else {
+    state.currentPlanId = planId;
+    state.quiz = [];
+    state.quizResults = {};
+    saveState();
+    renderAll();
+  }
+}
+
+function courseInitials(title) {
+  const value = String(title || "LM").trim();
+  const letters = [...value.replace(/\s+/g, "")].slice(0, 2).join("");
+  return letters || "LM";
 }
 
 function quizStatusFor(plan) {
@@ -385,6 +570,41 @@ function renderDailyPlan() {
   els.dailyPanel.querySelectorAll("input[type='checkbox']").forEach((checkbox) => {
     checkbox.addEventListener("change", updateProgress);
   });
+  els.dailyPanel.querySelectorAll("[data-start-practice]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setView("practice");
+      loadQuiz(false, {
+        questionCount: 3,
+        typeCounts: { choice: 2, short: 1, code: 0 },
+        knowledgeScope: "current",
+        focusDay: Number(button.dataset.startPractice || 0)
+      });
+    });
+  });
+  els.dailyPanel.querySelectorAll("[data-start-quiz]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setView("practice");
+      loadQuiz(true, {
+        questionCount: 4,
+        typeCounts: { choice: 3, short: 1, code: 0 },
+        knowledgeScope: "current",
+        focusDay: Number(button.dataset.startQuiz || 0)
+      });
+    });
+  });
+  els.dailyPanel.querySelectorAll("[data-ask-chapter-tutor]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const day = data.dailyPlan.find((item) => String(item.day) === button.dataset.askChapterTutor);
+      els.coachQuestion.value = `请围绕“${day?.title || plan.title}”用提问方式带我学习，并先检查我是否理解关键概念。`;
+      els.tutorMode.value = "inquiry";
+      setView("coach");
+    });
+  });
+  els.dailyPanel.querySelectorAll("[data-outline-day]").forEach((button) => {
+    button.addEventListener("click", () => {
+      button.closest(".day-card")?.querySelector(".task-item input")?.focus();
+    });
+  });
   els.dailyPanel.querySelector("#studyNotes").addEventListener("input", updateNotes);
   els.dailyPanel.querySelector("#resetProgressButton").addEventListener("click", resetProgress);
   updateProgressSummary();
@@ -411,6 +631,12 @@ function renderDayCard(day, progress) {
         }).join("")}
       </div>
       <p class="checkpoint">${escapeHtml(day.checkpoint || "")}</p>
+      <div class="chapter-actions">
+        <button class="ghost-button" type="button" data-outline-day="${day.day}">阅读</button>
+        <button class="ghost-button" type="button" data-start-practice="${day.day}">练习</button>
+        <button class="ghost-button" type="button" data-start-quiz="${day.day}">测验</button>
+        <button class="ghost-button" type="button" data-ask-chapter-tutor="${day.day}">AI 导师</button>
+      </div>
     </article>
   `;
 }
@@ -440,6 +666,7 @@ function updateProgress(event) {
     ).catch(reportPersistenceError);
   }
   updateProgressSummary();
+  renderCourseChrome();
   renderSavedPlans();
   renderKnowledge();
   renderPractice();
@@ -2138,9 +2365,24 @@ function startFlowSession() {
   els.generationFlow.className = "flow-board running";
   els.generationFlow.innerHTML = `
     <div class="flow-row active">
-      <span>0</span>
-      <strong>后端协作会话启动中</strong>
-      <em>等待第一个智能体接收任务</em>
+      <span>1</span>
+      <strong>正在规划课程</strong>
+      <em>分析主题、目标、水平和薄弱点</em>
+    </div>
+    <div class="flow-row">
+      <span>2</span>
+      <strong>生成章节</strong>
+      <em>组织每日路径、阅读任务和项目练习</em>
+    </div>
+    <div class="flow-row">
+      <span>3</span>
+      <strong>生成测验</strong>
+      <em>准备诊断、Quiz 和复习线索</em>
+    </div>
+    <div class="flow-row">
+      <span>4</span>
+      <strong>校验质量</strong>
+      <em>检查内容边界和课程一致性</em>
     </div>
   `;
 }
@@ -2225,8 +2467,8 @@ function flowStatusLabel(status) {
 
 function renderIdleFlow() {
   els.generationFlow.innerHTML = `
-    <div class="flow-row active"><span>1</span><strong>填写学习需求</strong><em>等待输入</em></div>
-    <div class="flow-row"><span>2</span><strong>生成方案时显示数据流</strong><em>待启动</em></div>
+    <div class="flow-row active"><span>1</span><strong>输入学习主题</strong><em>课程会围绕你的主题生成</em></div>
+    <div class="flow-row"><span>2</span><strong>规划章节与测验</strong><em>生成后自动进入课程详情</em></div>
   `;
 }
 

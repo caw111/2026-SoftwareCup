@@ -3,347 +3,398 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>个性化学习多智能体系统</title>
+    <title>AI 学习陪练</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <div class="app-shell">
-      <aside class="sidebar">
-        <div class="brand">
-          <div class="brand-mark">学</div>
-          <div>
-            <strong>AI 学习陪练</strong>
-            <span>方案、进度、测评、反馈闭环</span>
-          </div>
-        </div>
+      <header class="top-nav">
+        <button class="brand-button nav-link" type="button" data-view="home" aria-label="返回首页">
+          <span class="brand-word">LearnMate</span>
+          <span class="brand-sub">AI 学习陪练</span>
+        </button>
 
-        <nav class="nav-list" aria-label="主导航">
-          <a class="nav-link active" href="#home" data-view="home">生成方案首页</a>
-          <a class="nav-link" href="#plans" data-view="plans">已生成方案</a>
-          <a class="nav-link" href="#daily" data-view="daily">每日学习</a>
-          <a class="nav-link" href="#diagnostic" data-view="diagnostic">诊断前测</a>
-          <a class="nav-link" href="#knowledge" data-view="knowledge">知识掌握</a>
-          <a class="nav-link" href="#remediation" data-view="remediation">补救推荐</a>
-          <a class="nav-link" href="#practice" data-view="practice">练习测评</a>
-          <a class="nav-link" href="#mistakes" data-view="mistakes">错题本</a>
-          <a class="nav-link" href="#exam" data-view="exam">考试模式</a>
-          <a class="nav-link" href="#project" data-view="project">项目任务</a>
-          <a class="nav-link" href="#report" data-view="report">学习报告</a>
-          <a class="nav-link" href="#settings" data-view="settings">学习设置</a>
-          <a class="nav-link" href="#governance" data-view="governance">质量治理</a>
-          <a class="nav-link" href="#agents" data-view="agents">Agent 协作</a>
-          <a class="nav-link" href="#coach" data-view="coach">AI 导师</a>
+        <nav class="nav-actions" aria-label="主导航">
+          <button class="nav-link text-nav" type="button" data-view="plans">我的课程</button>
+          <div class="service-chip" aria-live="polite">
+            <span class="status-dot"></span>
+            <span>
+              <strong id="serviceStatus">正在连接</strong>
+              <small id="modelStatus">检测后端服务</small>
+            </span>
+          </div>
+          <button id="llmTestButton" class="ghost-button" type="button">测试大模型</button>
+          <button id="healthButton" class="icon-button" type="button" aria-label="刷新状态">↻</button>
         </nav>
-
-        <div class="status-card">
-          <span class="status-dot"></span>
-          <div>
-            <strong id="serviceStatus">正在连接</strong>
-            <p id="modelStatus">检测后端服务状态</p>
-          </div>
-        </div>
-      </aside>
+      </header>
 
       <main class="main">
-        <section class="topbar">
-          <div>
-            <p class="eyebrow">Daily Personalized Learning Workspace</p>
-            <h1>个性化资源生成与学习多智能体系统</h1>
-          </div>
-          <div class="topbar-actions">
-            <button id="llmTestButton" class="ghost-button" type="button">测试大模型</button>
-            <button id="healthButton" class="ghost-button" type="button">刷新状态</button>
-          </div>
-        </section>
+        <section id="home" class="view home-view active">
+          <div class="hero-stage">
+            <p class="eyebrow">Personalized AI Course Builder</p>
+            <h1>你想学习什么？</h1>
+            <p class="hero-subtitle">输入一个主题，我会为你生成一门个性化课程。</p>
 
-        <section id="home" class="view active">
-          <div class="workspace-grid">
-            <form id="learningForm" class="panel form-panel">
-              <div class="panel-title">
-                <h2>生成新的学习方案</h2>
-                <p>填写学习目标、基础和薄弱点，系统会生成可保存、可打卡、可测评的学习工作台。</p>
+            <form id="learningForm" class="prompt-card">
+              <div class="prompt-row">
+                <input
+                  id="topicInput"
+                  name="topic"
+                  value="机器学习基础"
+                  autocomplete="off"
+                  placeholder="例如：机器学习基础、数据结构、英语口语、操作系统..."
+                  aria-label="学习主题"
+                />
+                <button class="primary-button prompt-submit" type="submit">生成课程</button>
+                <button class="send-button" type="submit" aria-label="生成课程">↑</button>
               </div>
 
-              <label>
-                学习主题
-                <input name="topic" value="机器学习基础" autocomplete="off" />
-              </label>
-
-              <label>
-                学习目标
-                <textarea name="goal" rows="3">理解机器学习核心概念，并能完成一个入门预测项目</textarea>
-              </label>
-
-              <div class="two-columns">
-                <label>
-                  当前水平
-                  <select name="level">
-                    <option>零基础</option>
-                    <option selected>入门</option>
-                    <option>进阶</option>
-                    <option>冲刺竞赛</option>
-                  </select>
-                </label>
-
-                <label>
-                  学习周期
-                  <select name="duration">
-                    <option>3 天</option>
-                    <option selected>2 周</option>
-                    <option>1 个月</option>
-                    <option>3 个月</option>
-                  </select>
-                </label>
-              </div>
-
-              <div class="two-columns">
-                <label>
-                  每日时间
-                  <select name="dailyMinutes">
-                    <option>25 分钟</option>
-                    <option selected>45 分钟</option>
-                    <option>60 分钟</option>
-                    <option>90 分钟</option>
-                  </select>
-                </label>
-
-                <label>
-                  学习偏好
-                  <select name="style">
-                    <option selected>案例驱动</option>
-                    <option>图文讲解</option>
-                    <option>项目实战</option>
-                    <option>题目训练</option>
-                  </select>
-                </label>
-              </div>
-
-              <label>
-                输出类型
-                <select name="outputType">
-                  <option selected>完整学习方案</option>
-                  <option>偏重讲义和例题</option>
-                  <option>偏重练习和测评</option>
-                  <option>偏重项目任务</option>
-                </select>
-              </label>
-
-              <label>
-                当前薄弱点
-                <textarea name="weaknesses" rows="3">数学基础一般，对模型训练流程和评估指标不熟悉</textarea>
-              </label>
-
-              <button class="primary-button" type="submit">生成并保存学习方案</button>
+              <details class="prompt-options">
+                <summary>
+                  <span>课程偏好</span>
+                  <span>调整目标、周期和难度</span>
+                </summary>
+                <div class="option-grid">
+                  <label>
+                    学习目标
+                    <textarea name="goal" rows="3">理解核心概念，并完成一个入门项目</textarea>
+                  </label>
+                  <label>
+                    当前水平
+                    <select name="level">
+                      <option>零基础</option>
+                      <option selected>入门</option>
+                      <option>进阶</option>
+                      <option>冲刺竞赛</option>
+                    </select>
+                  </label>
+                  <label>
+                    学习周期
+                    <select name="duration">
+                      <option>3 天</option>
+                      <option selected>2 周</option>
+                      <option>1 个月</option>
+                      <option>3 个月</option>
+                    </select>
+                  </label>
+                  <label>
+                    每日时间
+                    <select name="dailyMinutes">
+                      <option>25 分钟</option>
+                      <option selected>45 分钟</option>
+                      <option>60 分钟</option>
+                      <option>90 分钟</option>
+                    </select>
+                  </label>
+                  <label>
+                    学习偏好
+                    <select name="style">
+                      <option selected>案例驱动</option>
+                      <option>图文讲解</option>
+                      <option>项目实战</option>
+                      <option>题目训练</option>
+                    </select>
+                  </label>
+                  <label>
+                    输出类型
+                    <select name="outputType">
+                      <option selected>完整学习方案</option>
+                      <option>偏重讲义和例题</option>
+                      <option>偏重练习和测评</option>
+                      <option>偏重项目任务</option>
+                    </select>
+                  </label>
+                  <label class="wide-field">
+                    当前薄弱点
+                    <textarea name="weaknesses" rows="3">数学基础一般，对模型训练流程和评估指标不熟悉</textarea>
+                  </label>
+                </div>
+              </details>
             </form>
 
-            <section class="panel agent-panel">
-              <div class="panel-title">
-                <h2>生成过程</h2>
-                <p>生成时会展示多智能体数据流：谁接收输入、谁产出结果、谁把信息传给下一位。</p>
-              </div>
+            <div class="topic-chips" aria-label="推荐主题">
+              <button type="button" data-topic-chip="AI">AI</button>
+              <button type="button" data-topic-chip="编程">编程</button>
+              <button type="button" data-topic-chip="考试">考试</button>
+              <button type="button" data-topic-chip="语言">语言</button>
+              <button type="button" data-topic-chip="金融">金融</button>
+              <button type="button" data-topic-chip="设计">设计</button>
+              <button type="button" data-topic-chip="项目实战">项目实战</button>
+            </div>
+
+            <section class="flow-strip" aria-label="生成过程">
               <div id="generationFlow" class="flow-board idle"></div>
             </section>
           </div>
+
+          <section class="course-shelf">
+            <div class="section-heading compact-heading">
+              <div>
+                <h2>最近生成的课程</h2>
+                <p>从任意课程继续学习，或把它作为新课程的参考。</p>
+              </div>
+              <span id="planCount">0 门课程</span>
+            </div>
+            <div id="savedPlans" class="course-grid empty-state"></div>
+          </section>
         </section>
 
-        <section id="plans" class="view">
-          <div class="section-heading">
+        <section id="plans" class="view courses-view">
+          <div class="page-heading">
+            <button class="nav-link back-button" type="button" data-view="home">← 新建课程</button>
             <div>
-              <h2>已生成方案</h2>
-              <p>本地保存的方案可以随时切换继续使用。</p>
+              <p class="eyebrow">My Courses</p>
+              <h1>我的课程</h1>
+              <p>所有已保存课程都在这里，点击即可进入课程详情。</p>
             </div>
-            <span id="planCount">0 个方案</span>
           </div>
-          <div id="savedPlans" class="plan-list empty-state"></div>
+          <div id="myCourses" class="course-grid empty-state"></div>
         </section>
 
-        <section id="daily" class="view">
-          <div class="section-heading">
-            <div>
-              <h2>每日学习</h2>
-              <p>勾选进度后，知识掌握雷达图和练习题会随之更新。</p>
+        <section id="course" class="view course-view">
+          <aside class="course-sidebar">
+            <button class="nav-link sidebar-new" type="button" data-view="home">＋ New Course</button>
+            <div class="sidebar-course-card">
+              <span class="mini-label">当前课程</span>
+              <h2 id="courseTitleMini">选择一门课程</h2>
+              <p id="courseSubtitleMini">生成或打开课程后开始学习。</p>
+              <div class="mini-progress">
+                <span id="courseProgressMini">0%</span>
+                <meter id="courseProgressMeter" min="0" max="100" value="0"></meter>
+              </div>
             </div>
-            <span id="progressSummary">等待生成</span>
-          </div>
-          <div id="dailyPanel" class="empty-state">
-            <p>生成或选择学习方案后，这里会出现可打卡的每日任务。</p>
-          </div>
-        </section>
 
-        <section id="diagnostic" class="view">
-          <div class="section-heading">
-            <div>
-              <h2>诊断前测</h2>
-              <p>先测知识状态，再决定补救路径和后续出题难度。</p>
-            </div>
-            <span id="diagnosticMode">等待方案</span>
-          </div>
-          <div id="diagnosticPanel" class="empty-state">
-            <p>生成或选择学习方案后，这里会出现前测题。</p>
-          </div>
-        </section>
+            <nav class="course-mode-nav" aria-label="学习模式">
+              <button class="nav-link active" type="button" data-view="daily">课程章节</button>
+              <button class="nav-link" type="button" data-view="diagnostic">课前测</button>
+              <button class="nav-link" type="button" data-view="knowledge">掌握度</button>
+              <button class="nav-link" type="button" data-view="remediation">个性化复习</button>
+              <button class="nav-link" type="button" data-view="practice">Quiz</button>
+              <button class="nav-link" type="button" data-view="mistakes">Review</button>
+              <button class="nav-link" type="button" data-view="exam">Final Exam</button>
+              <button class="nav-link" type="button" data-view="project">Project</button>
+              <button class="nav-link" type="button" data-view="report">Report</button>
+              <button class="nav-link" type="button" data-view="coach">Tutor</button>
+            </nav>
 
-        <section id="knowledge" class="view">
-          <div class="section-heading">
-            <div>
-              <h2>知识掌握</h2>
-              <p>分数由初始自评、每日打卡和测评结果共同计算，不再是固定装饰值。</p>
-            </div>
-            <span id="masteryMode">等待学习数据</span>
-          </div>
-          <div id="knowledgePanel" class="result-grid empty-state">
-            <p>完成打卡或测评后会出现掌握度证据。</p>
-          </div>
-        </section>
+            <div class="course-outline" id="courseOutline"></div>
 
-        <section id="remediation" class="view">
-          <div class="section-heading">
-            <div>
-              <h2>补救推荐</h2>
-              <p>根据诊断、错因和掌握度生成“讲解-例题-变式-复测”路径。</p>
-            </div>
-            <span id="remediationMode">等待诊断</span>
-          </div>
-          <div id="remediationPanel" class="empty-state">
-            <p>完成诊断或测评后会出现补救建议。</p>
-          </div>
-        </section>
+            <details class="advanced-drawer">
+              <summary>高级</summary>
+              <button class="nav-link" type="button" data-view="settings">学习设置</button>
+              <button class="nav-link" type="button" data-view="governance">质量治理</button>
+              <button class="nav-link" type="button" data-view="agents">Agent 协作</button>
+            </details>
+          </aside>
 
-        <section id="practice" class="view">
-          <div class="section-heading">
-            <div>
-              <h2>练习测评</h2>
-              <p>题目会根据前面的每日打卡进度生成，并由测评评分智能体自动判分。</p>
-            </div>
-            <div class="heading-actions">
-              <span id="judgeStatus" class="status-pill">服务端判题检测中</span>
-              <button id="regenerateQuizButton" class="ghost-button" type="button">重新出题</button>
-            </div>
-          </div>
-          <div id="practicePanel" class="empty-state">
-            <p>先生成方案并完成部分每日任务，再开始测评。</p>
-          </div>
-        </section>
+          <div class="course-main">
+            <section class="course-hero-panel" id="courseHero">
+              <div class="course-cover" id="courseHeroCover" aria-hidden="true">LM</div>
+              <div>
+                <p class="eyebrow" id="courseHeroMeta">Course</p>
+                <h1 id="courseHeroTitle">选择一门课程</h1>
+                <p id="courseHeroSummary">从首页生成课程，或在“我的课程”中继续学习。</p>
+              </div>
+            </section>
 
-        <section id="governance" class="view">
-          <div class="section-heading">
-            <div>
-              <h2>质量治理</h2>
-              <p>检查资源绑定、评分闭环、答案泄露和教学安全边界。</p>
+            <div class="mode-toolbar">
+              <button class="nav-link" type="button" data-view="daily">章节</button>
+              <button class="nav-link" type="button" data-view="practice">Quiz</button>
+              <button class="nav-link" type="button" data-view="coach">Tutor</button>
+              <button class="nav-link" type="button" data-view="report">Report</button>
             </div>
-            <span id="governanceMode">等待方案</span>
-          </div>
-          <div id="governancePanel" class="empty-state">
-            <p>生成方案后会出现内容治理报告。</p>
-          </div>
-        </section>
 
-        <section id="mistakes" class="view">
-          <div class="section-heading">
-            <div>
-              <h2>错题本</h2>
-              <p>沉淀错因、提示使用和复测记录，用来驱动下一轮个性化出题。</p>
-            </div>
-            <span id="mistakeMode">等待错题</span>
-          </div>
-          <div id="mistakePanel" class="empty-state">
-            <p>提交练习或诊断后，这里会自动汇总错题。</p>
-          </div>
-        </section>
+            <section class="course-mode active" data-mode="daily">
+              <div class="section-heading">
+                <div>
+                  <h2>课程章节</h2>
+                  <p>每日学习路径会随着打卡、测评和复习结果持续更新。</p>
+                </div>
+                <span id="progressSummary">等待生成</span>
+              </div>
+              <div id="dailyPanel" class="empty-state">
+                <p>生成或选择课程后，这里会出现可打卡的章节任务。</p>
+              </div>
+            </section>
 
-        <section id="exam" class="view">
-          <div class="section-heading">
-            <div>
-              <h2>考试模式</h2>
-              <p>按题量、题型、难度和时长生成一次性测评，提交后形成复测证据。</p>
-            </div>
-            <span id="examMode">未开始</span>
-          </div>
-          <div id="examPanel" class="empty-state">
-            <p>选择方案后可以生成一次模拟考试。</p>
-          </div>
-        </section>
+            <section class="course-mode" data-mode="diagnostic">
+              <div class="section-heading">
+                <div>
+                  <h2>课前测</h2>
+                  <p>先测当前水平，再调整学习路径和后续出题难度。</p>
+                </div>
+                <span id="diagnosticMode">等待课程</span>
+              </div>
+              <div id="diagnosticPanel" class="empty-state">
+                <p>生成或选择课程后，这里会出现诊断题。</p>
+              </div>
+            </section>
 
-        <section id="project" class="view">
-          <div class="section-heading">
-            <div>
-              <h2>项目任务</h2>
-              <p>把知识图谱转成可提交的小项目，包含步骤、验收标准和交付物。</p>
-            </div>
-            <span id="projectMode">等待方案</span>
-          </div>
-          <div id="projectPanel" class="empty-state">
-            <p>生成方案后会出现项目化练习。</p>
-          </div>
-        </section>
+            <section class="course-mode" data-mode="knowledge">
+              <div class="section-heading">
+                <div>
+                  <h2>掌握度</h2>
+                  <p>知识掌握由自评、打卡、课前测和测评共同计算。</p>
+                </div>
+                <span id="masteryMode">等待学习数据</span>
+              </div>
+              <div id="knowledgePanel" class="result-grid empty-state">
+                <p>完成打卡或测评后会出现掌握度证据。</p>
+              </div>
+            </section>
 
-        <section id="report" class="view">
-          <div class="section-heading">
-            <div>
-              <h2>学习报告</h2>
-              <p>汇总学习画像、掌握度、错题、补救路径、考试和项目记录，可导出。</p>
-            </div>
-            <span id="reportMode">等待学习数据</span>
-          </div>
-          <div id="reportPanel" class="empty-state">
-            <p>生成方案并完成测评后可导出报告。</p>
-          </div>
-        </section>
+            <section class="course-mode" data-mode="remediation">
+              <div class="section-heading">
+                <div>
+                  <h2>个性化复习</h2>
+                  <p>围绕薄弱点生成讲解、例题、变式和复测路径。</p>
+                </div>
+                <span id="remediationMode">等待诊断</span>
+              </div>
+              <div id="remediationPanel" class="empty-state">
+                <p>完成诊断或测评后会出现复习建议。</p>
+              </div>
+            </section>
 
-        <section id="settings" class="view">
-          <div class="section-heading">
-            <div>
-              <h2>学习设置</h2>
-              <p>设置默认出题、提示、难度和学习偏好，同时查看行为记录。</p>
-            </div>
-            <span id="settingsMode">本地保存</span>
-          </div>
-          <div id="settingsPanel" class="empty-state">
-            <p>加载中...</p>
-          </div>
-        </section>
+            <section class="course-mode" data-mode="practice">
+              <div class="section-heading">
+                <div>
+                  <h2>Quiz</h2>
+                  <p>题目会根据章节进度、错题和当前设置生成。</p>
+                </div>
+                <div class="heading-actions">
+                  <span id="judgeStatus" class="status-pill">服务端判题检测中</span>
+                  <button id="regenerateQuizButton" class="ghost-button" type="button">重新出题</button>
+                </div>
+              </div>
+              <div id="practicePanel" class="empty-state">
+                <p>先生成课程并完成部分章节，再开始测评。</p>
+              </div>
+            </section>
 
-        <section id="agents" class="view">
-          <div class="section-heading">
-            <div>
-              <h2>Agent 协作</h2>
-              <p>这里展示智能体之间的数据流动，而不是各自孤立工作。</p>
-            </div>
-            <span id="agentMode">等待方案</span>
-          </div>
-          <div id="agentCanvas" class="agent-canvas empty-state"></div>
-          <div id="agentList" class="agent-list"></div>
-        </section>
+            <section class="course-mode" data-mode="mistakes">
+              <div class="section-heading">
+                <div>
+                  <h2>Review</h2>
+                  <p>错题、错因、提示使用和复测记录会自动沉淀到这里。</p>
+                </div>
+                <span id="mistakeMode">等待错题</span>
+              </div>
+              <div id="mistakePanel" class="empty-state">
+                <p>提交练习或诊断后，这里会自动汇总错题。</p>
+              </div>
+            </section>
 
-        <section id="coach" class="view">
-          <div class="section-heading">
-            <div>
-              <h2>AI 导师问答</h2>
-              <p>导师会读取当前方案、打卡进度、笔记和测评结果。</p>
-            </div>
-            <span id="coachMode">等待学习上下文</span>
-          </div>
-          <div class="panel coach-panel">
-            <label>
-              导师模式
-              <select id="tutorMode">
-                <option value="hint" selected>分层提示</option>
-                <option value="inquiry">追问引导</option>
-                <option value="explain">讲解巩固</option>
-              </select>
-            </label>
-            <label>
-              提示层级
-              <select id="hintLevel">
-                <option value="1" selected>只给方向</option>
-                <option value="2">给关键条件</option>
-                <option value="3">给半成品步骤</option>
-                <option value="4">完整讲解后复述</option>
-              </select>
-            </label>
-            <textarea id="coachQuestion" rows="3" placeholder="例如：我还是不懂模型训练流程，请结合今天的任务讲一遍"></textarea>
-            <button id="coachButton" class="primary-button" type="button">问 AI 导师</button>
-            <div id="coachAnswer" class="coach-answer">生成学习方案后，可以基于当前学习上下文继续追问。</div>
+            <section class="course-mode" data-mode="exam">
+              <div class="section-heading">
+                <div>
+                  <h2>Final Exam</h2>
+                  <p>按题量、题型、难度和时长生成一次综合测评。</p>
+                </div>
+                <span id="examMode">未开始</span>
+              </div>
+              <div id="examPanel" class="empty-state">
+                <p>选择课程后可以生成一次模拟考试。</p>
+              </div>
+            </section>
+
+            <section class="course-mode" data-mode="project">
+              <div class="section-heading">
+                <div>
+                  <h2>Project</h2>
+                  <p>把知识图谱转成可提交的小项目、验收标准和交付物。</p>
+                </div>
+                <span id="projectMode">等待课程</span>
+              </div>
+              <div id="projectPanel" class="empty-state">
+                <p>生成课程后会出现项目化练习。</p>
+              </div>
+            </section>
+
+            <section class="course-mode" data-mode="report">
+              <div class="section-heading">
+                <div>
+                  <h2>Report</h2>
+                  <p>汇总学习画像、掌握度、错题、复习路径、考试和项目记录。</p>
+                </div>
+                <span id="reportMode">等待学习数据</span>
+              </div>
+              <div id="reportPanel" class="empty-state">
+                <p>生成课程并完成测评后可导出报告。</p>
+              </div>
+            </section>
+
+            <section class="course-mode" data-mode="coach">
+              <div class="section-heading">
+                <div>
+                  <h2>Tutor</h2>
+                  <p>AI 导师会读取当前课程、打卡进度、笔记和测评结果。</p>
+                </div>
+                <span id="coachMode">等待学习上下文</span>
+              </div>
+              <div class="panel coach-panel">
+                <div class="option-grid compact">
+                  <label>
+                    导师模式
+                    <select id="tutorMode">
+                      <option value="hint" selected>分层提示</option>
+                      <option value="inquiry">追问引导</option>
+                      <option value="explain">讲解巩固</option>
+                    </select>
+                  </label>
+                  <label>
+                    提示层级
+                    <select id="hintLevel">
+                      <option value="1" selected>只给方向</option>
+                      <option value="2">给关键条件</option>
+                      <option value="3">给半成品步骤</option>
+                      <option value="4">完整讲解后复述</option>
+                    </select>
+                  </label>
+                </div>
+                <textarea id="coachQuestion" rows="3" placeholder="例如：我还是不懂模型训练流程，请结合今天的章节讲一遍"></textarea>
+                <button id="coachButton" class="primary-button" type="button">问 AI 导师</button>
+                <div id="coachAnswer" class="coach-answer">生成课程后，可以基于当前学习上下文继续追问。</div>
+              </div>
+            </section>
+
+            <section class="course-mode" data-mode="settings">
+              <div class="section-heading">
+                <div>
+                  <h2>学习设置</h2>
+                  <p>设置默认出题、提示、难度和学习偏好。</p>
+                </div>
+                <span id="settingsMode">本地保存</span>
+              </div>
+              <div id="settingsPanel" class="empty-state">
+                <p>加载中...</p>
+              </div>
+            </section>
+
+            <section class="course-mode" data-mode="governance">
+              <div class="section-heading">
+                <div>
+                  <h2>质量治理</h2>
+                  <p>检查资源绑定、评分闭环、答案泄露和教学安全边界。</p>
+                </div>
+                <span id="governanceMode">等待课程</span>
+              </div>
+              <div id="governancePanel" class="empty-state">
+                <p>生成课程后会出现内容治理报告。</p>
+              </div>
+            </section>
+
+            <section class="course-mode" data-mode="agents">
+              <div class="section-heading">
+                <div>
+                  <h2>Agent 协作</h2>
+                  <p>这里展示智能体之间的数据流动和质量审阅过程。</p>
+                </div>
+                <span id="agentMode">等待课程</span>
+              </div>
+              <div id="agentCanvas" class="agent-canvas empty-state"></div>
+              <div id="agentList" class="agent-list"></div>
+            </section>
           </div>
         </section>
       </main>
