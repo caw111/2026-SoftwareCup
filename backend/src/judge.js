@@ -219,7 +219,10 @@ export async function getJudgeStatus() {
 
 export function friendlyJudgeError(error) {
   const message = error instanceof Error ? error.message : String(error);
-  if (/docker|daemon|npipe|pipe|connect|Desktop|Cannot connect|Is the docker daemon running/i.test(message)) {
+  if (/401 Unauthorized|403 Forbidden|pull access denied|failed to resolve source metadata|load metadata for|manifest unknown/i.test(message)) {
+    return "判题镜像拉取失败，请检查 Docker 镜像源、仓库访问权限或网络连接";
+  }
+  if (/daemon|npipe|pipe|failed to connect|Cannot connect|Is the docker daemon running|Docker Desktop is not running/i.test(message)) {
     return "服务端容器运行时不可用，请在服务器安装/启动 Docker Engine、Podman，或配置 JUDGE_DOCKER_HOST 指向远程 Docker Engine";
   }
   if (/timed out|timeout/i.test(message)) {

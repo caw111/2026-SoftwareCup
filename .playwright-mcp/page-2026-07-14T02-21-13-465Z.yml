@@ -1,0 +1,111 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - button "返回首页" [ref=e4] [cursor=pointer]:
+      - generic [ref=e5]: LearnMate
+      - generic [ref=e6]: AI 学习陪练
+    - navigation "主导航" [ref=e7]:
+      - button "我的课程" [ref=e8] [cursor=pointer]
+      - generic [ref=e11]:
+        - strong [ref=e12]: 正在连接
+        - generic [ref=e13]: 检测后端服务
+      - button "测试大模型" [ref=e14] [cursor=pointer]
+      - button "刷新状态" [ref=e15] [cursor=pointer]: ↻
+  - main [ref=e16]:
+    - generic [ref=e17]:
+      - generic [ref=e18]:
+        - paragraph [ref=e19]: Personalized AI Course Builder
+        - heading "你想学习什么？" [level=1] [ref=e20]
+        - paragraph [ref=e21]: 输入一个主题，我会为你生成一门个性化课程。
+        - generic [ref=e22]:
+          - generic [ref=e23]:
+            - textbox "学习主题" [ref=e24]:
+              - /placeholder: 例如：机器学习基础、数据结构、英语口语、操作系统...
+              - text: 机器学习基础
+            - button "生成课程" [ref=e25] [cursor=pointer]
+            - button "生成课程" [ref=e26] [cursor=pointer]: ↑
+          - group [ref=e27]:
+            - generic "课程偏好 调整目标、周期和难度" [ref=e28] [cursor=pointer]:
+              - generic [ref=e29]: 课程偏好
+              - generic [ref=e30]: 调整目标、周期和难度
+            - option "零基础"
+            - option "入门" [selected]
+            - option "进阶"
+            - option "冲刺竞赛"
+            - option "3 天"
+            - option "2 周" [selected]
+            - option "1 个月"
+            - option "3 个月"
+            - option "25 分钟"
+            - option "45 分钟" [selected]
+            - option "60 分钟"
+            - option "90 分钟"
+            - option "案例驱动" [selected]
+            - option "图文讲解"
+            - option "项目实战"
+            - option "题目训练"
+            - option "完整学习方案" [selected]
+            - option "偏重讲义和例题"
+            - option "偏重练习和测评"
+            - option "偏重项目任务"
+        - generic "推荐主题" [ref=e31]:
+          - button "AI" [ref=e32] [cursor=pointer]
+          - button "编程" [ref=e33] [cursor=pointer]
+          - button "考试" [ref=e34] [cursor=pointer]
+          - button "语言" [ref=e35] [cursor=pointer]
+          - button "金融" [ref=e36] [cursor=pointer]
+          - button "设计" [ref=e37] [cursor=pointer]
+          - button "项目实战" [ref=e38] [cursor=pointer]
+        - region "生成过程" [ref=e39]:
+          - generic [ref=e40]:
+            - generic [ref=e41]:
+              - generic [ref=e42]: "1"
+              - strong [ref=e43]: 输入学习主题
+              - emphasis [ref=e44]: 课程会围绕你的主题生成
+            - generic [ref=e45]:
+              - generic [ref=e46]: "2"
+              - strong [ref=e47]: 规划章节与测验
+              - emphasis [ref=e48]: 生成后自动进入课程详情
+      - generic [ref=e49]:
+        - generic [ref=e50]:
+          - generic [ref=e51]:
+            - heading "最近生成的课程" [level=2] [ref=e52]
+            - paragraph [ref=e53]: 从任意课程继续学习，或把它作为新课程的参考。
+          - generic [ref=e54]: 0 门课程
+        - generic [ref=e55]:
+          - article [ref=e56]:
+            - generic [ref=e57]: 机器
+            - generic [ref=e58]:
+              - generic [ref=e59]: 推荐课程
+              - heading "机器学习基础" [level=3] [ref=e60]
+              - paragraph [ref=e61]: 从问题定义、训练流程到入门预测项目。
+              - text: 输入主题后生成章节、Quiz、Tutor 和 Report
+            - generic [ref=e62]:
+              - generic [ref=e63]: →问题与数据
+              - generic [ref=e64]: →模型训练
+              - generic [ref=e65]: →评估指标
+            - button "用这个主题生成" [ref=e67] [cursor=pointer]
+          - article [ref=e68]:
+            - generic [ref=e69]: 数据
+            - generic [ref=e70]:
+              - generic [ref=e71]: 推荐课程
+              - heading "数据结构与算法" [level=3] [ref=e72]
+              - paragraph [ref=e73]: 把数组、链表、栈、队列和复杂度串成练习路径。
+              - text: 输入主题后生成章节、Quiz、Tutor 和 Report
+            - generic [ref=e74]:
+              - generic [ref=e75]: →线性表
+              - generic [ref=e76]: →栈与队列
+              - generic [ref=e77]: →复杂度分析
+            - button "用这个主题生成" [ref=e79] [cursor=pointer]
+          - article [ref=e80]:
+            - generic [ref=e81]: 英语
+            - generic [ref=e82]:
+              - generic [ref=e83]: 推荐课程
+              - heading "英语口语提升" [level=3] [ref=e84]
+              - paragraph [ref=e85]: 围绕真实场景生成表达、跟读和复盘任务。
+              - text: 输入主题后生成章节、Quiz、Tutor 和 Report
+            - generic [ref=e86]:
+              - generic [ref=e87]: →日常表达
+              - generic [ref=e88]: →场景对话
+              - generic [ref=e89]: →口语复盘
+            - button "用这个主题生成" [ref=e91] [cursor=pointer]
+    - text: → → → → → → → → →
