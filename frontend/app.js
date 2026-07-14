@@ -5,6 +5,7 @@ const state = loadState();
 let activeView = location.hash.replace("#", "") || "home";
 let flowTimer = null;
 let persistTimer = null;
+let applicationPersistTimer = null;
 const COURSE_MODES = [
   "daily",
   "diagnostic",
@@ -117,6 +118,9 @@ els.coachButton.addEventListener("click", askTutor);
 els.regenerateQuizButton.addEventListener("click", () => loadQuiz(true));
 els.practicePanel.addEventListener("keydown", handleCodeTextareaKeydown, true);
 window.addEventListener("hashchange", syncRoute);
+window.addEventListener("pagehide", () => {
+  if (state.databaseReady) persistApplicationState({ keepalive: true }).catch(() => {});
+});
 document.querySelectorAll(".nav-link").forEach((link) => {
   link.addEventListener("click", () => setView(link.dataset.view));
 });
@@ -187,6 +191,15 @@ async function loadDiskState() {
       });
       databaseState = await request("/api/workspace");
     }
+    if (!databaseState?.applicationState) {
+      const saved = await request("/api/workspace/application-state", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state: serializeApplicationState() })
+      });
+      databaseState.applicationState = saved.state;
+      databaseState.applicationStateVersion = saved.version;
+    }
     applyDatabaseState(databaseState);
     state.databaseReady = true;
   } catch {
@@ -199,8 +212,30 @@ function applyDatabaseState(databaseState) {
   state.currentPlanId = databaseState?.currentPlanId || state.plans[0]?.id || null;
   state.quiz = databaseState?.quiz || [];
   state.quizResults = databaseState?.quizResults || {};
-  saveState();
+  if (databaseState?.applicationState) {
+    applyApplicationState(databaseState.applicationState);
+  }
+  saveState({ persist: false });
   renderAll();
+}
+
+function applyApplicationState(value) {
+  state.tutorHistory = Array.isArray(value?.tutorHistory) ? value.tutorHistory : [];
+  state.settings = withDefaultSettings(value?.settings || {});
+  state.behaviorEvents = Array.isArray(value?.behaviorEvents) ? value.behaviorEvents : [];
+  state.exam = value?.exam && typeof value.exam === "object" ? value.exam : null;
+  state.projectTasks = objectState(value?.projectTasks);
+  state.projectProgress = objectState(value?.projectProgress);
+  state.projectSubmissions = objectState(value?.projectSubmissions);
+  state.mistakeFilters = {
+    concept: "all",
+    type: "all",
+    reason: "all",
+    ...objectState(value?.mistakeFilters)
+  };
+  state.lastQuizOptions = value?.lastQuizOptions && typeof value.lastQuizOptions === "object"
+    ? value.lastQuizOptions
+    : null;
 }
 
 function syncRoute() {
@@ -2765,8 +2800,27 @@ async function request(path, options) {
   return response.json();
 }
 
-function saveState() {
+function saveState(options = {}) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeState()));
+  if (options.persist !== false && state.databaseReady) {
+    scheduleApplicationStatePersistence();
+  }
+}
+
+function scheduleApplicationStatePersistence() {
+  clearTimeout(applicationPersistTimer);
+  applicationPersistTimer = setTimeout(() => {
+    persistApplicationState().catch(reportPersistenceError);
+  }, 350);
+}
+
+function persistApplicationState(options = {}) {
+  return request("/api/workspace/application-state", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ state: serializeApplicationState() }),
+    keepalive: Boolean(options.keepalive)
+  });
 }
 
 function serializeState() {
@@ -2786,6 +2840,24 @@ function serializeState() {
     mistakeFilters: state.mistakeFilters || { concept: "all", type: "all", reason: "all" },
     lastQuizOptions: state.lastQuizOptions || null
   };
+}
+
+function serializeApplicationState() {
+  return {
+    tutorHistory: state.tutorHistory || [],
+    settings: withDefaultSettings(state.settings),
+    behaviorEvents: state.behaviorEvents || [],
+    exam: state.exam || null,
+    projectTasks: state.projectTasks || {},
+    projectProgress: state.projectProgress || {},
+    projectSubmissions: state.projectSubmissions || {},
+    mistakeFilters: state.mistakeFilters || { concept: "all", type: "all", reason: "all" },
+    lastQuizOptions: state.lastQuizOptions || null
+  };
+}
+
+function objectState(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
 function loadState() {

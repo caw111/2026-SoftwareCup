@@ -20,11 +20,21 @@ import {
   claimLegacyImportRecord,
   releaseLegacyImportRecord
 } from "../repositories/legacy-repository.js";
+import {
+  getApplicationStateForUser,
+  saveApplicationStateForUser
+} from "./application-state-service.js";
 
 export async function getWorkspaceForUser(userId) {
   const workspace = await getWorkspaceRecord(userId);
   const quizState = await getLatestQuizStateRecord(userId, workspace.currentPlanId);
-  return { ...workspace, ...quizState };
+  const applicationState = await getApplicationStateForUser(userId);
+  return {
+    ...workspace,
+    ...quizState,
+    applicationState: applicationState?.state || null,
+    applicationStateVersion: applicationState?.version || 0
+  };
 }
 
 export async function createPlanForUser(userId, value) {
@@ -99,6 +109,7 @@ export async function importLegacyWorkspaceForUser(userId, value) {
     ? value.currentPlanId
     : importedPlans[0]?.id || null;
   await setActivePlanRecord(userId, activePlanId);
+  await saveApplicationStateForUser(userId, value);
 
   if (activePlanId && Array.isArray(value?.quiz) && value.quiz.length) {
     const created = await createQuizSessionRecord(userId, activePlanId, {

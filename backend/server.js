@@ -35,6 +35,7 @@ import {
   saveGeneratedQuizForUser
 } from "./src/services/quiz-service.js";
 import { requireUserSession } from "./src/services/session-service.js";
+import { saveApplicationStateForUser } from "./src/services/application-state-service.js";
 import { getStorageStatus, readWorkspaceState, writeWorkspaceState, storagePublicConfig } from "./src/storage.js";
 import { clean, ensureArray } from "./src/utils.js";
 import { evaluateDiagnosticPretest } from "./src/adaptive-learning.js";
@@ -108,6 +109,13 @@ const server = http.createServer(async (req, res) => {
       const session = await databaseSession(req, res);
       const result = await importLegacyWorkspaceForUser(session.userId, await readJson(req));
       sendJson(res, 201, result);
+      return;
+    }
+
+    if (req.method === "PUT" && url.pathname === "/api/workspace/application-state") {
+      const session = await databaseSession(req, res);
+      const result = await saveApplicationStateForUser(session.userId, await readJson(req));
+      sendJson(res, 200, result);
       return;
     }
 
