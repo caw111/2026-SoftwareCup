@@ -1255,8 +1255,9 @@ function renderReport() {
         <button class="ghost-button" type="button" data-export-report="print">打印 PDF</button>
       </div>
     </section>
-    <textarea id="reportText" class="report-text" rows="24" readonly>${escapeHtml(reportText)}</textarea>
+    <article id="reportText" class="report-text markdown-body" aria-label="Markdown 格式学习报告"></article>
   `;
+  els.reportPanel.querySelector("#reportText").innerHTML = renderMarkdown(reportText);
   els.reportPanel.querySelectorAll("[data-export-report]").forEach((button) => {
     button.addEventListener("click", () => exportLearningReport(button.dataset.exportReport, plan, reportText));
   });
@@ -1993,7 +1994,7 @@ function exportLearningReport(format, plan, reportText) {
       projectSubmission: state.projectSubmissions?.[plan.id] || null
     }, null, 2), "application/json");
   } else if (format === "html" || format === "print") {
-    const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>${escapeHtml(plan.title)}</title><body><pre>${escapeHtml(reportText)}</pre></body></html>`;
+    const html = buildMarkdownDocument(`${plan.title} 学习报告`, reportText);
     if (format === "print") {
       const win = window.open("", "_blank");
       if (win) {
@@ -2638,7 +2639,7 @@ async function askTutor() {
         history: state.tutorHistory || []
       })
     });
-    els.coachAnswer.innerHTML = escapeHtml(data.answer).replaceAll("\n", "<br />");
+    els.coachAnswer.innerHTML = renderMarkdown(data.answer);
     state.tutorHistory = [
       ...(state.tutorHistory || []),
       { role: "student", content: question, at: new Date().toISOString() },
@@ -2853,4 +2854,14 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function renderMarkdown(value) {
+  return window.markdownRenderer?.toHtml(value)
+    || escapeHtml(value).replaceAll("\n", "<br />");
+}
+
+function buildMarkdownDocument(title, value) {
+  return window.markdownRenderer?.toDocument(title, value)
+    || `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>${escapeHtml(title)}</title><body><pre>${escapeHtml(value)}</pre></body></html>`;
 }

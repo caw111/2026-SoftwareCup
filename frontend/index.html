@@ -350,7 +350,7 @@
                 </div>
                 <textarea id="coachQuestion" rows="3" placeholder="例如：我还是不懂模型训练流程，请结合今天的章节讲一遍"></textarea>
                 <button id="coachButton" class="primary-button" type="button">获得帮助</button>
-                <div id="coachAnswer" class="coach-answer">生成课程后，可以基于当前学习上下文继续追问。</div>
+                <div id="coachAnswer" class="coach-answer markdown-body">生成课程后，可以基于当前学习上下文继续追问。</div>
               </div>
             </section>
 
@@ -431,6 +431,9 @@
       </main>
     </div>
 
+    <script src="/vendor/marked.js"></script>
+    <script src="/vendor/dompurify.js"></script>
+    <script src="./markdown.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>
