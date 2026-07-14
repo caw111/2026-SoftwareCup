@@ -1,6 +1,10 @@
 import { FRONTEND_ORIGINS } from "./config.js";
 
 export function setCors(req, res) {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
   const origin = req.headers.origin;
   if (origin && FRONTEND_ORIGINS.includes(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
@@ -25,7 +29,9 @@ export function readJson(req) {
       data += chunk;
       if (data.length > 5 * 1024 * 1024) {
         rejected = true;
-        reject(new Error("请求体过大"));
+        const error = new Error("请求体过大");
+        error.statusCode = 413;
+        reject(error);
       }
     });
     req.on("end", () => {
@@ -33,7 +39,9 @@ export function readJson(req) {
       try {
         resolve(data ? JSON.parse(data) : {});
       } catch {
-        reject(new Error("JSON 格式不正确"));
+        const error = new Error("JSON 格式不正确");
+        error.statusCode = 400;
+        reject(error);
       }
     });
   });

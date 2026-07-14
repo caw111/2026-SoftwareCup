@@ -1,6 +1,6 @@
 import {
   getApplicationStateRecord,
-  upsertApplicationStateRecord
+  saveApplicationStateRecord
 } from "../repositories/application-state-repository.js";
 
 export async function getApplicationStateForUser(userId) {
@@ -9,7 +9,14 @@ export async function getApplicationStateForUser(userId) {
 
 export async function saveApplicationStateForUser(userId, value) {
   const state = normalizeApplicationState(value?.state || value);
-  const saved = await upsertApplicationStateRecord(userId, state);
+  const expectedVersion = normalizeVersion(value?.version);
+  const serializedSize = Buffer.byteLength(JSON.stringify(state), "utf8");
+  if (serializedSize > 1024 * 1024) {
+    const error = new Error("学习状态数据超过 1 MB 限制");
+    error.statusCode = 413;
+    throw error;
+  }
+  const saved = await saveApplicationStateRecord(userId, state, expectedVersion);
   return { ok: true, ...saved };
 }
 
@@ -36,4 +43,14 @@ function arrayValue(value, limit) {
 
 function objectValue(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function normalizeVersion(value) {
+  const version = Number(value ?? 0);
+  if (!Number.isSafeInteger(version) || version < 0) {
+    const error = new Error("学习状态版本号无效");
+    error.statusCode = 400;
+    throw error;
+  }
+  return version;
 }

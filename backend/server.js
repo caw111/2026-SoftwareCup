@@ -34,12 +34,18 @@ import {
   evaluateStoredQuestionForUser,
   saveGeneratedQuizForUser
 } from "./src/services/quiz-service.js";
-import { requireUserSession } from "./src/services/session-service.js";
+import {
+  loginSession,
+  logoutSession,
+  registerCurrentSession,
+  requireUserSession
+} from "./src/services/session-service.js";
 import { saveApplicationStateForUser } from "./src/services/application-state-service.js";
 import { getStorageStatus, readWorkspaceState, writeWorkspaceState, storagePublicConfig } from "./src/storage.js";
 import { clean, ensureArray } from "./src/utils.js";
 import { evaluateDiagnosticPretest } from "./src/adaptive-learning.js";
 import { migrateDatabase } from "../scripts/migrate.js";
+import { withApiLimit } from "./src/services/usage-service.js";
 
 const server = http.createServer(async (req, res) => {
   setCors(req, res);
@@ -66,8 +72,42 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/api/ready") {
+      const database = await checkDatabaseConnection();
+      sendJson(res, database.ok ? 200 : 503, {
+        ready: Boolean(database.ok),
+        database,
+        time: new Date().toISOString()
+      });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/account/session") {
+      sendJson(res, 200, await databaseSession(req, res));
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/account/register") {
+      ensureDatabaseConfigured();
+      sendJson(res, 201, await registerCurrentSession(req, res, await readJson(req)));
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/account/login") {
+      ensureDatabaseConfigured();
+      sendJson(res, 200, await loginSession(res, await readJson(req)));
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/account/logout") {
+      ensureDatabaseConfigured();
+      sendJson(res, 200, await logoutSession(req, res));
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === "/api/llm-test") {
-      const result = await testLargeModelConnection();
+      const session = await databaseSession(req, res);
+      const result = await withApiLimit(session.userId, "llm-test", testLargeModelConnection);
       sendJson(res, result.ok ? 200 : 503, result);
       return;
     }
@@ -208,15 +248,17 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/api/generate") {
+      const session = await databaseSession(req, res);
       const input = normalizeInput(await readJson(req));
-      const result = await generateLearningPlan(input);
+      const result = await withApiLimit(session.userId, "generate", () => generateLearningPlan(input));
       sendJson(res, 200, result);
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/api/generate-stream") {
+      const session = await databaseSession(req, res);
       const input = normalizeInput(await readJson(req));
-      await streamLearningPlan(res, input);
+      await withApiLimit(session.userId, "generate", () => streamLearningPlan(res, input));
       return;
     }
 
@@ -228,26 +270,26 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/api/quiz") {
+      const session = await databaseSession(req, res);
       const body = await readJson(req);
       const input = normalizeInput(body.input || {});
       const plan = body.plan || runLocalAgents(input);
       const progress = body.progress || {};
       const history = ensureArray(body.history, []);
-      const generated = await generateAdaptiveQuiz(
-        input,
-        plan,
-        progress,
-        Number(body.variant || 0),
-        history,
-        body.options || {}
-      );
+      const generated = await withApiLimit(session.userId, "quiz", () => generateAdaptiveQuiz(
+          input,
+          plan,
+          progress,
+          Number(body.variant || 0),
+          history,
+          body.options || {}
+        ));
       const quizResult = {
         ...generated,
         generatedAt: new Date().toISOString(),
         source: summarizeProgress(plan, progress)
       };
       if (body.planId) {
-        const session = await databaseSession(req, res);
         const saved = await saveGeneratedQuizForUser(
           session.userId,
           body.planId,
@@ -283,14 +325,15 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/api/tutor") {
+      const session = await databaseSession(req, res);
       const body = await readJson(req);
-      const result = await answerTutorQuestion({
+      const result = await withApiLimit(session.userId, "tutor", () => answerTutorQuestion({
         question: clean(body.question, 1000),
         context: clean(body.context, 5000),
         mode: clean(body.mode, 30),
         hintLevel: Number(body.hintLevel || 1),
         history: ensureArray(body.history, []).slice(-8)
-      });
+      }));
       sendJson(res, 200, result);
       return;
     }
@@ -300,18 +343,22 @@ const server = http.createServer(async (req, res) => {
     const status = Number(error?.statusCode) || 500;
     sendJson(res, status, {
       message: status >= 500 ? "服务端处理失败" : error.message,
-      detail: error instanceof Error ? error.message : String(error)
+      detail: error instanceof Error ? error.message : String(error),
+      code: error?.code || undefined
     });
   }
 });
 
 async function databaseSession(req, res) {
-  if (!isDatabaseConfigured()) {
-    const error = new Error("MySQL 未配置，新数据库接口暂不可用");
-    error.statusCode = 503;
-    throw error;
-  }
+  ensureDatabaseConfigured();
   return requireUserSession(req, res);
+}
+
+function ensureDatabaseConfigured() {
+  if (isDatabaseConfigured()) return;
+  const error = new Error("MySQL 未配置，新数据库接口暂不可用");
+  error.statusCode = 503;
+  throw error;
 }
 
 function decodePart(value) {

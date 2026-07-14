@@ -16,6 +16,7 @@
 
         <nav class="nav-actions" aria-label="主导航">
           <button class="nav-link text-nav" type="button" data-view="plans">我的课程</button>
+          <button id="accountButton" class="ghost-button account-button" type="button">登录 / 保存账号</button>
           <div class="service-chip" aria-live="polite">
             <span class="status-dot"></span>
             <span>
@@ -430,6 +431,37 @@
         </section>
       </main>
     </div>
+
+    <dialog id="accountDialog" class="account-dialog">
+      <div class="account-dialog-heading">
+        <div>
+          <p class="eyebrow">Account</p>
+          <h2>同步学习数据</h2>
+        </div>
+        <button id="accountCloseButton" class="icon-button" type="button" aria-label="关闭">×</button>
+      </div>
+      <p id="accountStatus" class="account-status">注册后，当前匿名数据会直接保存到你的账号。</p>
+      <div id="accountForms" class="account-forms">
+        <form id="loginForm" class="account-form">
+          <h3>登录已有账号</h3>
+          <label>用户名<input name="username" autocomplete="username" required /></label>
+          <label>密码<input name="password" type="password" autocomplete="current-password" minlength="8" required /></label>
+          <button class="primary-button" type="submit">登录</button>
+        </form>
+        <form id="registerForm" class="account-form">
+          <h3>保存当前数据</h3>
+          <label>显示名称<input name="displayName" autocomplete="name" maxlength="100" /></label>
+          <label>用户名<input name="username" autocomplete="username" pattern="[A-Za-z0-9][A-Za-z0-9_.-]{2,31}" required /></label>
+          <label>密码<input name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required /></label>
+          <button class="primary-button" type="submit">注册并认领数据</button>
+        </form>
+      </div>
+      <div id="registeredAccount" class="registered-account" hidden>
+        <strong id="registeredAccountName"></strong>
+        <span>学习数据已绑定到此账号。</span>
+        <button id="logoutButton" class="ghost-button" type="button">退出登录</button>
+      </div>
+    </dialog>
 
     <script src="/vendor/marked.js"></script>
     <script src="/vendor/dompurify.js"></script>

@@ -19,6 +19,7 @@ import {
 } from "../src/services/quiz-service.js";
 import { migrateDatabase } from "../../scripts/migrate.js";
 import { saveApplicationStateForUser } from "../src/services/application-state-service.js";
+import { authenticateAccount, registerAccountForUser } from "../src/services/account-service.js";
 
 const configured = isDatabaseConfigured();
 let testUserId;
@@ -62,14 +63,35 @@ test("MySQL 可持久化完整学习工作区", { skip: !configured }, async () 
     quiz.quiz[0].databaseId,
     1
   );
-  await saveApplicationStateForUser(testUserId, {
-    tutorHistory: [{ role: "tutor", content: "持久化回答" }],
-    settings: { strictMode: true },
-    behaviorEvents: [{ type: "quiz-submitted" }],
-    exam: { planId: plan.id, status: "submitted" },
-    projectSubmissions: { [plan.id]: { content: "项目结果" } }
+  const applicationState = await saveApplicationStateForUser(testUserId, {
+    version: 0,
+    state: {
+      tutorHistory: [{ role: "tutor", content: "持久化回答" }],
+      settings: { strictMode: true },
+      behaviorEvents: [{ type: "quiz-submitted" }],
+      exam: { planId: plan.id, status: "submitted" },
+      projectSubmissions: { [plan.id]: { content: "项目结果" } }
+    }
   });
+  await assert.rejects(
+    saveApplicationStateForUser(testUserId, { version: 0, state: {} }),
+    (error) => error.statusCode === 409 && error.code === "STATE_VERSION_CONFLICT"
+  );
   const workspace = await getWorkspaceForUser(testUserId);
+  const username = `test_${crypto.randomUUID().replaceAll("-", "").slice(0, 20)}`;
+  const account = await registerAccountForUser(testUserId, {
+    username,
+    password: "integration-test-password",
+    displayName: "集成测试用户"
+  });
+  const authenticated = await authenticateAccount({
+    username,
+    password: "integration-test-password"
+  });
+  await assert.rejects(
+    authenticateAccount({ username, password: "incorrect-password" }),
+    (error) => error.statusCode === 401
+  );
 
   assert.equal(result.correct, true);
   assert.equal(workspace.plans.length, 1);
@@ -79,6 +101,9 @@ test("MySQL 可持久化完整学习工作区", { skip: !configured }, async () 
   assert.equal(workspace.applicationState.settings.strictMode, true);
   assert.equal(workspace.applicationState.exam.status, "submitted");
   assert.equal(workspace.applicationState.projectSubmissions[plan.id].content, "项目结果");
+  assert.equal(applicationState.version, 1);
+  assert.equal(account.userType, "registered");
+  assert.equal(authenticated.userId, testUserId);
 });
 
 after(async () => {

@@ -16,17 +16,38 @@ export async function getApplicationStateRecord(userId) {
   };
 }
 
-export async function upsertApplicationStateRecord(userId, state) {
-  await getDatabasePool().execute(
-    `INSERT INTO user_application_states (user_id, state_json)
-     VALUES (?, ?)
-     ON DUPLICATE KEY UPDATE
-       state_json = VALUES(state_json),
-       version = version + 1,
-       updated_at = CURRENT_TIMESTAMP(3)`,
-    [userId, JSON.stringify(state)]
-  );
+export async function saveApplicationStateRecord(userId, state, expectedVersion) {
+  const serializedState = JSON.stringify(state);
+  if (expectedVersion === 0) {
+    try {
+      await getDatabasePool().execute(
+        `INSERT INTO user_application_states (user_id, state_json, version)
+         VALUES (?, ?, 1)`,
+        [userId, serializedState]
+      );
+    } catch (error) {
+      if (error?.code === "ER_DUP_ENTRY") throw stateVersionConflict();
+      throw error;
+    }
+  } else {
+    const [result] = await getDatabasePool().execute(
+      `UPDATE user_application_states
+          SET state_json = ?,
+              version = version + 1,
+              updated_at = CURRENT_TIMESTAMP(3)
+        WHERE user_id = ? AND version = ?`,
+      [serializedState, userId, expectedVersion]
+    );
+    if (result.affectedRows !== 1) throw stateVersionConflict();
+  }
   return getApplicationStateRecord(userId);
+}
+
+function stateVersionConflict() {
+  const error = new Error("学习数据已在其他页面更新，请刷新页面后继续");
+  error.code = "STATE_VERSION_CONFLICT";
+  error.statusCode = 409;
+  return error;
 }
 
 function parseJson(value, fallback) {

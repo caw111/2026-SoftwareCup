@@ -18,22 +18,25 @@
 npm install
 ```
 
-如果只需要本地规则演示，可以直接启动：
+启动 MySQL 并完成 `.env.local` 配置后，先运行交付前检查，再启动应用：
 
 ```bash
-npm run dev
+docker compose up -d mysql
+npm run preflight
+npm start
 ```
 
 如果 PowerShell 禁止执行 npm 脚本，可以使用：
 
 ```bash
-cmd /c npm run dev
+cmd /c npm start
 ```
 
 启动后访问：
 
 - 前端：<http://127.0.0.1:5173>
 - 后端健康检查：<http://127.0.0.1:3000/api/health>
+- 应用就绪检查：<http://127.0.0.1:3000/api/ready>
 - 大模型连通性测试：<http://127.0.0.1:3000/api/llm-test>
 - 用户数据存储状态：<http://127.0.0.1:3000/api/storage/status>
 - 判题运行时状态：<http://127.0.0.1:3000/api/judge/status>
@@ -72,7 +75,7 @@ npm run db:migrate
 npm run dev
 ```
 
-后端启动时也会检查并补齐尚未执行的迁移。浏览器通过匿名 HttpOnly 会话隔离用户数据；已有浏览器本地工作台会在该用户数据库为空时自动导入一次。未配置 MySQL 时仍可进行本地演示，但不会声称数据已写入数据库。
+后端启动时也会检查并补齐尚未执行的迁移。浏览器通过 HttpOnly 会话隔离用户数据；匿名用户可以注册并直接认领当前课程和学习记录，之后可在其他设备登录恢复数据。已有浏览器本地工作台会在该用户数据库为空时自动导入一次。MySQL 是完整业务运行的必需组件，未配置时就绪检查会失败。
 
 应用程序不要直接使用 MySQL `root` 账号。推荐单独创建只拥有 `softwarecup` 数据库权限的业务账号，并把真实密码写入已被 Git 忽略的 `.env.local`。
 
@@ -107,7 +110,7 @@ npm test
 GET  /api/health          后端、MySQL 和模型配置
 GET  /api/llm-test        外部大模型连通性
 GET  /api/storage/status  MySQL 存储状态
-GET  /api/judge/status    Docker 或 local-runner 判题状态
+GET  /api/judge/status    Docker 沙箱判题状态
 ```
 
 本项目已验证以下完整链路：前端资源加载、同步/流式方案生成、方案落库、任务打卡、笔记保存、动态出题、普通题和代码题提交、评分结果回读、学习陪练以及方案删除。测试使用的临时用户和数据会在测试结束后清理。
@@ -137,7 +140,7 @@ JUDGE_DOCKER_HOST=tcp://judge-server:2375
 CONTAINER_CLI=podman
 ```
 
-判题容器运行时会禁用网络，限制内存、CPU、进程数，并以非 root 用户执行 Python、C++、Java、JavaScript 测试。出题智能体会根据学习主题选择编程语言，例如 C++ 数据结构、Java 后端、JavaScript 前端算法、Python 机器学习。若服务端容器运行时不可用，系统会自动切换到服务端本地多语言 runner，保证用户仍然可以提交代码并获得评分；不会把底层 npipe/daemon 错误暴露给学生。
+判题容器运行时会禁用网络，限制内存、CPU、进程数，并以非 root 用户执行 Python、C++、Java、JavaScript 测试。出题智能体会根据学习主题选择编程语言，例如 C++ 数据结构、Java 后端、JavaScript 前端算法、Python 机器学习。若服务端容器运行时不可用，代码题会返回“判题服务暂不可用”；系统不会在宿主机执行用户提交的代码，也不会把底层 npipe/daemon 错误暴露给学生。
 
 ## 外接大模型配置
 

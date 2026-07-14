@@ -4,13 +4,16 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "start": "node scripts/dev.js",
     "dev": "node scripts/dev.js",
     "backend": "node backend/server.js",
     "frontend": "node frontend/server.js",
     "new-frontend": "node new_frontend/server.js",
     "db:migrate": "node scripts/migrate.js",
     "db:status": "node scripts/migrate.js --status",
-    "test": "node --test"
+    "test": "node --test",
+    "preflight": "node scripts/preflight.js",
+    "verify": "npm run preflight && npm test"
   },
   "dependencies": {
     "dompurify": "^3.4.12",

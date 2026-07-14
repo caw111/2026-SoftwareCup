@@ -1,4 +1,4 @@
-const API_BASE = `${location.protocol}//${location.hostname || "127.0.0.1"}:3000`;
+const API_BASE = location.origin;
 const STORAGE_KEY = "software-cup-learning-workspace-v2";
 
 const state = loadState();
@@ -6,6 +6,8 @@ let activeView = location.hash.replace("#", "") || "home";
 let flowTimer = null;
 let persistTimer = null;
 let applicationPersistTimer = null;
+let applicationPersistPromise = null;
+let applicationPersistQueued = false;
 const COURSE_MODES = [
   "daily",
   "diagnostic",
@@ -107,7 +109,17 @@ const els = {
   settingsPanel: document.querySelector("#settingsPanel"),
   settingsMode: document.querySelector("#settingsMode"),
   tutorMode: document.querySelector("#tutorMode"),
-  hintLevel: document.querySelector("#hintLevel")
+  hintLevel: document.querySelector("#hintLevel"),
+  accountButton: document.querySelector("#accountButton"),
+  accountDialog: document.querySelector("#accountDialog"),
+  accountCloseButton: document.querySelector("#accountCloseButton"),
+  accountStatus: document.querySelector("#accountStatus"),
+  accountForms: document.querySelector("#accountForms"),
+  loginForm: document.querySelector("#loginForm"),
+  registerForm: document.querySelector("#registerForm"),
+  registeredAccount: document.querySelector("#registeredAccount"),
+  registeredAccountName: document.querySelector("#registeredAccountName"),
+  logoutButton: document.querySelector("#logoutButton")
 };
 
 els.healthButton.addEventListener("click", checkHealth);
@@ -117,6 +129,11 @@ els.form.addEventListener("submit", generatePlan);
 els.coachButton.addEventListener("click", askTutor);
 els.regenerateQuizButton.addEventListener("click", () => loadQuiz(true));
 els.practicePanel.addEventListener("keydown", handleCodeTextareaKeydown, true);
+els.accountButton?.addEventListener("click", () => els.accountDialog?.showModal());
+els.accountCloseButton?.addEventListener("click", () => els.accountDialog?.close());
+els.loginForm?.addEventListener("submit", handleAccountLogin);
+els.registerForm?.addEventListener("submit", handleAccountRegistration);
+els.logoutButton?.addEventListener("click", handleAccountLogout);
 window.addEventListener("hashchange", syncRoute);
 window.addEventListener("pagehide", () => {
   if (state.databaseReady) persistApplicationState({ keepalive: true }).catch(() => {});
@@ -149,12 +166,13 @@ document.querySelectorAll("[data-topic-chip]").forEach((button) => {
 
 boot();
 
-function boot() {
+async function boot() {
   setView(activeView, { replace: true });
   renderAll();
   renderIdleFlow();
   loadAgents();
-  loadDiskState();
+  await loadDiskState();
+  await loadAccountSession();
   checkHealth();
   checkJudgeStatus();
   if (getCurrentPlan()) {
@@ -195,7 +213,7 @@ async function loadDiskState() {
       const saved = await request("/api/workspace/application-state", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ state: serializeApplicationState() })
+        body: JSON.stringify({ state: serializeApplicationState(), version: 0 })
       });
       databaseState.applicationState = saved.state;
       databaseState.applicationStateVersion = saved.version;
@@ -212,6 +230,7 @@ function applyDatabaseState(databaseState) {
   state.currentPlanId = databaseState?.currentPlanId || state.plans[0]?.id || null;
   state.quiz = databaseState?.quiz || [];
   state.quizResults = databaseState?.quizResults || {};
+  state.applicationStateVersion = Number(databaseState?.applicationStateVersion || 0);
   if (databaseState?.applicationState) {
     applyApplicationState(databaseState.applicationState);
   }
@@ -2794,8 +2813,17 @@ async function request(path, options) {
     throw new Error(`无法连接后端服务 ${API_BASE}。请确认 npm run dev 正在运行，并刷新页面后重试。`);
   }
   if (!response.ok) {
-    const data = await response.json().catch(async () => ({ message: await response.text() }));
-    throw new Error(data.detail || data.message || `请求失败：${response.status}`);
+    const raw = await response.text();
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      data = { message: raw };
+    }
+    const error = new Error(data.detail || data.message || `请求失败：${response.status}`);
+    error.status = response.status;
+    error.code = data.code;
+    throw error;
   }
   return response.json();
 }
@@ -2815,12 +2843,118 @@ function scheduleApplicationStatePersistence() {
 }
 
 function persistApplicationState(options = {}) {
-  return request("/api/workspace/application-state", {
+  if (applicationPersistPromise) {
+    applicationPersistQueued = true;
+    return applicationPersistPromise;
+  }
+
+  applicationPersistPromise = request("/api/workspace/application-state", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ state: serializeApplicationState() }),
+    body: JSON.stringify({
+      state: serializeApplicationState(),
+      version: state.applicationStateVersion || 0
+    }),
     keepalive: Boolean(options.keepalive)
+  }).then((saved) => {
+    state.applicationStateVersion = Number(saved.version || state.applicationStateVersion || 0);
+    return saved;
+  }).finally(() => {
+    applicationPersistPromise = null;
+    if (applicationPersistQueued) {
+      applicationPersistQueued = false;
+      scheduleApplicationStatePersistence();
+    }
   });
+  return applicationPersistPromise;
+}
+
+async function loadAccountSession() {
+  try {
+    const account = await request("/api/account/session");
+    state.account = account;
+    renderAccount(account);
+  } catch (error) {
+    if (els.accountStatus) els.accountStatus.textContent = error.message;
+  }
+}
+
+function renderAccount(account) {
+  const registered = account?.userType === "registered";
+  if (els.accountButton) {
+    els.accountButton.textContent = registered
+      ? account.displayName || account.username
+      : "登录 / 保存账号";
+  }
+  if (els.accountForms) els.accountForms.hidden = registered;
+  if (els.registeredAccount) els.registeredAccount.hidden = !registered;
+  if (els.registeredAccountName) {
+    els.registeredAccountName.textContent = registered
+      ? `${account.displayName || account.username}（${account.username}）`
+      : "";
+  }
+  if (els.accountStatus && registered) {
+    els.accountStatus.textContent = "账号已登录，当前数据会持续同步。";
+    els.accountStatus.classList.remove("error");
+  }
+}
+
+async function handleAccountRegistration(event) {
+  event.preventDefault();
+  await submitAccountForm(event.currentTarget, async (body) => {
+    if (state.databaseReady) await persistApplicationState();
+    const account = await request("/api/account/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    state.account = account;
+    renderAccount(account);
+  });
+}
+
+async function handleAccountLogin(event) {
+  event.preventDefault();
+  await submitAccountForm(event.currentTarget, async (body) => {
+    if (state.databaseReady) await persistApplicationState();
+    await request("/api/account/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    localStorage.removeItem(STORAGE_KEY);
+    location.reload();
+  });
+}
+
+async function handleAccountLogout() {
+  try {
+    await request("/api/account/logout", { method: "POST" });
+    localStorage.removeItem(STORAGE_KEY);
+    location.reload();
+  } catch (error) {
+    showAccountError(error);
+  }
+}
+
+async function submitAccountForm(form, action) {
+  const button = form.querySelector('button[type="submit"]');
+  button.disabled = true;
+  try {
+    const body = Object.fromEntries(new FormData(form));
+    await action(body);
+    form.reset();
+  } catch (error) {
+    showAccountError(error);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function showAccountError(error) {
+  if (!els.accountStatus) return;
+  els.accountStatus.textContent = error.message;
+  els.accountStatus.classList.add("error");
 }
 
 function serializeState() {
@@ -2878,6 +3012,7 @@ function loadState() {
       projectSubmissions: saved?.projectSubmissions || {},
       mistakeFilters: saved?.mistakeFilters || { concept: "all", type: "all", reason: "all" },
       lastQuizOptions: saved?.lastQuizOptions || null,
+      applicationStateVersion: 0,
       databaseReady: false
     };
   } catch {
@@ -2896,13 +3031,14 @@ function loadState() {
       projectSubmissions: {},
       mistakeFilters: { concept: "all", type: "all", reason: "all" },
       lastQuizOptions: null,
+      applicationStateVersion: 0,
       databaseReady: false
     };
   }
 }
 
 function reportPersistenceError(error) {
-  els.serviceStatus.textContent = "数据库同步失败";
+  els.serviceStatus.textContent = error.status === 409 ? "数据版本冲突，请刷新" : "数据库同步失败";
   els.modelStatus.textContent = error.message;
   els.statusDot.classList.remove("ok");
 }

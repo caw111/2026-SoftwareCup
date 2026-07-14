@@ -4,8 +4,11 @@ import { getDatabasePool, withTransaction } from "../db/pool.js";
 
 export async function findUserBySessionTokenHash(tokenHash) {
   const [rows] = await getDatabasePool().execute(
-    `SELECT s.id AS session_id, s.user_id, s.expires_at
+    `SELECT s.id AS session_id, s.user_id, s.expires_at,
+            u.user_type, u.display_name, a.username
        FROM user_sessions s
+       JOIN users u ON u.id = s.user_id
+       LEFT JOIN user_accounts a ON a.user_id = s.user_id
       WHERE s.token_hash = ?
         AND s.expires_at > CURRENT_TIMESTAMP(3)
       LIMIT 1`,
