@@ -18,11 +18,12 @@ import {
   saveGeneratedQuizForUser
 } from "../src/services/quiz-service.js";
 import { migrateDatabase } from "../../scripts/migrate.js";
+import { saveApplicationStateForUser } from "../src/services/application-state-service.js";
 
 const configured = isDatabaseConfigured();
 let testUserId;
 
-test("MySQL 可持久化方案、任务和测评", { skip: !configured }, async () => {
+test("MySQL 可持久化完整学习工作区", { skip: !configured }, async () => {
   await migrateDatabase({ log: () => {} });
   const tokenHash = crypto.createHash("sha256").update(crypto.randomUUID()).digest("hex");
   const session = await createAnonymousUserSession(
@@ -61,12 +62,23 @@ test("MySQL 可持久化方案、任务和测评", { skip: !configured }, async 
     quiz.quiz[0].databaseId,
     1
   );
+  await saveApplicationStateForUser(testUserId, {
+    tutorHistory: [{ role: "tutor", content: "持久化回答" }],
+    settings: { strictMode: true },
+    behaviorEvents: [{ type: "quiz-submitted" }],
+    exam: { planId: plan.id, status: "submitted" },
+    projectSubmissions: { [plan.id]: { content: "项目结果" } }
+  });
   const workspace = await getWorkspaceForUser(testUserId);
 
   assert.equal(result.correct, true);
   assert.equal(workspace.plans.length, 1);
   assert.equal(workspace.plans[0].progress["day-1-task-0"], true);
   assert.equal(workspace.quizResults["test-question"].correct, true);
+  assert.equal(workspace.applicationState.tutorHistory[0].content, "持久化回答");
+  assert.equal(workspace.applicationState.settings.strictMode, true);
+  assert.equal(workspace.applicationState.exam.status, "submitted");
+  assert.equal(workspace.applicationState.projectSubmissions[plan.id].content, "项目结果");
 });
 
 after(async () => {
