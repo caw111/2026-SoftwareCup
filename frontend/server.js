@@ -5,6 +5,12 @@ import { fileURLToPath } from "node:url";
 
 const PORT = Number(process.env.FRONTEND_PORT || 5173);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const projectRoot = path.resolve(__dirname, "..");
+
+const vendorFiles = new Map([
+  ["/vendor/marked.js", path.join(projectRoot, "node_modules", "marked", "lib", "marked.umd.js")],
+  ["/vendor/dompurify.js", path.join(projectRoot, "node_modules", "dompurify", "dist", "purify.min.js")]
+]);
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -18,7 +24,7 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const requested = url.pathname === "/" ? "/index.html" : url.pathname;
     const normalized = path.normalize(requested).replace(/^(\.\.[/\\])+/, "");
-    const filePath = path.join(__dirname, normalized);
+    const filePath = vendorFiles.get(url.pathname) || path.join(__dirname, normalized);
     const ext = path.extname(filePath);
     const data = await fs.readFile(filePath);
 
