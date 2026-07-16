@@ -659,15 +659,31 @@ export function buildPersonalLearningInsights({ input, learnerProfile, dailyPlan
 function selectBlueprints(topic, seed) {
   if (isMachineLearningTopic(topic)) return ML_BLUEPRINTS;
   const dimensions = ["先修基础", "概念理解", "方法迁移", "实践应用", "表达复盘", "学习自驱"];
-  return Array.from({ length: 14 }, (_, index) => {
+  const curriculum = [
+    { title: `${topic} 的基本术语与问题边界`, standard: `能解释 ${topic} 的基本术语，并区分它能解决与不能解决的问题。` },
+    { title: `${topic} 的核心组成与相互关系`, standard: `能画出 ${topic} 的核心组成，并说明各部分如何相互影响。` },
+    { title: `${topic} 的基本原理与运行机制`, standard: `能说明 ${topic} 为什么有效，以及从输入到输出的关键机制。` },
+    { title: `${topic} 的标准工作流程`, standard: `能按正确顺序完成 ${topic} 的标准流程，并说明每一步的依据。` },
+    { title: `${topic} 的适用条件与限制`, standard: `能判断何时适合使用 ${topic}，并识别关键限制和边界条件。` },
+    { title: `${topic} 的典型方法与选择依据`, standard: `能比较 ${topic} 的常用方法，并根据目标和约束作出选择。` },
+    { title: `${topic} 的基础案例分析`, standard: `能拆解一个 ${topic} 基础案例，说明问题、方法、过程和结果。` },
+    { title: `${topic} 的常见错误与排查方法`, standard: `能识别 ${topic} 的常见错误，并按证据定位原因和修正。` },
+    { title: `${topic} 的结果评价与质量标准`, standard: `能使用明确标准评价 ${topic} 的结果，并说明评价依据。` },
+    { title: `${topic} 的改进与优化策略`, standard: `能根据评价结果提出 ${topic} 的具体改进方案并验证效果。` },
+    { title: `${topic} 的复杂情境应用`, standard: `能在条件变化或信息不完整时调整 ${topic} 的应用方案。` },
+    { title: `${topic} 的综合项目设计`, standard: `能设计一个包含目标、步骤、验收标准和复盘的 ${topic} 项目。` },
+    { title: `${topic} 的表达、汇报与复盘`, standard: `能清晰汇报 ${topic} 的过程、结果、限制和下一步行动。` },
+    { title: `${topic} 的迁移应用与自主提升`, standard: `能把 ${topic} 迁移到新问题，并根据证据制定后续提升计划。` }
+  ];
+  return curriculum.map((item, index) => {
     const dimension = dimensions[index % dimensions.length];
     return {
       id: `${seed}-concept-${index + 1}`,
-      title: `${topic} 知识点 ${index + 1}`,
+      title: item.title,
       dimension,
       difficulty: 1 + (index % 4),
       prerequisites: index === 0 ? [] : [`${seed}-concept-${Math.max(1, index)}`],
-      standard: `能解释并应用 ${topic} 的第 ${index + 1} 个关键知识点。`,
+      standard: item.standard,
       misconceptions: ["只记忆不应用", "缺少反例意识"],
       resources: ["微讲义", "例题", "变式题"],
       diagnostic: null

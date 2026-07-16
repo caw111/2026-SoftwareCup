@@ -2,9 +2,16 @@ const API_BASE = `${location.protocol}//${location.hostname || "127.0.0.1"}:3000
 const STORAGE_KEY = "software-cup-learning-workspace-v2";
 
 const state = loadState();
+if (state.quiz.some((question) => question.type === "choice" && Number(question.answerDistributionVersion || 0) < 2)) {
+  state.quiz = [];
+  state.quizResults = {};
+}
 let activeView = location.hash.replace("#", "") || "home";
 let flowTimer = null;
 let persistTimer = null;
+let examTimer = null;
+let examSubmitting = false;
+let deleteConfirmationResolver = null;
 const COURSE_MODES = [
   "daily",
   "diagnostic",
@@ -49,7 +56,6 @@ const els = {
   progressSummary: document.querySelector("#progressSummary"),
   serviceStatus: document.querySelector("#serviceStatus"),
   modelStatus: document.querySelector("#modelStatus"),
-  healthButton: document.querySelector("#healthButton"),
   llmTestButton: document.querySelector("#llmTestButton"),
   agentList: document.querySelector("#agentList"),
   agentCanvas: document.querySelector("#agentCanvas"),
@@ -106,16 +112,24 @@ const els = {
   settingsPanel: document.querySelector("#settingsPanel"),
   settingsMode: document.querySelector("#settingsMode"),
   tutorMode: document.querySelector("#tutorMode"),
-  hintLevel: document.querySelector("#hintLevel")
+  hintLevel: document.querySelector("#hintLevel"),
+  confirmDeleteDialog: document.querySelector("#confirmDeleteDialog"),
+  confirmDeleteCourseName: document.querySelector("#confirmDeleteCourseName"),
+  cancelDeleteButton: document.querySelector("#cancelDeleteButton"),
+  confirmDeleteButton: document.querySelector("#confirmDeleteButton")
 };
 
-els.healthButton.addEventListener("click", checkHealth);
-els.healthButton.addEventListener("click", checkJudgeStatus);
 els.llmTestButton.addEventListener("click", testLargeModel);
 els.form.addEventListener("submit", generatePlan);
 els.coachButton.addEventListener("click", askTutor);
 els.regenerateQuizButton.addEventListener("click", () => loadQuiz(true));
 els.practicePanel.addEventListener("keydown", handleCodeTextareaKeydown, true);
+els.cancelDeleteButton.addEventListener("click", () => closeDeleteConfirmation(false));
+els.confirmDeleteButton.addEventListener("click", () => closeDeleteConfirmation(true));
+els.confirmDeleteDialog.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeDeleteConfirmation(false);
+});
 window.addEventListener("hashchange", syncRoute);
 document.querySelectorAll(".nav-link").forEach((link) => {
   link.addEventListener("click", () => setView(link.dataset.view));
@@ -199,6 +213,10 @@ function applyDatabaseState(databaseState) {
   state.currentPlanId = databaseState?.currentPlanId || state.plans[0]?.id || null;
   state.quiz = databaseState?.quiz || [];
   state.quizResults = databaseState?.quizResults || {};
+  if (state.quiz.some((question) => question.type === "choice" && Number(question.answerDistributionVersion || 0) < 2)) {
+    state.quiz = [];
+    state.quizResults = {};
+  }
   saveState();
   renderAll();
 }
@@ -226,7 +244,12 @@ function setView(view, options = {}) {
   const group = courseModeGroup(activeView);
   document.querySelectorAll(".nav-link").forEach((link) => {
     const linkGroup = link.dataset.group;
-    link.classList.toggle("active", link.dataset.view === activeView || (linkGroup && linkGroup === group));
+    const selected = link.dataset.view === activeView || Boolean(linkGroup && linkGroup === group);
+    link.classList.toggle("active", selected);
+    if (link.closest(".nav-actions")) {
+      if (selected) link.setAttribute("aria-current", "page");
+      else link.removeAttribute("aria-current");
+    }
   });
   document.body.dataset.view = shellView;
   document.body.dataset.courseMode = isCourseMode ? activeCourseMode : "";
@@ -298,8 +321,9 @@ async function generatePlan(event) {
   const submitButton = submitButtons[0];
   submitButtons.forEach((button) => {
     button.disabled = true;
+    button.setAttribute("aria-busy", "true");
   });
-  submitButton.textContent = "正在生成课程";
+  submitButton.textContent = "↑";
 
   const payload = Object.fromEntries(new FormData(els.form).entries());
   startFlowSession();
@@ -331,8 +355,9 @@ async function generatePlan(event) {
   } finally {
     submitButtons.forEach((button) => {
       button.disabled = false;
+      button.removeAttribute("aria-busy");
     });
-    submitButton.textContent = "生成课程";
+    submitButton.textContent = "↑";
   }
 }
 
@@ -497,7 +522,12 @@ function renderSavedPlans() {
     return;
   }
 
-  const markup = state.plans.map(renderCourseCard).join("");
+  const sortedPlans = [...state.plans].sort((left, right) => {
+    const pinDifference = Number(isPlanPinned(right)) - Number(isPlanPinned(left));
+    if (pinDifference) return pinDifference;
+    return new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
+  });
+  const markup = sortedPlans.map(renderCourseCard).join("");
   containers.forEach((container) => {
     container.className = "course-grid";
     container.innerHTML = markup;
@@ -514,10 +544,13 @@ function renderCourseCard(plan) {
     || plan.data?.input?.goal
     || "一门可打卡、可测评、可追问的个性化课程。";
   return `
-    <article class="plan-card ${active ? "active" : ""}">
+    <article class="plan-card ${active ? "active" : ""} ${isPlanPinned(plan) ? "pinned" : ""}">
       <div class="plan-card-cover">${escapeHtml(courseInitials(plan.title))}</div>
       <div>
-        <span class="tag">${escapeHtml(plan.category || "个性化课程")}</span>
+        <div class="tag-list">
+          <span class="tag">${escapeHtml(plan.category || "个性化课程")}</span>
+          ${isPlanPinned(plan) ? `<span class="tag pinned-tag">已置顶</span>` : ""}
+        </div>
         <h3>${escapeHtml(plan.title)}</h3>
         <p>${escapeHtml(description)}</p>
         <small>${formatDate(plan.createdAt)} · 进度 ${summary.done}/${summary.total} · ${summary.percent}% · ${escapeHtml(quizStatus)}</small>
@@ -527,6 +560,7 @@ function renderCourseCard(plan) {
       </div>
       <div class="plan-actions">
         <button class="ghost-button" type="button" data-open-plan="${escapeHtml(plan.id)}">${active ? "继续学习" : "进入课程"}</button>
+        <button class="text-button pin-button" type="button" data-pin-plan="${escapeHtml(plan.id)}" aria-pressed="${isPlanPinned(plan)}">${isPlanPinned(plan) ? "取消置顶" : "置顶"}</button>
         <button class="text-button" type="button" data-delete-plan="${escapeHtml(plan.id)}">删除</button>
       </div>
     </article>
@@ -577,6 +611,38 @@ function bindCourseCardActions(container) {
   container.querySelectorAll("[data-delete-plan]").forEach((button) => {
     button.addEventListener("click", () => deletePlan(button.dataset.deletePlan));
   });
+  container.querySelectorAll("[data-pin-plan]").forEach((button) => {
+    button.addEventListener("click", () => togglePlanPinned(button.dataset.pinPlan));
+  });
+}
+
+function isPlanPinned(plan) {
+  return Boolean(plan?.data?.ui?.pinned);
+}
+
+async function togglePlanPinned(planId) {
+  const plan = state.plans.find((item) => item.id === planId);
+  if (!plan) return;
+  const previous = isPlanPinned(plan);
+  plan.data = {
+    ...plan.data,
+    ui: { ...(plan.data?.ui || {}), pinned: !previous }
+  };
+  saveState();
+  renderSavedPlans();
+  if (!state.databaseReady) return;
+  try {
+    await request(`/api/plans/${encodeURIComponent(plan.id)}/content`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: plan.data, masteryEvidence: plan.masteryEvidence || [] })
+    });
+  } catch (error) {
+    plan.data.ui.pinned = previous;
+    saveState();
+    renderSavedPlans();
+    reportPersistenceError(error);
+  }
 }
 
 async function activatePlan(planId) {
@@ -615,6 +681,8 @@ function quizStatusFor(plan) {
 }
 
 async function deletePlan(id) {
+  const plan = state.plans.find((item) => item.id === id);
+  if (!(await requestDeleteConfirmation(plan))) return;
   try {
     if (state.databaseReady) {
       await request(`/api/plans/${encodeURIComponent(id)}`, { method: "DELETE" });
@@ -639,6 +707,23 @@ async function deletePlan(id) {
   }
 }
 
+function requestDeleteConfirmation(plan) {
+  if (deleteConfirmationResolver) closeDeleteConfirmation(false);
+  els.confirmDeleteCourseName.textContent = plan?.title || "未命名课程";
+  els.confirmDeleteDialog.showModal();
+  els.confirmDeleteButton.focus();
+  return new Promise((resolve) => {
+    deleteConfirmationResolver = resolve;
+  });
+}
+
+function closeDeleteConfirmation(confirmed) {
+  if (els.confirmDeleteDialog.open) els.confirmDeleteDialog.close();
+  const resolve = deleteConfirmationResolver;
+  deleteConfirmationResolver = null;
+  resolve?.(confirmed);
+}
+
 function renderDailyPlan() {
   const plan = getCurrentPlan();
   if (!plan?.data?.dailyPlan?.length) {
@@ -650,10 +735,14 @@ function renderDailyPlan() {
 
   const data = plan.data;
   const current = currentLearningDay(plan);
+  const displayDays = data.dailyPlan.map((day, index) => ({
+    ...day,
+    materials: completeMaterialsForDisplay(day, data, index)
+  }));
   els.dailyPanel.className = "learning-path";
   els.dailyPanel.innerHTML = `
     <div class="timeline-list">
-      ${data.dailyPlan.map((day, index) => renderDayCard(day, plan.progress || {}, index, current.index)).join("")}
+      ${displayDays.map((day, index) => renderDayCard(day, plan.progress || {}, index, current.index)).join("")}
     </div>
     <section class="study-notes">
       <label>
@@ -671,9 +760,24 @@ function renderDailyPlan() {
     button.addEventListener("click", () => {
       const details = button.closest("details");
       if (details) details.open = true;
+      if (button.dataset.review === "true") {
+        const reviewPanel = details?.querySelector("[data-review-panel]");
+        if (reviewPanel) {
+          reviewPanel.hidden = !reviewPanel.hidden;
+          button.textContent = reviewPanel.hidden ? "复习本节" : "收起复习";
+          if (!reviewPanel.hidden) {
+            reviewPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+            reviewPanel.querySelector("button, a")?.focus();
+          }
+        }
+        return;
+      }
       const firstUnchecked = details?.querySelector(".task-item input:not(:checked)");
       (firstUnchecked || details?.querySelector(".task-item input"))?.focus();
     });
+  });
+  els.dailyPanel.querySelectorAll(".review-panel [data-view]").forEach((button) => {
+    button.addEventListener("click", () => setView(button.dataset.view));
   });
   els.dailyPanel.querySelector("#studyNotes").addEventListener("input", updateNotes);
   els.dailyPanel.querySelector("#resetProgressButton").addEventListener("click", resetProgress);
@@ -682,6 +786,7 @@ function renderDailyPlan() {
 
 function renderDayCard(day, progress, index = 0, currentIndex = 0) {
   const tasks = day.tasks || [];
+  const materials = day.materials || [];
   const complete = isDayComplete(day, progress);
   const current = index === currentIndex && !complete;
   const locked = index > currentIndex;
@@ -708,10 +813,118 @@ function renderDayCard(day, progress, index = 0, currentIndex = 0) {
             `;
           }).join("")}
         </div>
+        <section class="learning-materials" aria-label="本节学习资料">
+          <strong>本节学习资料</strong>
+          ${materials.length
+            ? `<div class="material-list">${materials.map(renderLearningMaterial).join("")}</div>`
+            : `<p>围绕“${escapeHtml(day.focus || day.title)}”阅读课程讲义，并结合任务完成一个例题和一次自测。</p>`}
+        </section>
         <p class="checkpoint">${escapeHtml(day.checkpoint || "")}</p>
-        <button class="primary-button timeline-action" type="button" data-day-action="${day.day}" ${locked ? "disabled" : ""}>${actionText}</button>
+        ${complete ? `
+          <section class="review-panel" data-review-panel hidden>
+            <strong>复习步骤</strong>
+            <ol>
+              <li>不看笔记，口述本节核心概念与适用场景。</li>
+              <li>重做本节练习，并对照资料检查步骤和错因。</li>
+              <li>用下方笔记记录仍不确定的知识点，再进入“测验与复习”复测。</li>
+            </ol>
+            <button class="ghost-button nav-link" type="button" data-view="practice">进入复习测验</button>
+          </section>` : ""}
+        <button class="primary-button timeline-action" type="button" data-day-action="${day.day}" data-review="${complete}" ${locked ? "disabled" : ""}>${actionText}</button>
       </div>
     </details>
+  `;
+}
+
+function completeMaterialsForDisplay(day, data, index) {
+  const materials = Array.isArray(day.materials) ? day.materials : [];
+  const alreadyComplete = materials.some((item) => item?.sections?.length >= 3)
+    && materials.some((item) => item?.questions?.length >= 2);
+  if (alreadyComplete) return materials;
+
+  const input = data?.input || {};
+  const concepts = data?.knowledgeGraph?.concepts || [];
+  const concept = concepts[index % Math.max(1, concepts.length)] || {};
+  const title = displayConceptTitle(concept.title || day.title, input.topic, index);
+  const standard = concept.standard || `理解 ${title} 的定义、工作原理、使用条件和实际应用。`;
+  const misconceptions = concept.misconceptions || ["只背定义而忽略条件", "机械套用方法而不验证结果"];
+  return [
+    {
+      type: "详细讲义",
+      title: `${title} 完整讲义`,
+      content: standard,
+      sections: [
+        { heading: "一、概念与目标", body: `${title} 是本节需要掌握的核心知识点。学习后应能说明它解决的问题、输入与输出，并能用自己的例子解释概念，而不是只记住名称。` },
+        { heading: "二、核心原理", body: `理解 ${title} 时按“明确问题—核对条件—执行方法—验证结果”建立知识链。每一步都要写出依据和中间结果，这样才能判断错误出在哪一步。` },
+        { heading: "三、适用条件与边界", body: `应用前应确认目标明确、信息充分且方法假设与问题一致。若关键条件缺失或结果无法验证，应先补充信息或更换方法，不能直接沿用结论。` },
+        { heading: "四、误区与纠正", body: `常见误区包括：${misconceptions.join("；")}。纠正时写出选择依据、成立条件和一个反例，再检查结论是否仍然有效。` },
+        { heading: "五、掌握标准", body: `能够解释 ${title}、区分适用与不适用场景、独立完成案例，并能发现错误和提出修正，才算完成本节学习。` }
+      ]
+    },
+    {
+      type: "完整案例",
+      title: `案例：${title} 的实际应用`,
+      content: `案例围绕“${input.goal || input.topic || "当前学习目标"}”演示从问题定义到结果复盘的全过程。`,
+      sections: [
+        { heading: "案例背景", body: `先把学习目标拆成一个可以检查结果的小任务，明确已知信息、限制条件和成功标准。` },
+        { heading: "执行步骤", body: `使用 ${title} 完成任务，并保留每一步的判断依据。`, steps: ["明确输入、输出和评价标准。", "核对本节方法要求的必要条件。", "逐步执行并记录中间结果。", "用正常样例和边界反例验证结果。"] },
+        { heading: "结论与迁移", body: "替换案例中的一个输入或限制条件，重新判断哪些步骤需要改变；能够解释变化原因，才说明可以迁移到新问题。" }
+      ]
+    },
+    {
+      type: "练习与解析",
+      title: `${title} 基础题与变式题`,
+      content: "请先独立完成，再展开参考解析进行订正。",
+      questions: [
+        { prompt: `解释 ${title}，写出两个适用条件和一个反例。`, answer: "答案应包含概念、用途、成立条件和明确指出失效条件的反例。" },
+        { prompt: `如何把 ${title} 用于当前学习目标？请列出步骤和验证方法。`, answer: "先定义可检查的成果，再核对条件、逐步执行，并使用正常样例与边界样例验证。" },
+        { prompt: "关键条件发生变化时应如何调整？", answer: "指出失效条件及影响，补充信息、调整步骤或更换方法，然后重新验证结果。" }
+      ]
+    }
+  ];
+}
+
+function displayConceptTitle(rawTitle, topic = "当前主题", index = 0) {
+  const cleaned = String(rawTitle || "").replace(/^第\s*\d+\s*天[：:]?\s*/, "").trim();
+  if (cleaned && !/(?:核心)?知识点\s*\d+|^(?:概念补强|练习迁移|项目复盘)$/.test(cleaned)) return cleaned;
+  const names = [
+    "基本术语与问题边界", "核心组成与相互关系", "基本原理与运行机制", "标准工作流程",
+    "适用条件与限制", "典型方法与选择依据", "基础案例分析", "常见错误与排查方法",
+    "结果评价与质量标准", "改进与优化策略", "复杂情境应用", "综合项目设计",
+    "表达、汇报与复盘", "迁移应用与自主提升"
+  ];
+  return `${topic || "当前主题"} 的${names[index % names.length]}`;
+}
+
+function renderLearningMaterial(material, index) {
+  if (typeof material === "string") {
+    return `<article class="material-card"><span>学习资料 ${index + 1}</span><p>${escapeHtml(material)}</p></article>`;
+  }
+  const sections = Array.isArray(material.sections) ? material.sections : [];
+  const questions = Array.isArray(material.questions) ? material.questions : [];
+  return `
+    <article class="material-card">
+      <span>${escapeHtml(material.type || `学习资料 ${index + 1}`)}</span>
+      <h4>${escapeHtml(material.title || "本节资料")}</h4>
+      ${material.content ? `<p>${escapeHtml(material.content)}</p>` : ""}
+      ${sections.map((section) => `
+        <section class="material-section">
+          <strong>${escapeHtml(section.heading || "知识点")}</strong>
+          <p>${escapeHtml(section.body || "")}</p>
+          ${Array.isArray(section.steps) ? `<ol>${section.steps.map((step) => `<li>${escapeHtml(step)}</li>`).join("")}</ol>` : ""}
+        </section>
+      `).join("")}
+      ${questions.length ? `
+        <section class="material-section practice-material">
+          <strong>练习与解析</strong>
+          ${questions.map((question, questionIndex) => `
+            <details>
+              <summary>第 ${questionIndex + 1} 题：${escapeHtml(question.prompt || "")}</summary>
+              <p><b>参考解析：</b>${escapeHtml(question.answer || "")}</p>
+            </details>
+          `).join("")}
+        </section>` : ""}
+    </article>
   `;
 }
 
@@ -1181,16 +1394,25 @@ function renderMistakes() {
         </select>
       </label>
     </div>
-    <div class="concept-grid">
+    <div class="quiz-list mistake-quiz-list">
       ${filtered.map((item) => `
-        <article class="concept-card">
+        <article class="quiz-item mistake-quiz-item">
           <div class="quiz-head">
-            <span>${escapeHtml(typeLabel(item.type))} · ${escapeHtml(item.dimension || "综合")}</span>
-            <span>${Number(item.score || 0)}/${Number(item.maxScore || 0)}</span>
+            <span>${escapeHtml(typeLabel(item.type))} · ${escapeHtml(item.dimension || "综合")} · ${formatDate(item.at)}</span>
+            <strong class="bad-text">${Number(item.score || 0)}/${Number(item.maxScore || 0)}</strong>
           </div>
           <h3>${escapeHtml(stripQuestionContext(item.question))}</h3>
-          <p>${escapeHtml(item.feedback || item.explanation || "等待复盘。")}</p>
-          <small>错因：${escapeHtml(item.reasonTag || "未归因")} · ${formatDate(item.at)}</small>
+          ${item.options?.length ? `
+            <div class="option-list mistake-options">
+              ${item.options.map((option, optionIndex) => `
+                <label class="option-item ${optionIndex === Number(item.answerIndex) ? "correct-option" : optionIndex === Number(item.selectedIndex) ? "wrong-option" : ""}">
+                  <input type="radio" disabled ${optionIndex === Number(item.selectedIndex) ? "checked" : ""} />
+                  <span>${String.fromCharCode(65 + optionIndex)}. ${escapeHtml(option)}${optionIndex === Number(item.answerIndex) ? "（正确答案）" : ""}</span>
+                </label>
+              `).join("")}
+            </div>` : ""}
+          <p class="feedback">${escapeHtml(item.feedback || item.explanation || "等待复盘。")}</p>
+          <p class="hint-text">错因：${escapeHtml(item.reasonTag || "未归因")}</p>
           <div class="plan-actions">
             <button class="ghost-button" type="button" data-mistake-practice="${escapeHtml(item.dimension || "")}">变式练习</button>
             <button class="text-button" type="button" data-mistake-coach="${escapeHtml(item.id)}">问导师</button>
@@ -1266,6 +1488,7 @@ function renderReport() {
 function renderExam() {
   const plan = getCurrentPlan();
   if (!plan) {
+    clearExamTimer();
     els.examPanel.className = "empty-state";
     els.examPanel.innerHTML = "<p>先生成或选择一个学习方案。</p>";
     els.examMode.textContent = "等待方案";
@@ -1274,10 +1497,12 @@ function renderExam() {
   const exam = state.exam?.planId === plan.id ? state.exam : null;
   const results = Object.values(exam?.results || {});
   const score = results.reduce((sum, item) => sum + Number(item.score || 0), 0);
-  const max = results.reduce((sum, item) => sum + Number(item.maxScore || 0), 0);
+  const max = (exam?.quiz || []).reduce((sum, item) => sum + Number(item.score || 0), 0);
   const remaining = exam?.status === "running" ? Math.max(0, Number(exam.durationSec || 0) - Math.round((Date.now() - exam.startedAt) / 1000)) : 0;
   els.examMode.textContent = exam?.status === "submitted"
     ? `已提交 ${score}/${max}`
+    : exam?.status === "submitting"
+      ? "时间已到 · 自动提交中"
     : exam?.status === "running"
       ? `进行中 · 剩余 ${formatDuration(remaining)}`
       : "未开始";
@@ -1296,20 +1521,56 @@ function renderExam() {
         </label>
         <label>时长(分钟)<input id="examDuration" type="number" min="5" max="180" value="${Number(state.settings?.examDurationMinutes || 30)}" /></label>
       </div>
+      <p id="examCountError" class="count-error" role="alert" hidden></p>
       <div class="heading-actions">
         <button id="generateExamButton" class="primary-button" type="button">生成考试</button>
         ${exam?.quiz?.length && exam.status === "running" ? "<button id=\"submitExamButton\" class=\"ghost-button\" type=\"button\">提交考试</button>" : ""}
       </div>
     </section>
     ${exam?.quiz?.length ? `
-      <div class="score-panel">${exam.status === "submitted" ? `考试得分 ${score}/${max}` : `剩余时间 ${formatDuration(remaining)}`}</div>
+      <div id="examCountdown" class="score-panel">${exam.status === "submitted" ? `${exam.timeExpired ? "时间已到 · 已自动提交" : "考试已提交"} · 得分 ${score}/${max}` : exam.status === "submitting" ? "时间已到，正在自动提交..." : `剩余时间 ${formatDuration(remaining)}`}</div>
       <div class="quiz-list">
         ${exam.quiz.map((item, index) => renderExamQuestion(item, index, exam.results?.[item.id])).join("")}
       </div>
     ` : "<div class=\"empty-state compact\"><p>按上面的配置生成一次模拟考试。</p></div>"}
   `;
   els.examPanel.querySelector("#generateExamButton")?.addEventListener("click", generateExam);
-  els.examPanel.querySelector("#submitExamButton")?.addEventListener("click", submitExam);
+  els.examPanel.querySelector("#submitExamButton")?.addEventListener("click", () => submitExam());
+  bindQuestionCompositionValidation(els.examPanel, {
+    total: "#examQuestionCount",
+    parts: ["#examChoiceCount", "#examShortCount", "#examCodeCount"],
+    error: "#examCountError",
+    button: "#generateExamButton"
+  });
+  startExamTimer();
+}
+
+function startExamTimer() {
+  clearExamTimer();
+  const plan = getCurrentPlan();
+  const exam = state.exam?.planId === plan?.id ? state.exam : null;
+  if (!exam || exam.status !== "running") return;
+
+  const tick = () => {
+    const remaining = Math.max(0, Number(exam.durationSec || 0) - Math.floor((Date.now() - Number(exam.startedAt || Date.now())) / 1000));
+    const countdown = els.examPanel.querySelector("#examCountdown");
+    if (countdown) countdown.textContent = remaining > 0 ? `剩余时间 ${formatDuration(remaining)}` : "时间已到，正在自动提交...";
+    els.examMode.textContent = remaining > 0 ? `进行中 · 剩余 ${formatDuration(remaining)}` : "时间已到 · 自动提交中";
+    if (remaining > 0) return;
+
+    clearExamTimer();
+    exam.timeExpired = true;
+    saveState();
+    submitExam({ timeExpired: true });
+  };
+
+  tick();
+  if (exam.status === "running") examTimer = window.setInterval(tick, 1000);
+}
+
+function clearExamTimer() {
+  if (examTimer !== null) window.clearInterval(examTimer);
+  examTimer = null;
 }
 
 function renderProject() {
@@ -1387,6 +1648,7 @@ function renderSettings() {
         <label>提醒时间<input id="settingReminder" type="time" value="${escapeHtml(settings.reminderTime)}" /></label>
         <label>学习风格<select id="settingLearningStyle">${styleOptions(settings.learningStyle)}</select></label>
       </div>
+      <p id="settingCountError" class="count-error" role="alert" hidden></p>
       <div class="settings-grid">
         <label class="toggle-line"><input id="settingShowHints" type="checkbox" ${settings.showHints ? "checked" : ""} /> 练习显示分层提示</label>
         <label class="toggle-line"><input id="settingPrioritizeWeakness" type="checkbox" ${settings.prioritizeWeakness ? "checked" : ""} /> 优先薄弱知识点</label>
@@ -1410,6 +1672,12 @@ function renderSettings() {
     </article>
   `;
   els.settingsPanel.querySelector("#saveSettingsButton").addEventListener("click", saveSettingsFromPanel);
+  bindQuestionCompositionValidation(els.settingsPanel, {
+    total: "#settingQuestionCount",
+    parts: ["#settingChoiceCount", "#settingShortCount", "#settingCodeCount"],
+    error: "#settingCountError",
+    button: "#saveSettingsButton"
+  });
 }
 
 function renderPractice() {
@@ -1430,8 +1698,14 @@ function renderPractice() {
     `;
     document.querySelector("#loadQuizButton").addEventListener("click", () => loadQuiz(false));
     els.practicePanel.querySelector("#applyPracticeSettings")?.addEventListener("click", () => {
-      savePracticeSettingsFromPanel();
+      if (!savePracticeSettingsFromPanel()) return;
       loadQuiz(false);
+    });
+    bindQuestionCompositionValidation(els.practicePanel, {
+      total: "#practiceQuestionCount",
+      parts: ["#practiceChoiceCount", "#practiceShortCount", "#practiceCodeCount"],
+      error: "#practiceCountError",
+      button: "#applyPracticeSettings"
     });
     return;
   }
@@ -1449,8 +1723,14 @@ function renderPractice() {
     button.addEventListener("click", () => evaluateQuiz(button.dataset.evaluate));
   });
   els.practicePanel.querySelector("#applyPracticeSettings")?.addEventListener("click", () => {
-    savePracticeSettingsFromPanel();
+    if (!savePracticeSettingsFromPanel()) return;
     loadQuiz(true);
+  });
+  bindQuestionCompositionValidation(els.practicePanel, {
+    total: "#practiceQuestionCount",
+    parts: ["#practiceChoiceCount", "#practiceShortCount", "#practiceCodeCount"],
+    error: "#practiceCountError",
+    button: "#applyPracticeSettings"
   });
 }
 
@@ -1731,6 +2011,10 @@ async function evaluateQuiz(questionId) {
         dimension: question.dimension,
         conceptId: question.conceptId,
         question: question.question,
+        options: Array.isArray(question.options) ? [...question.options] : [],
+        explanation: question.explanation || "",
+        answerIndex: Number.isInteger(result.answerIndex) ? result.answerIndex : question.answerIndex,
+        selectedIndex: question.type === "choice" ? Number(answer) : null,
         answer,
         correct: result.correct,
         score: result.score,
@@ -1827,6 +2111,7 @@ function renderPracticeOptionsPanel() {
         <label>难度<select id="practiceDifficulty">${difficultyOptions(settings.difficulty)}</select></label>
         <label>范围<select id="practiceKnowledgeScope">${scopeOptions(settings.knowledgeScope)}</select></label>
       </div>
+      <p id="practiceCountError" class="count-error" role="alert" hidden></p>
       <div class="heading-actions">
         <label class="toggle-line"><input id="practiceShowHints" type="checkbox" ${settings.showHints ? "checked" : ""} /> 显示提示</label>
         <button id="applyPracticeSettings" class="ghost-button" type="button">保存设置并出题</button>
@@ -1836,6 +2121,12 @@ function renderPracticeOptionsPanel() {
 }
 
 function savePracticeSettingsFromPanel() {
+  if (!validateQuestionComposition(els.practicePanel, {
+    total: "#practiceQuestionCount",
+    parts: ["#practiceChoiceCount", "#practiceShortCount", "#practiceCodeCount"],
+    error: "#practiceCountError",
+    button: "#applyPracticeSettings"
+  })) return false;
   state.settings = withDefaultSettings({
     ...state.settings,
     questionCount: numberFrom("#practiceQuestionCount", 4, els.practicePanel),
@@ -1848,6 +2139,30 @@ function savePracticeSettingsFromPanel() {
   });
   recordBehavior("settings-updated", { detail: "练习出题设置" });
   saveState();
+  return true;
+}
+
+function bindQuestionCompositionValidation(container, config) {
+  const selectors = [config.total, ...config.parts];
+  selectors.forEach((selector) => {
+    container.querySelector(selector)?.addEventListener("input", () => validateQuestionComposition(container, config));
+  });
+  validateQuestionComposition(container, config);
+}
+
+function validateQuestionComposition(container, config) {
+  const total = numberFrom(config.total, 0, container);
+  const parts = config.parts.map((selector) => numberFrom(selector, 0, container));
+  const sum = parts.reduce((result, value) => result + value, 0);
+  const valid = total >= 1 && total === sum;
+  const error = container.querySelector(config.error);
+  if (error) {
+    error.hidden = valid;
+    error.textContent = valid ? "" : `题型数量之和必须等于总题量：当前 ${sum} 题，总题量 ${total} 题。`;
+  }
+  const button = container.querySelector(config.button);
+  if (button) button.disabled = !valid;
+  return valid;
 }
 
 function quizOptionsFromSettings(overrides = {}) {
@@ -1886,6 +2201,10 @@ function buildMistakeBook(plan) {
       dimension: item.dimension || "综合",
       conceptId: item.conceptId,
       question: item.question || "",
+      options: Array.isArray(item.options) ? item.options : [],
+      answerIndex: item.answerIndex,
+      selectedIndex: item.selectedIndex,
+      explanation: item.explanation || item.result?.explanation || "",
       answer: item.answer,
       score: item.score,
       maxScore: item.maxScore,
@@ -1907,6 +2226,10 @@ function buildMistakeBook(plan) {
         conceptId: item.conceptId || source.conceptId,
         conceptTitle: item.conceptTitle || source.conceptTitle,
         question: source.question || "",
+        options: Array.isArray(source.options) ? source.options : [],
+        answerIndex: source.answerIndex,
+        selectedIndex: item.selectedIndex,
+        explanation: source.explanation || item.explanation || "",
         score: item.score,
         maxScore: item.maxScore,
         feedback: item.explanation || "",
@@ -1915,8 +2238,15 @@ function buildMistakeBook(plan) {
         at: plan.data.diagnosticResult?.evaluatedAt || new Date().toISOString()
       };
     });
+  const seen = new Set();
   return [...quizMistakes, ...diagnosticMistakes]
-    .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+    .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
+    .filter((item) => {
+      const questionKey = `${item.type}|${stripQuestionContext(item.question).toLocaleLowerCase()}`;
+      if (seen.has(questionKey)) return false;
+      seen.add(questionKey);
+      return true;
+    });
 }
 
 function inferReasonTag(text) {
@@ -2030,6 +2360,13 @@ function renderExamQuestion(item, index, result) {
 async function generateExam() {
   const plan = getCurrentPlan();
   if (!plan) return;
+  if (!validateQuestionComposition(els.examPanel, {
+    total: "#examQuestionCount",
+    parts: ["#examChoiceCount", "#examShortCount", "#examCodeCount"],
+    error: "#examCountError",
+    button: "#generateExamButton"
+  })) return;
+  clearExamTimer();
   const durationMinutes = numberFrom("#examDuration", 30, els.examPanel);
   const options = quizOptionsFromSettings({
     questionCount: numberFrom("#examQuestionCount", 6, els.examPanel),
@@ -2087,15 +2424,19 @@ async function generateExam() {
   }
 }
 
-async function submitExam() {
+async function submitExam({ timeExpired = false } = {}) {
   const plan = getCurrentPlan();
   const exam = state.exam?.planId === plan?.id ? state.exam : null;
-  if (!plan || !exam?.quiz?.length) return;
+  if (!plan || !exam?.quiz?.length || exam.status === "submitted" || examSubmitting) return;
   const answers = exam.quiz.map((question) => ({ question, answer: readQuizAnswerFrom(els.examPanel, question) }));
-  if (withDefaultSettings(state.settings).strictMode && answers.some((item) => item.answer === null || item.answer === "")) {
+  if (!timeExpired && withDefaultSettings(state.settings).strictMode && answers.some((item) => item.answer === null || item.answer === "")) {
     alert("还有题目未作答。");
     return;
   }
+  examSubmitting = true;
+  clearExamTimer();
+  exam.status = "submitting";
+  exam.timeExpired = Boolean(timeExpired || exam.timeExpired);
   const button = els.examPanel.querySelector("#submitExamButton");
   if (button) {
     button.disabled = true;
@@ -2143,8 +2484,10 @@ async function submitExam() {
     renderReport();
     renderSavedPlans();
   } catch (error) {
+    exam.status = "running";
     alert(`考试提交失败：${error.message}`);
   } finally {
+    examSubmitting = false;
     if (button) {
       button.disabled = false;
       button.textContent = "提交考试";
@@ -2192,6 +2535,12 @@ function saveProjectSubmission() {
 }
 
 function saveSettingsFromPanel() {
+  if (!validateQuestionComposition(els.settingsPanel, {
+    total: "#settingQuestionCount",
+    parts: ["#settingChoiceCount", "#settingShortCount", "#settingCodeCount"],
+    error: "#settingCountError",
+    button: "#saveSettingsButton"
+  })) return;
   state.settings = withDefaultSettings({
     ...state.settings,
     questionCount: numberFrom("#settingQuestionCount", 4, els.settingsPanel),

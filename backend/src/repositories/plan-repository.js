@@ -94,7 +94,7 @@ export async function getWorkspaceRecord(userId) {
   );
   const [historyRows] = await pool.execute(
     `SELECT s.plan_id, q.client_question_id, q.question_type, q.dimension,
-            q.question_json, a.is_correct, a.score, a.max_score,
+            q.question_json, a.answer_json, a.is_correct, a.score, a.max_score,
             a.result_json, a.created_at
        FROM quiz_attempts a
        JOIN quiz_questions q ON q.id = a.question_id
@@ -116,12 +116,18 @@ export async function getWorkspaceRecord(userId) {
   for (const row of historyRows) {
     if (!historyByPlan.has(row.plan_id)) historyByPlan.set(row.plan_id, []);
     const question = parseJson(row.question_json, {});
+    const answer = parseJson(row.answer_json, null);
     const result = parseJson(row.result_json, {});
     historyByPlan.get(row.plan_id).push({
       questionId: row.client_question_id,
       type: row.question_type,
       dimension: row.dimension,
       question: question.question || "",
+      options: Array.isArray(question.options) ? question.options : [],
+      explanation: question.explanation || "",
+      answerIndex: question.answerIndex,
+      selectedIndex: question.type === "choice" ? Number(answer) : null,
+      answer,
       correct: Boolean(row.is_correct),
       score: Number(row.score),
       maxScore: Number(row.max_score),

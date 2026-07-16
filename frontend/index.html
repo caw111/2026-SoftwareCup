@@ -15,6 +15,7 @@
         </button>
 
         <nav class="nav-actions" aria-label="主导航">
+          <button class="nav-link text-nav" type="button" data-view="home">新建课程</button>
           <button class="nav-link text-nav" type="button" data-view="plans">我的课程</button>
           <div class="service-chip" aria-live="polite">
             <span class="status-dot"></span>
@@ -24,7 +25,6 @@
             </span>
           </div>
           <button id="llmTestButton" class="ghost-button" type="button">测试大模型</button>
-          <button id="healthButton" class="icon-button" type="button" aria-label="刷新状态">↻</button>
         </nav>
       </header>
 
@@ -45,7 +45,6 @@
                   placeholder="例如：机器学习基础、数据结构、英语口语、操作系统..."
                   aria-label="学习主题"
                 />
-                <button class="primary-button prompt-submit" type="submit">生成课程</button>
                 <button class="send-button" type="submit" aria-label="生成课程">↑</button>
               </div>
 
@@ -141,7 +140,6 @@
 
         <section id="plans" class="view courses-view">
           <div class="page-heading">
-            <button class="nav-link back-button" type="button" data-view="home">← 新建课程</button>
             <div>
               <p class="eyebrow">My Courses</p>
               <h1>我的课程</h1>
@@ -164,7 +162,6 @@
             </div>
 
             <nav class="course-mode-nav" aria-label="学习模式">
-              <button class="course-scroll-link" type="button" data-scroll-target="courseHero">概览</button>
               <button class="nav-link active" type="button" data-view="daily" data-group="path">学习路径</button>
               <button class="nav-link" type="button" data-view="knowledge" data-group="mastery">掌握度</button>
               <button class="nav-link" type="button" data-view="practice" data-group="assessment">测验与复习</button>
@@ -430,6 +427,20 @@
         </section>
       </main>
     </div>
+
+    <dialog id="confirmDeleteDialog" class="confirm-dialog" aria-labelledby="confirmDeleteTitle">
+      <div class="confirm-dialog-content">
+        <span class="confirm-dialog-icon" aria-hidden="true">!</span>
+        <div>
+          <h2 id="confirmDeleteTitle">确认删除课程</h2>
+          <p>确定要删除“<strong id="confirmDeleteCourseName">未命名课程</strong>”吗？删除后无法恢复。</p>
+        </div>
+        <div class="confirm-dialog-actions">
+          <button id="cancelDeleteButton" class="ghost-button" type="button">取消</button>
+          <button id="confirmDeleteButton" class="danger-button" type="button">确认删除</button>
+        </div>
+      </div>
+    </dialog>
 
     <script src="/vendor/marked.js"></script>
     <script src="/vendor/dompurify.js"></script>

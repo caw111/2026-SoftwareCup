@@ -30,6 +30,16 @@ export function normalizeInput(body) {
   };
 }
 
+export function durationToDays(duration) {
+  const value = clean(duration);
+  const amount = Number.parseInt(value.match(/\d+/)?.[0] || "", 10);
+  if (!Number.isFinite(amount) || amount <= 0) return 14;
+  if (value.includes("天")) return amount;
+  if (value.includes("周")) return amount * 7;
+  if (value.includes("个月") || value.includes("月")) return amount * 30;
+  return amount;
+}
+
 export async function generateLearningPlan(input) {
   const localPlan = runLocalAgents(input);
 
@@ -131,7 +141,7 @@ export function runLocalAgents(input) {
   const diagnosticPretest = buildDiagnosticPretest(input, learnerProfile, knowledgeGraph);
   const adaptiveState = buildAdaptiveState({ learnerProfile, knowledgeGraph });
   const path = buildLearningPath(input);
-  const dailyPlan = buildDailyPlan(input, learnerProfile);
+  const dailyPlan = buildDailyPlan(input, learnerProfile, knowledgeGraph);
   const assessment = buildAssessment(input, learnerProfile, dailyPlan);
   const resources = buildResources(input, learnerProfile, assessment, knowledgeGraph);
   const generationLoop = buildGenerationLoop(input, learnerProfile, path, resources, assessment);
@@ -242,7 +252,7 @@ async function runLocalAgentsWithEvents(input, emit) {
     action: "把阶段路径拆成每日可打卡任务",
     input: "阶段路径、薄弱维度、每日时间",
     outputOf: (items) => `生成 ${items.length} 天每日任务`
-  }, () => buildDailyPlan(input, learnerProfile));
+  }, () => buildDailyPlan(input, learnerProfile, knowledgeGraph));
 
   const assessment = await runStage({
     agentId: "assessment-agent",
@@ -479,6 +489,7 @@ function buildAssessment(input, learnerProfile, dailyPlan) {
 
 export async function generateAdaptiveQuiz(input, plan, progress = {}, variant = 0, history = [], options = {}) {
   const summary = summarizeProgress(plan, progress);
+  const distributionSeed = `${input.topic || "topic"}-${variant}-${summary.done}-${history.length}`;
   const quizOptions = normalizeQuizOptions({
     ...options,
     includeCode: options.includeCode ?? shouldIncludeProgrammingQuestion(input, plan, progress, history),
@@ -492,15 +503,15 @@ export async function generateAdaptiveQuiz(input, plan, progress = {}, variant =
   const localQuiz = buildProgressQuiz(input, plan, progress, variant, history, quizOptions);
 
   if (!MODEL_CONFIG.apiKey) {
-    return { quiz: localQuiz, mode: "local-bank", llmUsed: false, includeCode: quizOptions.includeCode, quizOptions, judge: getJudgeRuntimeStatus() };
+    return { quiz: distributeQuizChoiceAnswers(localQuiz, distributionSeed), mode: "local-bank", llmUsed: false, includeCode: quizOptions.includeCode, quizOptions, judge: getJudgeRuntimeStatus() };
   }
 
   try {
     const llmQuiz = await callLargeModelForQuiz(input, plan, progress, summary, variant, history, quizOptions);
-    return { quiz: normalizeGeneratedQuiz(llmQuiz, localQuiz, summary, variant, quizOptions), mode: "llm-quiz", llmUsed: true, includeCode: quizOptions.includeCode, quizOptions, judge: getJudgeRuntimeStatus() };
+    return { quiz: distributeQuizChoiceAnswers(normalizeGeneratedQuiz(llmQuiz, localQuiz, summary, variant, quizOptions), distributionSeed), mode: "llm-quiz", llmUsed: true, includeCode: quizOptions.includeCode, quizOptions, judge: getJudgeRuntimeStatus() };
   } catch (error) {
     return {
-      quiz: localQuiz,
+      quiz: distributeQuizChoiceAnswers(localQuiz, distributionSeed),
       mode: "local-bank-fallback",
       llmUsed: false,
       includeCode: quizOptions.includeCode,
@@ -758,6 +769,7 @@ function normalizeQuizItem(item, summary, variant, index, options = {}) {
     normalized.options = ensureArray(item.options, []).slice(0, 4).map((option) => clean(option, 200));
     normalized.answerIndex = Math.max(0, Math.min(3, Number(item.answerIndex || 0)));
     if (normalized.options.length !== 4) throw new Error("选择题选项数量不足");
+    return redistributeChoiceAnswer(normalized, (Number(variant || 0) + Number(summary.done || 0) + index) % 4);
   }
   if (item.type === "short") {
     normalized.referenceAnswer = clean(item.referenceAnswer, 800) || clean(item.answer, 800);
@@ -774,6 +786,39 @@ function normalizeQuizItem(item, summary, variant, index, options = {}) {
       : starterForFunction(normalized.language, functionName, normalized.tests);
   }
   return normalized;
+}
+
+export function redistributeChoiceAnswer(question, targetIndex) {
+  if (question?.type !== "choice" || !Array.isArray(question.options) || question.options.length < 2) return question;
+  const options = [...question.options];
+  const answerIndex = Math.max(0, Math.min(options.length - 1, Number(question.answerIndex || 0)));
+  const target = Math.max(0, Math.min(options.length - 1, Number(targetIndex || 0)));
+  [options[answerIndex], options[target]] = [options[target], options[answerIndex]];
+  return { ...question, options, answerIndex: target };
+}
+
+export function distributeQuizChoiceAnswers(quiz, seed = "quiz") {
+  const orders = new Map();
+  let choiceIndex = 0;
+  return ensureArray(quiz, []).map((question) => {
+    if (question?.type !== "choice") return question;
+    const cycle = Math.floor(choiceIndex / 4);
+    if (!orders.has(cycle)) orders.set(cycle, seededAnswerOrder(`${seed}-${cycle}`));
+    const target = orders.get(cycle)[choiceIndex % 4];
+    choiceIndex += 1;
+    return { ...redistributeChoiceAnswer(question, target), answerDistributionVersion: 2 };
+  });
+}
+
+function seededAnswerOrder(seed) {
+  const order = [0, 1, 2, 3];
+  let value = stableHash(seed) || 1;
+  for (let index = order.length - 1; index > 0; index -= 1) {
+    value = (value * 1664525 + 1013904223) >>> 0;
+    const swapIndex = value % (index + 1);
+    [order[index], order[swapIndex]] = [order[swapIndex], order[index]];
+  }
+  return order;
 }
 
 function defaultStarterCode(language) {
@@ -905,14 +950,15 @@ function buildProgressQuiz(input, plan, progress = {}, variant = 0, history = []
   const learnedTask = summary.completedTasks[seedOffset % Math.max(1, summary.completedTasks.length)] || `${topic} 的核心概念`;
   const bank = selectProfessionalQuizBank(topic, focus, dayLabel, learnedTask, options);
   const selected = selectAdaptiveQuizItems(bank, seedOffset, history, missedDimensions, options);
-  return selected.map((item, index) => applyQuizContext(item, {
+  const answerOffset = (seedOffset + Number(variant || 0)) % 4;
+  return selected.map((item, index) => redistributeChoiceAnswer(applyQuizContext(item, {
     index,
     variant,
     summary,
     learnedTask,
     missedDimensions,
     quizOptions: options
-  }));
+  }), (answerOffset + index) % 4));
 }
 
 function selectProfessionalQuizBank(topic, focus, dayLabel, learnedTask, options = {}) {
@@ -1312,24 +1358,58 @@ function buildResourcePackage(input, learnerProfile, path, resources, assessment
   };
 }
 
-function buildDailyPlan(input, learnerProfile) {
-  const days = input.duration.includes("3 天") ? 3 : input.duration.includes("1 个月") ? 14 : input.duration.includes("3 个月") ? 21 : 10;
+function buildDailyPlan(input, learnerProfile, knowledgeGraph) {
+  const days = durationToDays(input.duration);
   const focus = learnerProfile.weakestDimensions[0].dimension;
+  const concepts = ensureArray(knowledgeGraph?.concepts, []);
+  const conceptTitles = new Map(concepts.map((item) => [item.id, item.title]));
   return Array.from({ length: days }, (_, index) => {
     const day = index + 1;
+    const concept = concepts[index % Math.max(1, concepts.length)] || {
+      id: `concept-${day}`,
+      title: fallbackConceptTitle(input.topic, index),
+      dimension: focus,
+      standard: `理解 ${input.topic} 的核心概念、适用条件和实际用法。`,
+      prerequisites: [],
+      misconceptions: ["只记定义而忽略适用条件", "会复述但不能迁移到具体问题"]
+    };
     return {
       day,
-      title: `第 ${day} 天：${day <= 3 ? "概念补强" : day <= 7 ? "练习迁移" : "项目复盘"}`,
+      title: `第 ${day} 天：${concept.title}`,
       estimate: input.dailyMinutes,
-      focus,
+      focus: concept.dimension || focus,
       tasks: [
-        `学习 ${input.topic} 的一个核心概念，并写下自己的解释。`,
-        `完成 2 道围绕“${focus}”的练习题。`,
-        "记录一个错因或一个新的理解。"
+        `完整阅读“${concept.title}”讲义，整理定义、原理、适用条件和常见误区。`,
+        `跟随案例逐步分析 ${concept.title} 如何用于“${input.goal}”，重做关键步骤。`,
+        `独立完成“${concept.title}”基础题和变式题，对照解析记录具体错因。`
       ],
+      materials: buildDetailedDailyMaterials(input, focus, day, {
+        ...concept,
+        prerequisiteTitles: ensureArray(concept.prerequisites, []).map((id) => conceptTitles.get(id) || id)
+      }),
       checkpoint: day % 3 === 0 ? "完成一次小测并更新薄弱点。" : "用一句话总结今天的收获。"
     };
   });
+}
+
+function fallbackConceptTitle(topic, index) {
+  const names = [
+    "基本术语与问题边界",
+    "核心组成与相互关系",
+    "基本原理与运行机制",
+    "标准工作流程",
+    "适用条件与限制",
+    "典型方法与选择依据",
+    "基础案例分析",
+    "常见错误与排查方法",
+    "结果评价与质量标准",
+    "改进与优化策略",
+    "复杂情境应用",
+    "综合项目设计",
+    "表达、汇报与复盘",
+    "迁移应用与自主提升"
+  ];
+  return `${topic} 的${names[index % names.length]}`;
 }
 
 function buildTutorCards(input, learnerProfile) {
@@ -1375,6 +1455,7 @@ function pickKnownPlanFields(plan) {
 }
 
 function normalizePlanShape(plan, fallback) {
+  const resources = ensureArray(plan.resources, fallback.resources);
   return {
     ...plan,
     learnerProfile: normalizeLearnerProfile(plan.learnerProfile, fallback.learnerProfile),
@@ -1382,16 +1463,112 @@ function normalizePlanShape(plan, fallback) {
     diagnosticPretest: normalizeDiagnosticPretest(plan.diagnosticPretest, fallback.diagnosticPretest),
     adaptiveState: plan.adaptiveState || fallback.adaptiveState,
     path: ensureArray(plan.path, fallback.path),
-    resources: ensureArray(plan.resources, fallback.resources),
+    resources,
     assessment: normalizeAssessment(plan.assessment, fallback.assessment),
     generationLoop: normalizeGenerationLoop(plan.generationLoop, fallback.generationLoop),
     remediationPlan: plan.remediationPlan || fallback.remediationPlan,
     governanceReport: plan.governanceReport || fallback.governanceReport,
     personalInsights: plan.personalInsights || fallback.personalInsights,
     resourcePackage: plan.resourcePackage || fallback.resourcePackage,
-    dailyPlan: ensureArray(plan.dailyPlan, fallback.dailyPlan),
+    dailyPlan: normalizeDailyPlan(plan.dailyPlan, fallback.dailyPlan, resources),
     tutorCards: ensureArray(plan.tutorCards, fallback.tutorCards)
   };
+}
+
+function normalizeDailyPlan(candidate, fallback, resources) {
+  const supplied = ensureArray(candidate, []);
+  return fallback.map((fallbackDay, index) => {
+    const day = supplied[index] || fallbackDay;
+    return {
+      ...fallbackDay,
+      ...day,
+      day: index + 1,
+      tasks: ensureArray(day.tasks, fallbackDay.tasks),
+      // The local structured lesson is the completeness baseline. Model output may
+      // improve titles/tasks, but must not replace it with one-line summaries.
+      materials: fallbackDay.materials
+    };
+  });
+}
+
+function buildDetailedDailyMaterials(input, focus, day, concept) {
+  const conceptTitle = concept?.title || `${input.topic} 核心知识点`;
+  const standard = concept?.standard || `理解 ${conceptTitle} 的定义、原理和用途。`;
+  const prerequisites = ensureArray(concept?.prerequisiteTitles, concept?.prerequisites || []);
+  const misconceptions = ensureArray(concept?.misconceptions, ["只背定义而不会应用", "忽略适用条件和边界"]);
+  return [
+    {
+      type: "详细讲义",
+      title: `第 ${day} 天讲义：${conceptTitle}`,
+      content: `本讲义围绕“${conceptTitle}”建立从概念到应用的完整知识链。学习目标是：${standard}`,
+      sections: [
+        {
+          heading: "一、概念与学习目标",
+          body: `${conceptTitle} 是本节的核心知识点。学习时要明确它解决什么问题、接收哪些输入、产生什么输出，以及用什么标准判断结果。完成后不仅要能复述概念，还要能用自己的例子说明它为何有效。`
+        },
+        {
+          heading: "二、前置知识与核心原理",
+          body: `${prerequisites.length ? `建议先确认已理解这些前置节点：${prerequisites.join("、")}。` : "本节不要求额外的专门前置知识，但需要先理解问题目标、已知条件和约束。"} 核心原理按“识别问题—选择方法—执行步骤—检查结果”理解：每一步都必须对应一个明确条件，不能只记操作顺序。`
+        },
+        {
+          heading: "三、适用条件与边界",
+          body: `使用 ${conceptTitle} 前，要确认当前问题与它解决的问题类型一致，输入信息足够且评价标准明确。如果关键条件缺失、信息不可靠，或者目标与方法假设不匹配，就要补充信息或改用其他方法，不能机械套用结论。`
+        },
+        {
+          heading: "四、常见误区与纠正",
+          body: `常见误区包括：${misconceptions.join("；")}。纠正方法是每次作答都写出“选择这个概念的依据”和“结论成立所需的条件”，再用一个不满足条件的反例检查理解。`
+        },
+        {
+          heading: "五、本节知识小结",
+          body: `掌握 ${conceptTitle} 的标准是：能解释定义和原理，能识别适用与不适用的情境，能独立完成具体案例，并能根据结果发现错误、说明原因和提出修正方案。`
+        }
+      ]
+    },
+    {
+      type: "完整案例",
+      title: `案例：用 ${conceptTitle} 推进“${input.goal}”`,
+      content: `下面用一个从需求到复盘的完整案例演示 ${conceptTitle}，每一步都给出行动和判断依据。`,
+      sections: [
+        {
+          heading: "案例背景",
+          body: `学习者希望实现“${input.goal}”，但当前薄弱点是“${focus}”。案例把目标拆成一个可验证的小任务：使用 ${conceptTitle} 得出结果，并说明结果如何支持原目标。`
+        },
+        {
+          heading: "分析与执行",
+          body: "执行时不要直接套答案，应保留每一步的输入、中间结果和选择依据。",
+          steps: [
+            `明确任务输出：写下完成“${input.goal}”时希望得到的具体成果和判断标准。`,
+            `整理已知条件：区分已掌握、仍需查证的信息，以及 ${conceptTitle} 所要求的必要条件。`,
+            `应用核心方法：按本节原理逐步处理，并在每一步旁写出为什么这样做。`,
+            "验证结果：使用一个正常例子和一个边界反例检查结论；若结果冲突，返回上一步修正。"
+          ]
+        },
+        {
+          heading: "案例结论与迁移",
+          body: `案例形成了可复用过程：定义目标、核对条件、应用 ${conceptTitle}、用证据检查结果。把案例中的目标、输入或限制替换一项，如果仍能解释每一步，才说明真正具备迁移能力。`
+        }
+      ]
+    },
+    {
+      type: "练习与解析",
+      title: `${conceptTitle} 基础题与变式题`,
+      content: "练习覆盖概念解释、场景应用和边界判断。请先独立作答，再展开参考解析。",
+      questions: [
+        {
+          prompt: `请用自己的话解释 ${conceptTitle}，写出它解决的问题、两个适用条件和一个不适用的反例。`,
+          answer: "合格答案应覆盖概念是什么、为什么需要、在什么条件下使用、何时不能使用。反例必须指出具体哪个条件不成立，不能只写“情况不同”。"
+        },
+        {
+          prompt: `把 ${conceptTitle} 应用于“${input.goal}”：列出输入、执行步骤、预期输出和验证方法。`,
+          answer: "先把目标改写为可检查的成果，再列出必要信息；执行步骤要逐项对应本节原理；验证部分至少包括评价标准、正常样例和边界样例。"
+        },
+        {
+          prompt: "如果案例中的一个关键条件不再满足，你会如何识别问题并调整方案？",
+          answer: "先指出失效的具体条件及影响，再决定补充信息、调整步骤或更换方法。修正后要重新验证结果，不能沿用原结论。"
+        }
+      ]
+    }
+  ];
 }
 
 function normalizeLearnerProfile(profile, fallback) {
@@ -1453,7 +1630,7 @@ async function callLargeModelForPlan(input, localPlan) {
     profileSummary: localPlan.learnerProfile.summary,
     mastery: localPlan.learnerProfile.mastery,
     weak: localPlan.learnerProfile.weakestDimensions,
-    requiredDays: input.duration.includes("3 天") ? 3 : 7
+    requiredDays: durationToDays(input.duration)
   };
   const prompt = `你是一个中文多智能体学习系统。请基于学生输入生成完整可执行学习方案。
 只返回 JSON，不要 Markdown。字段必须包含：
@@ -1463,15 +1640,15 @@ async function callLargeModelForPlan(input, localPlan) {
  "resources":[{"type":"","title":"","content":""}],
  "assessment":{"quiz":[{"id":"","type":"choice","dimension":"","question":"","options":[],"answerIndex":0,"explanation":"","score":25}],"rubric":[],"nextActions":[]},
  "resourcePackage":{"title":"","audience":"","packageScore":0,"sections":[{"type":"","title":"","items":[]}],"deliverables":[],"usageGuide":[],"sourceTrace":[]},
- "dailyPlan":[{"day":1,"title":"","estimate":"","focus":"","tasks":[],"checkpoint":""}],
+ "dailyPlan":[{"day":1,"title":"","estimate":"","focus":"","tasks":[],"materials":[{"title":"","content":""}],"checkpoint":""}],
  "tutorCards":[{"title":"","prompt":""}]
 }
 
 要求：
-1. dailyPlan 生成 ${planSeed.requiredDays} 天，每天 3 个任务，任务要具体到学生能直接执行。
+1. dailyPlan 必须生成且仅生成 ${planSeed.requiredDays} 天，每天 3 个任务；每一天还要提供 2-3 条 materials（讲义要点、案例、练习或可靠资料名称及用途），不能只写抽象行动。
 2. assessment.quiz 必须是 4 道选择题，带 options、answerIndex、explanation，并能与 dailyPlan 的进度相关。
 3. learnerProfile.mastery 必须说明 evidence/source，不能伪装成真实测量数据。
-4. 内容要针对学生输入，不要泛泛而谈，每个长文本控制在 120 字以内。
+4. 内容要针对学生输入，不要泛泛而谈。materials 中的讲义和案例正文应包含概念定义、适用条件、分步过程、具体例子与反例或检查方法，每项 180-400 字；其他长文本控制在 120 字以内。
 
 学生输入：${JSON.stringify(input)}
 本地画像种子：${JSON.stringify(planSeed)}`;
