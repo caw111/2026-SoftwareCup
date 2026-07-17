@@ -1,3 +1,5 @@
+import crypto from "node:crypto";
+
 import { getDatabasePool, withTransaction } from "../db/pool.js";
 
 export async function createPlanRecord(userId, plan) {
@@ -24,14 +26,18 @@ export async function createPlanRecord(userId, plan) {
     for (const task of extractTasks(plan)) {
       await connection.execute(
         `INSERT INTO plan_tasks
-           (plan_id, task_key, day_number, task_index, content, completed, completed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+           (plan_id, task_uid, task_key, day_number, task_index, content,
+            concept_id, revision_id, status, locked, completed, completed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', FALSE, ?, ?)`,
         [
           plan.id,
+          task.taskUid,
           task.taskKey,
           task.dayNumber,
           task.taskIndex,
           task.content,
+          task.conceptId,
+          task.revisionId,
           task.completed,
           task.completed ? new Date() : null
         ]
@@ -112,7 +118,7 @@ export async function getWorkspaceRecord(userId) {
   const [taskRows] = await pool.execute(
     `SELECT plan_id, task_key, completed
        FROM plan_tasks
-      WHERE plan_id IN (${placeholders})
+       WHERE plan_id IN (${placeholders}) AND status = 'active'
       ORDER BY day_number, task_index`,
     planIds
   );
@@ -251,6 +257,7 @@ export async function updateTaskProgressRecord(userId, planId, taskKey, complete
             t.completed_at = IF(?, CURRENT_TIMESTAMP(3), NULL)
       WHERE t.plan_id = ?
         AND t.task_key = ?
+        AND t.status = 'active'
         AND p.user_id = ?
         AND p.deleted_at IS NULL`,
     [completed, completed, planId, taskKey, userId]
@@ -263,7 +270,7 @@ export async function resetPlanProgressRecord(userId, planId) {
     `UPDATE plan_tasks t
        JOIN learning_plans p ON p.id = t.plan_id
         SET t.completed = FALSE, t.completed_at = NULL
-      WHERE t.plan_id = ? AND p.user_id = ? AND p.deleted_at IS NULL`,
+      WHERE t.plan_id = ? AND t.status = 'active' AND p.user_id = ? AND p.deleted_at IS NULL`,
     [planId, userId]
   );
   return result.affectedRows;
@@ -328,12 +335,15 @@ function extractTasks(plan) {
   const tasks = [];
   for (const day of plan.data?.dailyPlan || []) {
     (day.tasks || []).forEach((content, taskIndex) => {
-      const taskKey = `day-${day.day}-task-${taskIndex}`;
+      const taskKey = day.taskKeys?.[taskIndex] || `day-${day.day}-task-${taskIndex}`;
       tasks.push({
+        taskUid: crypto.randomUUID(),
         taskKey,
         dayNumber: Number(day.day),
         taskIndex,
         content: String(content),
+        conceptId: day.conceptIds?.[taskIndex] || day.conceptId || null,
+        revisionId: day.revisionId || null,
         completed: Boolean(plan.progress?.[taskKey])
       });
     });

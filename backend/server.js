@@ -36,6 +36,15 @@ import {
   evaluateStoredQuestionForUser,
   saveGeneratedQuizForUser
 } from "./src/services/quiz-service.js";
+import {
+  applyPathRevisionForUser,
+  evaluatePathReplanningForUser,
+  getPathRevisionForUser,
+  listPathRevisionsForUser,
+  recordLearningEventForUser,
+  rejectPathRevisionForUser,
+  undoPathRevisionForUser
+} from "./src/services/path-replanning-service.js";
 import { requireUserSession } from "./src/services/session-service.js";
 import { getStorageStatus, readWorkspaceState, writeWorkspaceState, storagePublicConfig } from "./src/storage.js";
 import { clean, ensureArray } from "./src/utils.js";
@@ -242,16 +251,20 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "PATCH" && taskMatch) {
       const session = await databaseSession(req, res);
       const body = await readJson(req);
-      sendJson(
-        res,
-        200,
-        await updateTaskProgressForUser(
-          session.userId,
-          decodePart(taskMatch[1]),
-          decodePart(taskMatch[2]),
-          body.completed
-        )
+      const planId = decodePart(taskMatch[1]);
+      const taskKey = decodePart(taskMatch[2]);
+      const result = await updateTaskProgressForUser(
+        session.userId,
+        planId,
+        taskKey,
+        body.completed
       );
+      await recordLearningEventForUser(session.userId, planId, {
+        type: body.completed ? "task_completed" : "task_reopened",
+        eventKey: `task-progress:${taskKey}:${Boolean(body.completed)}`,
+        payload: { taskKey, completed: Boolean(body.completed) }
+      });
+      sendJson(res, 200, result);
       return;
     }
 
@@ -264,6 +277,57 @@ const server = http.createServer(async (req, res) => {
         await resetPlanProgressForUser(session.userId, decodePart(progressMatch[1]))
       );
       return;
+    }
+
+    const pathRevisionsMatch = url.pathname.match(/^\/api\/plans\/([^/]+)\/path-revisions$/);
+    if (req.method === "GET" && pathRevisionsMatch) {
+      const session = await databaseSession(req, res);
+      sendJson(res, 200, await listPathRevisionsForUser(
+        session.userId,
+        decodePart(pathRevisionsMatch[1])
+      ));
+      return;
+    }
+
+    const replanMatch = url.pathname.match(/^\/api\/plans\/([^/]+)\/replanning\/evaluate$/);
+    if (req.method === "POST" && replanMatch) {
+      const session = await databaseSession(req, res);
+      const body = await readJson(req);
+      sendJson(res, 200, await evaluatePathReplanningForUser(
+        session.userId,
+        decodePart(replanMatch[1]),
+        {
+          triggerType: body.triggerType || "manual",
+          payload: body.payload || {},
+          eventKey: body.eventKey,
+          force: Boolean(body.force)
+        }
+      ));
+      return;
+    }
+
+    const pathRevisionActionMatch = url.pathname.match(/^\/api\/plans\/([^/]+)\/path-revisions\/([^/]+)(?:\/(apply|reject|undo))?$/);
+    if (pathRevisionActionMatch) {
+      const session = await databaseSession(req, res);
+      const planId = decodePart(pathRevisionActionMatch[1]);
+      const revisionId = decodePart(pathRevisionActionMatch[2]);
+      const action = pathRevisionActionMatch[3] || "";
+      if (req.method === "GET" && !action) {
+        sendJson(res, 200, await getPathRevisionForUser(session.userId, planId, revisionId));
+        return;
+      }
+      if (req.method === "POST" && action === "apply") {
+        sendJson(res, 200, await applyPathRevisionForUser(session.userId, planId, revisionId));
+        return;
+      }
+      if (req.method === "POST" && action === "reject") {
+        sendJson(res, 200, await rejectPathRevisionForUser(session.userId, planId, revisionId));
+        return;
+      }
+      if (req.method === "POST" && action === "undo") {
+        sendJson(res, 200, await undoPathRevisionForUser(session.userId, planId, revisionId));
+        return;
+      }
     }
 
     if (req.method === "GET" && url.pathname === "/api/workspace-state") {
@@ -372,6 +436,25 @@ const server = http.createServer(async (req, res) => {
         decodePart(attemptMatch[1]),
         body.answer
       );
+      if (result.planId) {
+        await recordLearningEventForUser(session.userId, result.planId, {
+          type: "quiz_attempt_evaluated",
+          eventKey: `quiz-attempt:${attemptMatch[1]}:${Date.now()}`,
+          payload: {
+            questionId: decodePart(attemptMatch[1]),
+            correct: result.correct,
+            score: result.score,
+            maxScore: result.maxScore,
+            dimension: result.dimension
+          }
+        });
+        if (result.correct === false) {
+          await evaluatePathReplanningForUser(session.userId, result.planId, {
+            triggerType: "quiz_attempt_evaluated",
+            recordEvent: false
+          });
+        }
+      }
       sendJson(res, 201, result);
       return;
     }

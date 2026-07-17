@@ -15,6 +15,7 @@ let deleteConfirmationResolver = null;
 let progressResetConfirmationResolver = null;
 const COURSE_MODES = [
   "daily",
+  "path-revisions",
   "notes",
   "diagnostic",
   "knowledge",
@@ -79,6 +80,8 @@ const els = {
   resultMode: document.querySelector("#resultMode"),
   dailyPanel: document.querySelector("#dailyPanel"),
   progressSummary: document.querySelector("#progressSummary"),
+  pathRevisionPanel: document.querySelector("#pathRevisionPanel"),
+  pathRevisionMode: document.querySelector("#pathRevisionMode"),
   notesPanel: document.querySelector("#notesPanel"),
   notesMode: document.querySelector("#notesMode"),
   serviceStatus: document.querySelector("#serviceStatus"),
@@ -822,6 +825,7 @@ async function loadDiskState() {
     applyDatabaseState(databaseState);
     state.databaseReady = true;
     await loadKnowledgeSources();
+    await refreshPathRevisionsForCurrentPlan();
   } catch {
     state.databaseReady = false;
     renderSourceLibrary();
@@ -878,7 +882,7 @@ function setView(view, options = {}) {
 }
 
 function courseModeGroup(view) {
-  if (view === "daily") return "path";
+  if (view === "daily" || view === "path-revisions") return "path";
   if (view === "knowledge" || view === "remediation") return "mastery";
   if (["practice", "mistakes", "exam", "diagnostic"].includes(view)) return "assessment";
   if (view === "report") return "report";
@@ -1003,6 +1007,7 @@ function renderAll() {
   renderCourseChrome();
   renderSavedPlans();
   renderDailyPlan();
+  renderPathRevisions();
   renderNotes();
   renderDiagnostic();
   renderKnowledge();
@@ -1100,7 +1105,7 @@ function currentLearningDay(plan) {
 
 function isDayComplete(day, progress) {
   const tasks = day?.tasks || [];
-  return tasks.length > 0 && tasks.every((_, index) => progress[progressId(day.day, index)]);
+  return tasks.length > 0 && tasks.every((_, index) => progress[progressId(day, index)]);
 }
 
 function averageMastery(plan) {
@@ -1126,6 +1131,8 @@ function learningStreak(plan) {
 
 function buildCurrentAdvice(plan, current, summary) {
   if (summary.percent >= 100) return "课程任务已完成，可以进入学习报告复盘整体表现。";
+  const pendingRevision = pendingPathRevisionFor(plan);
+  if (pendingRevision) return `有新的路径调整建议：${pendingRevision.summary}`;
   if (plan.data?.remediationPlan?.target) return `优先复习：${plan.data.remediationPlan.target}。`;
   if (current.day?.title) return `先完成「${current.day.title}」中的未完成任务，再生成一次测验。`;
   return "先完成今天的学习任务，再进行测验与复习。";
@@ -1290,6 +1297,7 @@ async function activatePlan(planId) {
   state.selectedSourceIds = [...(activePlan?.data?.input?.knowledgeSourceIds || [])];
   saveState();
   renderSourceLibrary();
+  await refreshPathRevisionsForCurrentPlan();
 }
 
 function courseInitials(title) {
@@ -1353,6 +1361,34 @@ function closeDeleteConfirmation(confirmed) {
   resolve?.(confirmed);
 }
 
+function pathRevisionsFor(plan) {
+  if (!plan) return [];
+  return state.pathRevisions?.[plan.id] || plan.data?.pathRevisions || [];
+}
+
+function pendingPathRevisionFor(plan) {
+  return pathRevisionsFor(plan).find((revision) => revision.status === "proposed") || null;
+}
+
+function renderPathRevisionBanner(revision) {
+  const inserted = revision.diff?.insertedDays?.length || 0;
+  const updated = revision.diff?.updatedDays?.length || 0;
+  const shifted = revision.diff?.shiftedTasks?.length || 0;
+  return `
+    <section class="path-revision-banner">
+      <div>
+        <span class="mini-label">路径重规划建议</span>
+        <strong>${escapeHtml(revision.summary || "系统检测到学习路径需要调整。")}</strong>
+        <p>LLM 预计新增 ${inserted} 个学习日，调整 ${updated} 个后续学习日，顺延 ${shifted} 个未完成任务；接受前不会覆盖当前路径。</p>
+      </div>
+      <div class="heading-actions">
+        <button class="ghost-button" type="button" data-open-path-revisions>查看对比</button>
+        <button class="primary-button" type="button" data-apply-path-revision="${escapeHtml(revision.id)}">接受调整</button>
+      </div>
+    </section>
+  `;
+}
+
 function renderDailyPlan() {
   const plan = getCurrentPlan();
   if (!plan?.data?.dailyPlan?.length) {
@@ -1364,12 +1400,14 @@ function renderDailyPlan() {
 
   const data = plan.data;
   const current = currentLearningDay(plan);
+  const pendingRevision = pendingPathRevisionFor(plan);
   const displayDays = data.dailyPlan.map((day, index) => ({
     ...day,
     materials: Array.isArray(day.materials) ? day.materials : []
   }));
   els.dailyPanel.className = "learning-path";
   els.dailyPanel.innerHTML = `
+    ${pendingRevision ? renderPathRevisionBanner(pendingRevision) : ""}
     <div class="timeline-list">
       ${displayDays.map((day, index) => renderDayCard(day, plan.progress || {}, index, current.index)).join("")}
     </div>
@@ -1391,6 +1429,10 @@ function renderDailyPlan() {
   els.dailyPanel.querySelectorAll("input[type='checkbox']").forEach((checkbox) => {
     checkbox.addEventListener("change", updateProgress);
   });
+  els.dailyPanel.querySelector("[data-open-path-revisions]")?.addEventListener("click", () => setView("path-revisions"));
+  els.dailyPanel.querySelector("[data-apply-path-revision]")?.addEventListener("click", (event) => (
+    applyPathRevision(event.currentTarget.dataset.applyPathRevision)
+  ));
   els.dailyPanel.querySelectorAll("[data-day-action]").forEach((button) => {
     button.addEventListener("click", () => {
       const details = button.closest("details");
@@ -1487,7 +1529,7 @@ function renderDayCard(day, progress, index = 0, currentIndex = 0) {
         <p class="timeline-focus">${escapeHtml(day.focus || day.checkpoint || "")}</p>
         <div class="task-list">
           ${tasks.map((task, taskIndex) => {
-            const id = progressId(day.day, taskIndex);
+            const id = progressId(day, taskIndex);
             return `
               <label class="task-item">
                 <input type="checkbox" data-progress-id="${id}" ${progress[id] ? "checked" : ""} ${locked ? "disabled" : ""} />
@@ -1605,6 +1647,9 @@ function renderLearningMaterial(material, index) {
 }
 
 function progressId(day, index) {
+  if (day && typeof day === "object") {
+    return day.taskKeys?.[index] || `day-${day.day}-task-${index}`;
+  }
   return `day-${day}-task-${index}`;
 }
 
@@ -1643,6 +1688,275 @@ function updateProgressSummary() {
   }
   const summary = progressSummaryFor(plan);
   els.progressSummary.textContent = `已完成 ${summary.done}/${summary.total} 项，进度 ${summary.percent}%`;
+}
+
+function renderPathRevisions() {
+  const plan = getCurrentPlan();
+  if (!els.pathRevisionPanel || !els.pathRevisionMode) return;
+  if (!plan) {
+    els.pathRevisionPanel.className = "empty-state";
+    els.pathRevisionPanel.innerHTML = "<p>先生成或选择一门课程，再查看路径变更建议。</p>";
+    els.pathRevisionMode.textContent = "等待课程";
+    return;
+  }
+
+  const revisions = pathRevisionsFor(plan);
+  const proposed = revisions.filter((revision) => revision.status === "proposed");
+  els.pathRevisionMode.textContent = proposed.length
+    ? `${proposed.length} 条待处理建议`
+    : revisions.length
+      ? `${revisions.length} 条变更记录`
+      : "暂无变更";
+
+  if (!revisions.length) {
+    els.pathRevisionPanel.className = "empty-state";
+    els.pathRevisionPanel.innerHTML = `
+      <p>还没有路径变更建议。LLM 会在诊断、连续错题、综合考试和进度异常后，结合当前路径提出可接受或撤销的调整方案。</p>
+      <button class="ghost-button" type="button" data-evaluate-replanning>让 LLM 检查路径</button>
+    `;
+    els.pathRevisionPanel.querySelector("[data-evaluate-replanning]")?.addEventListener("click", () => (
+      evaluatePathReplanning("manual", {}, true)
+    ));
+    return;
+  }
+
+  els.pathRevisionPanel.className = "path-revision-board";
+  els.pathRevisionPanel.innerHTML = `
+    <section class="remediation-head">
+      <div>
+        <strong>路径变更建议</strong>
+        <p>每条建议都由 LLM 基于学习证据生成，并保留前后差异；只有点击接受后，才会事务更新未完成学习日。</p>
+      </div>
+      <button class="ghost-button" type="button" data-evaluate-replanning>让 LLM 重新检查</button>
+    </section>
+    <div class="path-revision-list">
+      ${revisions.map(renderPathRevisionCard).join("")}
+    </div>
+  `;
+  els.pathRevisionPanel.querySelector("[data-evaluate-replanning]")?.addEventListener("click", () => (
+    evaluatePathReplanning("manual", {}, true)
+  ));
+  els.pathRevisionPanel.querySelectorAll("[data-apply-path-revision]").forEach((button) => {
+    button.addEventListener("click", () => applyPathRevision(button.dataset.applyPathRevision));
+  });
+  els.pathRevisionPanel.querySelectorAll("[data-reject-path-revision]").forEach((button) => {
+    button.addEventListener("click", () => rejectPathRevision(button.dataset.rejectPathRevision));
+  });
+  els.pathRevisionPanel.querySelectorAll("[data-undo-path-revision]").forEach((button) => {
+    button.addEventListener("click", () => undoPathRevision(button.dataset.undoPathRevision));
+  });
+}
+
+function renderPathRevisionCard(revision) {
+  const insertedDays = revision.diff?.insertedDays || [];
+  const shiftedTasks = revision.diff?.shiftedTasks || [];
+  const updatedDays = revision.diff?.updatedDays || [];
+  const evidence = revision.evidence || {};
+  return `
+    <article class="path-revision-card ${revision.status}">
+      <div class="path-revision-head">
+        <div>
+          <span class="tag ${revision.status === "proposed" ? "warning-tag" : ""}">${escapeHtml(pathRevisionStatusLabel(revision.status))}</span>
+          <h3>${escapeHtml(revision.summary || "路径调整建议")}</h3>
+          <small>${escapeHtml(revision.createdByAgent || "路径重规划智能体")} · ${formatDate(revision.createdAt)} · 置信度 ${Number(revision.confidence || 0)}%</small>
+        </div>
+        <div class="heading-actions">
+          ${revision.status === "proposed" ? `
+            <button class="primary-button" type="button" data-apply-path-revision="${escapeHtml(revision.id)}">接受调整</button>
+            <button class="text-button" type="button" data-reject-path-revision="${escapeHtml(revision.id)}">暂不采用</button>
+          ` : ""}
+          ${revision.status === "applied" ? `<button class="ghost-button" type="button" data-undo-path-revision="${escapeHtml(revision.id)}">撤销本次调整</button>` : ""}
+        </div>
+      </div>
+      <div class="path-revision-evidence">
+        ${renderEvidencePill("触发", triggerTypeLabel(revision.triggerType))}
+        ${evidence.diagnostic ? renderEvidencePill("诊断", `${Number(evidence.diagnostic.percent || 0)}%`) : ""}
+        ${evidence.recentWrong?.length ? renderEvidencePill("错题", `${evidence.recentWrong.length} 条`) : ""}
+        ${evidence.overdue?.overdueDays ? renderEvidencePill("进度", `落后 ${evidence.overdue.overdueDays} 天`) : ""}
+      </div>
+      <div class="path-revision-diff">
+        <section>
+          <strong>新增学习日</strong>
+          ${insertedDays.length ? insertedDays.map((day) => `
+            <div class="revision-day-preview">
+              <span>Day ${Number(day.day || 0)}</span>
+              <b>${escapeHtml(day.title || "")}</b>
+              <ul>${(day.tasks || []).map((task) => `<li>${escapeHtml(task)}</li>`).join("")}</ul>
+            </div>
+          `).join("") : "<p class=\"hint-text\">没有新增学习日。</p>"}
+        </section>
+        <section>
+          <strong>顺延影响</strong>
+          ${shiftedTasks.length ? `
+            <div class="report-table compact">
+              ${shiftedTasks.slice(0, 8).map((task) => `
+                <div>
+                  <span>${escapeHtml(task.content)}</span>
+                  <span>Day ${Number(task.fromDay || 0)} → Day ${Number(task.toDay || 0)}</span>
+                </div>
+              `).join("")}
+            </div>
+            ${shiftedTasks.length > 8 ? `<p class="hint-text">另有 ${shiftedTasks.length - 8} 个任务随路径整体顺延。</p>` : ""}
+          ` : "<p class=\"hint-text\">未影响原有任务顺序。</p>"}
+        </section>
+        <section>
+          <strong>后续学习日调整</strong>
+          ${updatedDays.length ? updatedDays.map((day) => `
+            <div class="revision-day-preview">
+              <span>Day ${Number(day.day || 0)}</span>
+              <b>${escapeHtml(day.title || "")}</b>
+              ${day.reason ? `<p>${escapeHtml(day.reason)}</p>` : ""}
+              <ul>${(day.tasks || []).map((task) => `<li>${escapeHtml(task)}</li>`).join("")}</ul>
+            </div>
+          `).join("") : "<p class=\"hint-text\">没有改写后续学习日。</p>"}
+        </section>
+      </div>
+    </article>
+  `;
+}
+
+function renderEvidencePill(label, value) {
+  return `<span><b>${escapeHtml(label)}</b>${escapeHtml(value)}</span>`;
+}
+
+function pathRevisionStatusLabel(status) {
+  return {
+    proposed: "待确认",
+    accepted: "已接受",
+    rejected: "已忽略",
+    applied: "已应用",
+    undone: "已撤销",
+    expired: "已过期"
+  }[status] || status || "未知";
+}
+
+function triggerTypeLabel(type) {
+  return {
+    manual: "手动检查",
+    diagnostic_completed: "诊断完成",
+    quiz_attempt_evaluated: "连续错题",
+    exam_submitted: "综合考试",
+    task_overdue: "任务逾期",
+    remediation_retest_completed: "补救复测"
+  }[type] || type || "学习事件";
+}
+
+async function refreshPathRevisionsForCurrentPlan() {
+  const plan = getCurrentPlan();
+  if (!plan || !state.databaseReady) {
+    renderPathRevisions();
+    renderDailyPlan();
+    return;
+  }
+  try {
+    const data = await request(`/api/plans/${encodeURIComponent(plan.id)}/path-revisions`);
+    state.pathRevisions = {
+      ...(state.pathRevisions || {}),
+      [plan.id]: data.revisions || []
+    };
+    saveState();
+    renderPathRevisions();
+    renderDailyPlan();
+    renderCourseChrome();
+  } catch (error) {
+    els.pathRevisionMode.textContent = `路径变更加载失败：${error.message}`;
+  }
+}
+
+async function evaluatePathReplanning(triggerType = "manual", payload = {}, force = false) {
+  const plan = getCurrentPlan();
+  if (!plan || !state.databaseReady) {
+    if (els.pathRevisionMode) els.pathRevisionMode.textContent = "数据库模式下可用";
+    return null;
+  }
+  if (els.pathRevisionMode) els.pathRevisionMode.textContent = "正在检查路径";
+  try {
+    const data = await request(`/api/plans/${encodeURIComponent(plan.id)}/replanning/evaluate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ triggerType, payload, force })
+    });
+    state.pathRevisions = {
+      ...(state.pathRevisions || {}),
+      [plan.id]: data.revisions || (data.revision ? [data.revision] : pathRevisionsFor(plan))
+    };
+    if (data.revision) {
+      recordBehavior("path-revision-proposed", { planId: plan.id, detail: data.revision.summary });
+    }
+    saveState();
+    renderPathRevisions();
+    renderDailyPlan();
+    renderCourseChrome();
+    if (!data.revision && data.reason && els.pathRevisionMode) {
+      els.pathRevisionMode.textContent = data.reason;
+    }
+    return data.revision || null;
+  } catch (error) {
+    if (els.pathRevisionMode) els.pathRevisionMode.textContent = `检查失败：${error.message}`;
+    return null;
+  }
+}
+
+async function applyPathRevision(revisionId) {
+  const plan = getCurrentPlan();
+  if (!plan || !revisionId || !state.databaseReady) return;
+  try {
+    const data = await request(`/api/plans/${encodeURIComponent(plan.id)}/path-revisions/${encodeURIComponent(revisionId)}/apply`, {
+      method: "POST"
+    });
+    if (data.workspace) applyDatabaseState(data.workspace);
+    state.pathRevisions = {
+      ...(state.pathRevisions || {}),
+      [plan.id]: data.revisions || []
+    };
+    recordBehavior("path-revision-applied", { planId: plan.id, detail: data.revision?.summary || "" });
+    saveState();
+    renderAll();
+    setView("daily");
+  } catch (error) {
+    if (els.pathRevisionMode) els.pathRevisionMode.textContent = `应用失败：${error.message}`;
+  }
+}
+
+async function rejectPathRevision(revisionId) {
+  const plan = getCurrentPlan();
+  if (!plan || !revisionId || !state.databaseReady) return;
+  try {
+    const data = await request(`/api/plans/${encodeURIComponent(plan.id)}/path-revisions/${encodeURIComponent(revisionId)}/reject`, {
+      method: "POST"
+    });
+    state.pathRevisions = {
+      ...(state.pathRevisions || {}),
+      [plan.id]: data.revisions || []
+    };
+    recordBehavior("path-revision-rejected", { planId: plan.id, detail: revisionId });
+    saveState();
+    renderPathRevisions();
+    renderDailyPlan();
+  } catch (error) {
+    if (els.pathRevisionMode) els.pathRevisionMode.textContent = `忽略失败：${error.message}`;
+  }
+}
+
+async function undoPathRevision(revisionId) {
+  const plan = getCurrentPlan();
+  if (!plan || !revisionId || !state.databaseReady) return;
+  try {
+    const data = await request(`/api/plans/${encodeURIComponent(plan.id)}/path-revisions/${encodeURIComponent(revisionId)}/undo`, {
+      method: "POST"
+    });
+    if (data.workspace) applyDatabaseState(data.workspace);
+    state.pathRevisions = {
+      ...(state.pathRevisions || {}),
+      [plan.id]: data.revisions || []
+    };
+    recordBehavior("path-revision-undone", { planId: plan.id, detail: data.revision?.summary || "" });
+    saveState();
+    renderAll();
+    setView("path-revisions");
+  } catch (error) {
+    if (els.pathRevisionMode) els.pathRevisionMode.textContent = `撤销失败：${error.message}`;
+  }
 }
 
 function updateNotes(event) {
@@ -1807,6 +2121,13 @@ async function evaluateDiagnostic() {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ data: plan.data, masteryEvidence: plan.masteryEvidence })
+      });
+      await evaluatePathReplanning("diagnostic_completed", {
+        diagnostic: {
+          percent: result.percent,
+          score: result.score,
+          maxScore: result.maxScore
+        }
       });
     }
     renderDiagnostic();
@@ -2825,6 +3146,7 @@ async function evaluateQuiz(questionId) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ data: plan.data, masteryEvidence: plan.masteryEvidence || [] })
       }).catch(reportPersistenceError);
+      if (result.correct === false) refreshPathRevisionsForCurrentPlan();
     }
     renderPractice();
     renderKnowledge();
@@ -3093,7 +3415,7 @@ function buildLearningReportContext(plan) {
         })),
         tasks: (day.tasks || []).map((task, taskIndex) => ({
           task,
-          completed: Boolean(plan.progress?.[progressId(day.day, taskIndex)])
+          completed: Boolean(plan.progress?.[progressId(day, taskIndex)])
         }))
       }))
     },
@@ -3333,6 +3655,18 @@ async function submitExam({ timeExpired = false } = {}) {
     captureMasterySnapshot(plan, "exam");
     recordBehavior("exam-submitted", { planId: plan.id, detail: examScoreText(exam) });
     await persistPlanContent(plan);
+    if (state.databaseReady) {
+      const examResults = Object.values(exam.results || {});
+      const score = examResults.reduce((sum, item) => sum + Number(item.score || 0), 0);
+      const maxScore = examResults.reduce((sum, item) => sum + Number(item.maxScore || 0), 0);
+      await evaluatePathReplanning("exam_submitted", {
+        exam: {
+          score,
+          maxScore,
+          percent: maxScore ? Math.round((score / maxScore) * 100) : 0
+        }
+      });
+    }
     saveState();
     renderExam();
     renderMistakes();
@@ -3539,6 +3873,10 @@ function behaviorLabel(type) {
     "daily-materials-generated": "生成当日学习资料",
     "learning-report-generated": "生成学习报告",
     "report-exported": "导出报告",
+    "path-revision-proposed": "提出路径变更",
+    "path-revision-applied": "应用路径变更",
+    "path-revision-rejected": "忽略路径变更",
+    "path-revision-undone": "撤销路径变更",
     "settings-updated": "更新设置"
   }[type] || type;
 }
@@ -3990,6 +4328,7 @@ function serializeState() {
     projectTasks: state.projectTasks || {},
     projectProgress: state.projectProgress || {},
     projectSubmissions: state.projectSubmissions || {},
+    pathRevisions: state.pathRevisions || {},
     mistakeFilters: state.mistakeFilters || { concept: "all", type: "all", reason: "all" },
     lastQuizOptions: state.lastQuizOptions || null,
     profileInterview: state.profileInterview || null,
@@ -4014,6 +4353,7 @@ function loadState() {
       projectTasks: saved?.projectTasks || {},
       projectProgress: saved?.projectProgress || {},
       projectSubmissions: saved?.projectSubmissions || {},
+      pathRevisions: saved?.pathRevisions || {},
       mistakeFilters: saved?.mistakeFilters || { concept: "all", type: "all", reason: "all" },
       lastQuizOptions: saved?.lastQuizOptions || null,
       profileInterview: saved?.profileInterview || null,
@@ -4035,6 +4375,7 @@ function loadState() {
       projectTasks: {},
       projectProgress: {},
       projectSubmissions: {},
+      pathRevisions: {},
       mistakeFilters: { concept: "all", type: "all", reason: "all" },
       lastQuizOptions: null,
       profileInterview: null,

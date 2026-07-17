@@ -11,6 +11,7 @@ test("课程侧栏开放全部成熟学习功能并按信息架构分组", () =>
   const nav = html.match(/<nav class="course-mode-nav"[\s\S]*?<\/nav>/)?.[0] || "";
   const views = [
     "daily",
+    "path-revisions",
     "notes",
     "diagnostic",
     "knowledge",

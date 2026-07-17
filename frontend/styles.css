@@ -1857,6 +1857,8 @@ meter {
 .settings-board,
 .diagnostic-summary,
 .remediation-head,
+.path-revision-banner,
+.path-revision-card,
 .governance-summary,
 .personal-summary,
 .diagnostic-item,
@@ -1882,6 +1884,8 @@ meter {
 .practice-panel,
 .diagnostic-board,
 .remediation-board,
+.path-revision-board,
+.path-revision-list,
 .governance-board,
 .personal-board,
 .agent-list,
@@ -1893,6 +1897,7 @@ meter {
 .daily-overview,
 .diagnostic-summary,
 .remediation-head,
+.path-revision-banner,
 .governance-summary,
 .personal-summary {
   display: flex;
@@ -1905,6 +1910,7 @@ meter {
 .daily-overview p,
 .diagnostic-summary p,
 .remediation-head p,
+.path-revision-banner p,
 .governance-summary p,
 .personal-summary p,
 .hint-text,
@@ -1921,6 +1927,110 @@ meter {
 .assignment-item small,
 .remediation-step small {
   color: var(--muted);
+}
+
+.path-revision-board {
+  gap: 16px;
+}
+
+.path-revision-banner {
+  align-items: center;
+  border-color: rgba(37, 99, 235, 0.22);
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.08), var(--paper));
+}
+
+.path-revision-banner strong,
+.path-revision-card h3 {
+  display: block;
+  margin: 4px 0 6px;
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+.path-revision-list {
+  gap: 16px;
+}
+
+.path-revision-card {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+}
+
+.path-revision-card.proposed {
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.path-revision-head,
+.path-revision-evidence,
+.path-revision-diff {
+  display: flex;
+  gap: 14px;
+}
+
+.path-revision-head {
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.path-revision-evidence {
+  flex-wrap: wrap;
+}
+
+.path-revision-evidence span {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--paper-soft);
+  font-size: 13px;
+}
+
+.path-revision-evidence b {
+  color: var(--ink);
+}
+
+.path-revision-diff {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.path-revision-diff section,
+.revision-day-preview {
+  display: grid;
+  gap: 10px;
+}
+
+.revision-day-preview {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper-soft);
+}
+
+.revision-day-preview span {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.revision-day-preview ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+}
+
+.revision-day-preview p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.report-table.compact div {
+  grid-template-columns: minmax(0, 1.6fr) minmax(120px, 0.4fr);
 }
 
 .daily-grid,
@@ -3683,6 +3793,15 @@ textarea.code-answer {
 }
 
 @media (max-width: 640px) {
+  .path-revision-banner,
+  .path-revision-head {
+    display: grid;
+  }
+
+  .path-revision-diff {
+    grid-template-columns: 1fr;
+  }
+
   .today-learning {
     grid-template-columns: 1fr;
     padding: 18px;
