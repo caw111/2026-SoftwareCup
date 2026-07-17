@@ -478,6 +478,14 @@ a {
   margin-bottom: 13px;
 }
 
+.course-grounding-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .course-grounding-card {
   align-content: start;
 }
@@ -553,6 +561,21 @@ a {
   .source-head-actions {
     justify-content: flex-start;
     flex-wrap: wrap;
+  }
+
+  .course-grounding-actions {
+    justify-content: flex-start;
+  }
+
+  .rag-answer-head,
+  .rag-used-citations > div:first-child {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .rag-answer-head small,
+  .rag-used-citations small {
+    text-align: left;
   }
 
   .source-item {
@@ -923,6 +946,31 @@ a {
   text-align: right;
 }
 
+.profile-interview-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#profileAgentMode {
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#profileAgentMode.thinking {
+  border-color: #c4b27a;
+  color: #6d5a1f;
+  background: #fff7dc;
+}
+
+#profileAgentMode.warning {
+  border-color: #e2b9a9;
+  color: #8a3d25;
+  background: #fff1eb;
+}
+
 .profile-completeness meter {
   height: 6px;
 }
@@ -988,6 +1036,112 @@ a {
   color: var(--ink);
   border-color: var(--line-strong);
   background: #f0ebe3;
+}
+
+.profile-agent-notice {
+  margin: -3px 0 12px;
+  padding: 9px 11px;
+  border: 1px solid #e2b9a9;
+  border-radius: 10px;
+  color: #7d3d28;
+  background: #fff5ef;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.rag-answer-card {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  background: var(--paper);
+  box-shadow: 0 10px 24px rgba(40, 38, 33, 0.06);
+}
+
+.rag-answer-card.llm {
+  border-top: 3px solid #829c83;
+}
+
+.rag-answer-card.fallback {
+  border-top: 3px solid #c8a66b;
+}
+
+.rag-answer-head,
+.rag-used-citations > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rag-answer-head > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.rag-answer-head small,
+.rag-used-citations small {
+  color: var(--faint);
+  text-align: right;
+}
+
+.rag-answer-body {
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.rag-answer-body > :first-child,
+.rag-answer-warning {
+  margin-top: 0;
+}
+
+.rag-answer-body > :last-child {
+  margin-bottom: 0;
+}
+
+.rag-answer-warning {
+  margin-bottom: 0;
+  padding: 9px 11px;
+  border: 1px solid #e0c18c;
+  border-radius: 10px;
+  color: #76551d;
+  background: #fff8e8;
+  font-size: 12px;
+}
+
+.rag-followups {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.rag-followups strong {
+  margin-right: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rag-followups button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  color: var(--muted);
+  background: var(--paper-soft);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.rag-used-citations {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
 }
 
 .profile-message-form {
@@ -1477,6 +1631,43 @@ textarea:focus {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.5;
+}
+
+.rag-pipeline {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.rag-pipeline > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  background: var(--paper-soft);
+}
+
+.rag-pipeline > span.llm,
+.rag-pipeline > span.loaded,
+.rag-pipeline > span.passed {
+  border-color: #bbcfbc;
+  color: #375d3a;
+  background: #f0f7f0;
+}
+
+.rag-pipeline b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.rag-pipeline small {
+  color: inherit;
+  font-size: 10px;
 }
 
 .mini-progress {
@@ -2804,6 +2995,10 @@ textarea.code-answer {
 @media (max-width: 640px) {
   body {
     font-size: 14px;
+  }
+
+  .rag-pipeline {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .profile-conversation,

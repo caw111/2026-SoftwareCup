@@ -41,13 +41,17 @@ import { getStorageStatus, readWorkspaceState, writeWorkspaceState, storagePubli
 import { clean, ensureArray } from "./src/utils.js";
 import { evaluateDiagnosticPretest } from "./src/adaptive-learning.js";
 import {
-  advanceProfileInterviewLocally,
-  createProfileInterviewState
-} from "./src/profile-interview.js";
+  advanceProfileInterviewWithLlm,
+  createProfileInterviewSession
+} from "./src/services/profile-interview-service.js";
 import {
-  assertSourcesForUser,
+  answerGroundedQuestion,
+  answerSourceQuestionForUser
+} from "./src/services/rag-answer-service.js";
+import {
   deleteSourceForUser,
   listSourcesForUser,
+  loadFullSourceContextForUser,
   replacePlanSourcesForUser,
   searchSourcesForUser,
   uploadSourceForUser
@@ -91,13 +95,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/profile/interview") {
-      sendJson(res, 200, createProfileInterviewState());
+      sendJson(res, 200, createProfileInterviewSession());
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/api/profile/interview") {
       const body = await readJson(req);
-      sendJson(res, 200, advanceProfileInterviewLocally({
+      sendJson(res, 200, await advanceProfileInterviewWithLlm({
         message: body.message,
         draft: body.draft,
         messages: body.messages
@@ -125,6 +129,12 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/sources/search") {
       const session = await databaseSession(req, res);
       sendJson(res, 200, await searchSourcesForUser(session.userId, await readJson(req)));
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/sources/ask") {
+      const session = await databaseSession(req, res);
+      sendJson(res, 200, await answerSourceQuestionForUser(session.userId, await readJson(req)));
       return;
     }
 
@@ -379,25 +389,33 @@ const server = http.createServer(async (req, res) => {
       let grounding = null;
       if (ensureArray(body.sourceIds, []).length || body.planId) {
         const session = await databaseSession(req, res);
-        grounding = await searchSourcesForUser(session.userId, {
+        grounding = await loadFullSourceContextForUser(session.userId, {
           sourceIds: body.sourceIds,
-          planId: body.planId,
-          query: body.question,
-          limit: 5,
-          maxChars: 5000
+          planId: body.planId
         });
       }
-      const result = await answerTutorQuestion({
-        question: clean(body.question, 1000),
-        context: clean([
-          body.context,
-          grounding?.context ? `课程资料检索结果：\n${grounding.context}\n${grounding.instruction}` : ""
-        ].filter(Boolean).join("\n\n"), 11000),
-        mode: clean(body.mode, 30),
-        hintLevel: Number(body.hintLevel || 1),
-        history: ensureArray(body.history, []).slice(-8)
-      });
-      sendJson(res, 200, { ...result, citations: grounding?.citations || [] });
+      const question = clean(body.question, 1000);
+      const tutorMode = clean(body.mode, 30);
+      const hintLevel = Number(body.hintLevel || 1);
+      const history = ensureArray(body.history, []).slice(-8);
+      const result = grounding?.citations?.length
+        ? await answerGroundedQuestion({
+          question,
+          grounding,
+          context: clean(body.context, 5000),
+          history,
+          persona: "tutor",
+          tutorMode,
+          hintLevel
+        })
+        : await answerTutorQuestion({
+          question,
+          context: clean(body.context, 5000),
+          mode: tutorMode,
+          hintLevel,
+          history
+        });
+      sendJson(res, 200, { ...result, citations: result.citations || [] });
       return;
     }
 
@@ -425,12 +443,8 @@ async function groundedInput(req, res, value, queryOverride = "") {
   const input = normalizeInput(value || {});
   if (!input.knowledgeSourceIds.length) return input;
   const session = await databaseSession(req, res);
-  await assertSourcesForUser(session.userId, input.knowledgeSourceIds);
-  const grounding = await searchSourcesForUser(session.userId, {
-    sourceIds: input.knowledgeSourceIds,
-    query: queryOverride || [input.topic, input.goal, input.weaknesses].join(" "),
-    limit: 8,
-    maxChars: 9000
+  const grounding = await loadFullSourceContextForUser(session.userId, {
+    sourceIds: input.knowledgeSourceIds
   });
   const sources = (await listSourcesForUser(session.userId))
     .filter((source) => input.knowledgeSourceIds.includes(source.id));
@@ -441,7 +455,11 @@ async function groundedInput(req, res, value, queryOverride = "") {
       context: grounding.context,
       citations: grounding.citations,
       instruction: grounding.instruction,
-      searchedChunks: grounding.searchedChunks
+      mode: grounding.mode,
+      sourceCount: grounding.sourceCount,
+      loadedChunks: grounding.loadedChunks,
+      fullContextChars: grounding.fullContextChars,
+      searchedChunks: 0
     }
   };
 }

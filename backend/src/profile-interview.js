@@ -38,6 +38,37 @@ export function advanceProfileInterviewLocally({ message, draft = {}, messages =
   return buildInterviewResult({ draft: nextDraft, messages: history, lastMessage: normalizedMessage });
 }
 
+export function buildProfileInterviewFromDraft({
+  message,
+  draft = {},
+  messages = [],
+  assistantContent = "",
+  suggestions = [],
+  mode = "llm"
+}) {
+  const normalizedMessage = clean(message, 1600);
+  if (!normalizedMessage) {
+    const error = new Error("请先描述你的学习需求");
+    error.statusCode = 400;
+    throw error;
+  }
+  const history = normalizeMessages(messages);
+  history.push({
+    id: crypto.randomUUID(),
+    role: "student",
+    content: normalizedMessage,
+    at: new Date().toISOString()
+  });
+  return buildInterviewResult({
+    draft: normalizeDraft(draft),
+    messages: history,
+    lastMessage: normalizedMessage,
+    assistantContent: clean(assistantContent, 1600),
+    suggestions,
+    mode
+  });
+}
+
 export function extractProfileFields(message, currentDraft = {}) {
   const text = clean(message, 1600);
   const draft = normalizeDraft(currentDraft);
@@ -51,7 +82,7 @@ export function extractProfileFields(message, currentDraft = {}) {
     draft.confidence[field] = Math.max(Number(draft.confidence[field] || 0), confidence);
   };
 
-  const topic = text.match(/(?:我?想学|想要学习|准备学习|学习主题(?:是|为|：|:)?|课程(?:是|为|：|:)?)([^，。；\n]{2,48})/i)?.[1];
+  const topic = text.match(/(?:我?想(?:在|用)?[^，。；\n]{0,20}?(?:系统|深入)?学(?:习)?|想要学习|准备学习|学习主题(?:是|为|：|:)?|课程(?:是|为|：|:)?)([^，。；\n]{2,48})/i)?.[1];
   if (topic) set("topic", stripTopicTail(topic), 0.9);
   else if (!draft.topic && text.length <= 32 && !looksLikeOnlySchedule(text)) set("topic", stripTopicTail(text), 0.62);
 
@@ -126,13 +157,20 @@ export function buildProfilePreview(draft = {}) {
   };
 }
 
-function buildInterviewResult({ draft, messages, lastMessage }) {
+function buildInterviewResult({
+  draft,
+  messages,
+  lastMessage,
+  assistantContent: suppliedAssistantContent = "",
+  suggestions: suppliedSuggestions = [],
+  mode = "profile-interview-rules-v1"
+}) {
   const completeness = calculateCompleteness(draft);
   const preview = buildProfilePreview(draft);
   const nextField = completeness.missing[0] || null;
-  const assistantContent = nextField
+  const assistantContent = suppliedAssistantContent || (nextField
     ? `${lastMessage ? summarizeExtraction(draft, lastMessage) : "你好，我是学习画像智能体。"}\n\n${FIELD_META[nextField].question}`
-    : `画像信息已经完整。我识别到你希望学习“${draft.topic}”，当前基础为“${draft.level}”，会优先围绕“${draft.weaknesses}”安排学习。你可以继续补充，或确认画像并生成课程。`;
+    : `画像信息已经完整。我识别到你希望学习“${draft.topic}”，当前基础为“${draft.level}”，会优先围绕“${draft.weaknesses}”安排学习。你可以继续补充，或确认画像并生成课程。`);
   const nextMessages = normalizeMessages(messages);
   nextMessages.push({
     id: crypto.randomUUID(),
@@ -147,9 +185,11 @@ function buildInterviewResult({ draft, messages, lastMessage }) {
     completeness,
     profilePreview: preview,
     nextQuestion: nextField ? FIELD_META[nextField].question : null,
-    suggestions: suggestionsFor(nextField),
+    suggestions: Array.isArray(suppliedSuggestions) && suppliedSuggestions.length
+      ? suppliedSuggestions.slice(0, 4).map((item) => clean(item, 80)).filter(Boolean)
+      : suggestionsFor(nextField),
     ready: completeness.percent >= 80 && Boolean(draft.topic && draft.goal),
-    mode: "profile-interview-rules-v1"
+    mode
   };
 }
 

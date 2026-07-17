@@ -42,13 +42,17 @@
                     <span class="mini-label">学习画像智能体</span>
                     <h2 id="profileInterviewTitle">用一段话开始</h2>
                   </div>
-                  <div class="profile-completeness" aria-live="polite">
-                    <strong id="profileCompleteness">0%</strong>
-                    <meter id="profileCompletenessMeter" min="0" max="100" value="0"></meter>
+                  <div class="profile-interview-status" aria-live="polite">
+                    <span id="profileAgentMode" class="status-pill">连接 LLM</span>
+                    <div class="profile-completeness">
+                      <strong id="profileCompleteness">0%</strong>
+                      <meter id="profileCompletenessMeter" min="0" max="100" value="0"></meter>
+                    </div>
                   </div>
                 </div>
                 <div id="profileMessages" class="profile-messages" aria-live="polite"></div>
                 <div id="profileSuggestions" class="profile-suggestions" aria-label="快捷回答"></div>
+                <p id="profileAgentNotice" class="profile-agent-notice" role="status" hidden></p>
                 <form id="profileMessageForm" class="profile-message-form">
                   <textarea id="profileMessageInput" rows="3" placeholder="例如：我是计算机专业大二学生，想在一个月内学会机器学习，每天能学 45 分钟，数学基础一般，喜欢项目实战。" aria-label="向画像智能体描述学习需求"></textarea>
                   <button id="profileMessageButton" class="send-button" type="submit" aria-label="发送画像信息">↑</button>
@@ -91,24 +95,24 @@
                 </label>
                 <div id="sourceUploadStatus" class="source-upload-status" aria-live="polite"></div>
                 <div id="sourceLibrary" class="source-library empty-state">
-                  <p>上传资料后，可在生成前验证检索结果与引用位置。</p>
+                  <p>上传资料后，可在生成前验证全文问答与引用位置。</p>
                 </div>
               </div>
 
-              <aside class="rag-preview-panel" aria-label="RAG 检索验证">
+              <aside class="rag-preview-panel" aria-label="RAG 全文问答验证">
                 <div class="source-workspace-head compact">
                   <div>
-                    <span class="mini-label">引用验证</span>
-                    <h2>先检索，再生成</h2>
-                    <p>输入一个课程问题，查看系统实际命中的资料片段。</p>
+                    <span class="mini-label">LLM 全文问答</span>
+                    <h2>让模型直接阅读所选文件</h2>
+                    <p>回答只使用所选文件的完整解析内容，并显示模型实际引用的页码、章节和原文。</p>
                   </div>
                 </div>
                 <div class="rag-search-box">
                   <textarea id="sourceSearchQuery" rows="3" placeholder="例如：梯度下降的学习率应该如何设置？"></textarea>
-                  <button id="sourceSearchButton" class="ghost-button" type="button">检索所选资料</button>
+                  <button id="sourceSearchButton" class="ghost-button" type="button">让 LLM 阅读并回答</button>
                 </div>
                 <div id="sourceSearchResults" class="rag-search-results empty-state">
-                  <p>检索结果会显示资料名、页码或章节、匹配摘录和引用编号。</p>
+                  <p>系统会读取所选文件的全部解析内容，交给 LLM 生成带 `[S1]` 引用的回答，并校验每个引用编号。</p>
                 </div>
               </aside>
             </section>

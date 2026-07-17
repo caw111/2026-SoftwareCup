@@ -21,9 +21,22 @@ test("首页以对话访谈作为画像主入口并保留结构化精调", () =>
 
 test("对话结果会自动回填课程生成字段并持久化访谈", () => {
   assert.match(app, /request\("\/api\/profile\/interview"/);
+  assert.match(app, /mode: "llm-pending"/);
   assert.match(app, /applyProfileDraftToForm\(result\.draft \|\| \{\}\)/);
   assert.match(app, /profileInterview: state\.profileInterview \|\| null/);
   assert.match(server, /POST" && url\.pathname === "\/api\/profile\/interview"/);
+  assert.match(server, /await advanceProfileInterviewWithLlm/);
+  assert.doesNotMatch(app, /OPENAI_API_KEY/);
+});
+
+test("画像对话明确展示 LLM 状态与可恢复降级提示", () => {
+  assert.match(html, /id="profileAgentMode"/);
+  assert.match(html, /id="profileAgentNotice"/);
+  assert.match(app, /LLM 思考中/);
+  assert.match(app, /local-fallback/);
+  assert.match(app, /interview\.warning/);
+  assert.match(styles, /#profileAgentMode\.thinking/);
+  assert.match(styles, /\.profile-agent-notice/);
 });
 
 test("画像布局沿用现有卡片体系并提供桌面与移动响应式布局", () => {

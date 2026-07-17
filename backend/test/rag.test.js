@@ -9,7 +9,11 @@ import {
   tokenizeForRetrieval,
   validateSourceUpload
 } from "../src/rag.js";
-import { runLocalAgents } from "../src/learning.js";
+import {
+  assertModelUsesGrounding,
+  buildRagGenerationMetadata,
+  runLocalAgents
+} from "../src/learning.js";
 
 function upload(filename, content, mimeType = "text/plain") {
   return validateSourceUpload({
@@ -131,4 +135,32 @@ test("离线课程也把检索片段写入资源与每日任务而不是只展�
   assert.match(plan.resources[0].content, /\[S1\]/);
   assert.match(plan.dailyPlan[0].tasks[0], /第 12 页/);
   assert.match(plan.dailyPlan[0].tasks[0], /\[S1\]/);
+});
+
+test("课程生成只有真正使用有效引用时才标记为 LLM 全文资料", () => {
+  const input = {
+    knowledgeGrounding: {
+      mode: "full-context",
+      sourceCount: 1,
+      loadedChunks: 2,
+      fullContextChars: 128,
+      citations: [{ id: "S1" }, { id: "S2" }]
+    }
+  };
+  assert.deepEqual(assertModelUsesGrounding({ resources: [{ content: "结论 [S2]" }] }, input), ["S2"]);
+  assert.throws(() => assertModelUsesGrounding({ resources: [{ content: "没有引用" }] }, input), /没有实际使用/);
+  assert.throws(() => assertModelUsesGrounding({ resources: [{ content: "未知 [S9]" }] }, input), /未知/);
+
+  assert.deepEqual(buildRagGenerationMetadata(input, { path: [{ task: "阅读 [S1]" }] }, true), {
+    enabled: true,
+    llmUsed: true,
+    grounded: true,
+    mode: "full-context",
+    sourceCount: 1,
+    loadedChunks: 2,
+    fullContextChars: 128,
+    searchedChunks: 0,
+    candidateCitationIds: ["S1", "S2"],
+    usedCitationIds: ["S1"]
+  });
 });

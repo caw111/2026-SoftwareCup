@@ -56,3 +56,12 @@ test("画像预览保留分数、置信度和证据来源", () => {
     assert.ok(item.evidence.length > 5);
   });
 });
+
+test("本地降级仍能识别带周期修饰的复杂学习主题", () => {
+  const draft = extractProfileFields(
+    "我是软件工程大二学生，想在一个月内系统学习操作系统，每天学习60分钟，希望完成调度器项目。"
+  );
+  assert.equal(draft.topic, "操作系统");
+  assert.equal(draft.duration, "一个月");
+  assert.equal(draft.dailyMinutes, "60 分钟");
+});

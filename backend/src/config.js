@@ -43,6 +43,7 @@ function normalizeEnvKey(key) {
     openai_model: "OPENAI_MODEL",
     openai_wire_api: "OPENAI_WIRE_API",
     openai_timeout_ms: "OPENAI_TIMEOUT_MS",
+    rag_full_context_max_chars: "RAG_FULL_CONTEXT_MAX_CHARS",
     mysql_url: "MYSQL_URL",
     mysql_host: "MYSQL_HOST",
     mysql_port: "MYSQL_PORT",
@@ -118,6 +119,12 @@ export const MODEL_CONFIG = {
   model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
   wireApi: process.env.OPENAI_WIRE_API || "chat",
   timeoutMs: Number(process.env.OPENAI_TIMEOUT_MS || 180000)
+};
+
+export const RAG_CONFIG = {
+  // The complete parsed contents are sent to the model. Reject oversized
+  // requests explicitly instead of silently truncating course material.
+  fullContextMaxChars: Math.max(10000, Number(process.env.RAG_FULL_CONTEXT_MAX_CHARS || 900000))
 };
 
 export function trimTrailingSlash(value) {

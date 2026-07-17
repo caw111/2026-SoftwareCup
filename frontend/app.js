@@ -58,6 +58,8 @@ const els = {
   profileMessageButton: document.querySelector("#profileMessageButton"),
   profileMessages: document.querySelector("#profileMessages"),
   profileSuggestions: document.querySelector("#profileSuggestions"),
+  profileAgentMode: document.querySelector("#profileAgentMode"),
+  profileAgentNotice: document.querySelector("#profileAgentNotice"),
   profileCompleteness: document.querySelector("#profileCompleteness"),
   profileCompletenessMeter: document.querySelector("#profileCompletenessMeter"),
   profileReadyState: document.querySelector("#profileReadyState"),
@@ -156,7 +158,7 @@ els.sourceFileInput.addEventListener("change", () => uploadCourseFiles([...els.s
 els.sourceDropzone.addEventListener("dragover", handleSourceDragOver);
 els.sourceDropzone.addEventListener("dragleave", handleSourceDragLeave);
 els.sourceDropzone.addEventListener("drop", handleSourceDrop);
-els.sourceSearchButton.addEventListener("click", searchSelectedSources);
+els.sourceSearchButton.addEventListener("click", askSelectedSources);
 els.sourceBindButton.addEventListener("click", bindSourcesToCurrentPlan);
 els.coachButton.addEventListener("click", askTutor);
 els.practicePanel.addEventListener("keydown", handleCodeTextareaKeydown, true);
@@ -218,6 +220,20 @@ function boot() {
 
 async function initializeProfileInterview() {
   if (state.profileInterview?.messages?.length) {
+    try {
+      const session = await request("/api/profile/interview");
+      state.profileInterview = {
+        ...state.profileInterview,
+        mode: session.mode,
+        model: session.model,
+        llm: session.llm,
+        warning: session.warning
+      };
+      saveState();
+    } catch {
+      state.profileInterview.mode = "frontend-fallback";
+      state.profileInterview.warning = "暂时无法连接画像服务，请确认后端已经启动。";
+    }
     renderProfileInterview();
     return;
   }
@@ -246,10 +262,12 @@ async function submitProfileMessage(event) {
   els.profileMessageInput.disabled = true;
   const optimistic = {
     ...current,
+    mode: "llm-pending",
+    warning: null,
     messages: [
       ...(current.messages || []),
       { role: "student", content: message, at: new Date().toISOString() },
-      { role: "assistant", content: "正在提取画像信息...", at: new Date().toISOString(), pending: true }
+      { role: "assistant", content: "画像智能体正在结合对话上下文思考...", at: new Date().toISOString(), pending: true }
     ]
   };
   state.profileInterview = optimistic;
@@ -307,6 +325,20 @@ async function resetProfileInterview() {
 
 function renderProfileInterview() {
   const interview = state.profileInterview || createLocalProfileInterview();
+  const modelName = interview.model || interview.llm?.model;
+  const modePresentation = {
+    llm: { text: `LLM${modelName ? ` · ${modelName}` : " 对话"}`, className: "ok" },
+    "llm-ready": { text: `LLM${modelName ? ` · ${modelName}` : " 已连接"}`, className: "ok" },
+    "llm-pending": { text: "LLM 思考中", className: "thinking" },
+    "local-fallback": { text: "本地降级", className: "warning" },
+    "frontend-fallback": { text: "连接异常", className: "warning" }
+  }[interview.mode] || { text: "LLM 待命", className: "" };
+  els.profileAgentMode.textContent = modePresentation.text;
+  els.profileAgentMode.classList.toggle("ok", modePresentation.className === "ok");
+  els.profileAgentMode.classList.toggle("thinking", modePresentation.className === "thinking");
+  els.profileAgentMode.classList.toggle("warning", modePresentation.className === "warning");
+  els.profileAgentNotice.hidden = !interview.warning;
+  els.profileAgentNotice.textContent = interview.warning || "";
   const messages = (interview.messages || []).filter((item) => item?.content);
   els.profileMessages.innerHTML = messages.map((message) => `
     <div class="profile-message ${message.role === "student" ? "student" : "assistant"} ${message.pending ? "pending" : ""}">
@@ -479,7 +511,7 @@ function renderSourceLibrary() {
   els.sourceLibrary.className = "source-library";
   els.sourceLibrary.innerHTML = sources.map((source) => {
     const ready = source.status === "ready";
-    const statusLabel = ready ? "可检索" : source.status === "failed" ? "解析失败" : "解析中";
+    const statusLabel = ready ? "可阅读" : source.status === "failed" ? "解析失败" : "解析中";
     return `
       <article class="source-item ${source.status}">
         <label class="source-select-control" title="${ready ? "用于课程生成和导师问答" : "资料解析完成后才能选择"}">
@@ -621,7 +653,7 @@ async function requestSourceRemoval(button) {
   }
 }
 
-async function searchSelectedSources() {
+async function askSelectedSources() {
   const query = els.sourceSearchQuery.value.trim();
   const sourceIds = state.selectedSourceIds || [];
   if (!sourceIds.length || !query) {
@@ -630,33 +662,93 @@ async function searchSelectedSources() {
     return;
   }
   els.sourceSearchButton.disabled = true;
-  els.sourceSearchButton.textContent = "检索中";
+  els.sourceSearchButton.textContent = "全文阅读中";
   els.sourceSearchResults.className = "rag-search-results loading";
-  els.sourceSearchResults.innerHTML = "<p>正在对资料分块进行相关性排序并生成引用…</p>";
+  els.sourceSearchResults.innerHTML = "<p>正在读取所选文件的全部解析内容，并提交给大模型生成带引用的回答…</p>";
   try {
-    const data = await request("/api/sources/search", {
+    const data = await request("/api/sources/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, sourceIds, limit: 6 })
+      body: JSON.stringify({ query, sourceIds })
     });
-    renderSourceSearchResults(data.citations || []);
+    renderSourceAnswer(data);
   } catch (error) {
     els.sourceSearchResults.className = "rag-search-results empty-state";
-    els.sourceSearchResults.innerHTML = `<p>检索失败：${escapeHtml(error.message)}</p>`;
+    els.sourceSearchResults.innerHTML = `<p>资料全文问答失败：${escapeHtml(error.message)}</p>`;
   } finally {
     els.sourceSearchButton.disabled = false;
-    els.sourceSearchButton.textContent = "检索所选资料";
+    els.sourceSearchButton.textContent = "让 LLM 阅读并回答";
   }
 }
 
-function renderSourceSearchResults(citations) {
-  if (!citations.length) {
+function renderSourceAnswer(data) {
+  const citations = data?.citations || [];
+  if (!citations.length && !data?.answer) {
     els.sourceSearchResults.className = "rag-search-results empty-state";
-    els.sourceSearchResults.innerHTML = "<p>所选资料中没有找到足够相关的片段。系统不会伪造引用，可换一种问法再试。</p>";
+    els.sourceSearchResults.innerHTML = "<p>所选资料没有可供模型阅读的解析内容。系统不会伪造引用，请重新上传或解析资料。</p>";
     return;
   }
+  const modeLabel = data.mode === "llm-full-context"
+    ? `LLM 全文问答${data.model ? ` · ${data.model}` : ""}`
+    : data.mode === "no-content" ? "资料内容为空" : "抽取式降级";
+  const coverageLabel = { full: "证据充分", partial: "部分覆盖", insufficient: "证据不足" }[data.coverage] || "待校验";
+  const fullContext = data.fullContext || {};
+  const pipeline = data.pipeline || {};
+  const pipelineStages = [
+    ["文件全文", pipeline.fullContext?.status, pipeline.fullContext?.durationMs],
+    ["答案生成", pipeline.generation?.status, pipeline.generation?.durationMs],
+    ["引用校验", pipeline.citationValidation?.status, null]
+  ];
   els.sourceSearchResults.className = "rag-search-results";
-  els.sourceSearchResults.innerHTML = citations.map(renderCitationCard).join("");
+  els.sourceSearchResults.innerHTML = `
+    <article class="rag-answer-card ${data.llmUsed ? "llm" : "fallback"}">
+      <div class="rag-answer-head">
+        <div>
+          <span class="status-pill ${data.llmUsed ? "ok" : ""}">${escapeHtml(modeLabel)}</span>
+          <span class="status-pill">${escapeHtml(coverageLabel)}</span>
+        </div>
+        <small>服务端 LLM ${Number(data.llmCalls || 0)} 次 · 已读 ${Number(fullContext.sourceCount || 0)} 个文件 / ${Number(fullContext.loadedChunks || 0)} 个内容块 / ${Number(fullContext.fullContextChars || 0).toLocaleString("zh-CN")} 字 · 实际引用 ${citations.length} 个${data.traceId ? ` · Trace ${escapeHtml(data.traceId.slice(0, 8))}` : ""}</small>
+      </div>
+      ${data.warning ? `<p class="rag-answer-warning">${escapeHtml(data.warning)}</p>` : ""}
+      ${pipelineStages.some(([, status]) => status) ? `
+        <div class="rag-pipeline" aria-label="RAG 执行流水线">
+          ${pipelineStages.map(([label, status, duration]) => `
+            <span class="${escapeHtml(status || "pending")}"><b>${escapeHtml(label)}</b><small>${escapeHtml(ragPipelineStatusLabel(status))}${duration ? ` · ${Number(duration)}ms` : ""}</small></span>
+          `).join("")}
+        </div>
+      ` : ""}
+      <div class="rag-answer-body">${renderMarkdown(data.answer || "暂无可用回答。")}</div>
+      ${data.followUpQuestions?.length ? `
+        <div class="rag-followups">
+          <strong>继续追问</strong>
+          ${data.followUpQuestions.map((question) => `<button type="button" data-rag-followup="${escapeHtml(question)}">${escapeHtml(question)}</button>`).join("")}
+        </div>
+      ` : ""}
+    </article>
+    ${citations.length ? `
+      <section class="rag-used-citations">
+        <div><strong>模型实际使用的资料证据</strong><small>${escapeHtml((data.usedCitationIds || []).join(" · "))}</small></div>
+        <div class="course-citation-grid">${citations.map(renderCitationCard).join("")}</div>
+      </section>
+    ` : ""}
+  `;
+  els.sourceSearchResults.querySelectorAll("[data-rag-followup]").forEach((button) => {
+    button.addEventListener("click", () => {
+      els.sourceSearchQuery.value = button.dataset.ragFollowup;
+      askSelectedSources();
+    });
+  });
+}
+
+function ragPipelineStatusLabel(status) {
+  return {
+    loaded: "已完整读取",
+    llm: "LLM 已调用",
+    passed: "校验通过",
+    skipped: "未执行",
+    "not-applicable": "无需校验",
+    "extractive-fallback": "抽取式降级"
+  }[status] || "等待执行";
 }
 
 function renderCitationCard(citation) {
@@ -682,7 +774,7 @@ async function bindSourcesToCurrentPlan() {
     });
     applyDatabaseState(await request("/api/workspace"));
     await loadKnowledgeSources();
-    els.sourceUploadStatus.textContent = "当前课程的资料绑定已更新；后续课程生成和导师问答会实时检索新资料。";
+    els.sourceUploadStatus.textContent = "当前课程的资料绑定已更新；后续课程生成和导师问答会读取所选资料全文。";
     els.sourceUploadStatus.className = "source-upload-status success";
   } catch (error) {
     els.sourceUploadStatus.textContent = `课程绑定失败：${error.message}`;
@@ -1747,6 +1839,7 @@ function renderKnowledge() {
   const sourceCitations = plan.data?.input?.knowledgeGrounding?.citations
     || plan.data?.resourcePackage?.sourceCitations
     || [];
+  const ragTrace = plan.data?.rag || {};
   const diagnosticText = plan.data?.diagnosticResult ? `，诊断 ${plan.data.diagnosticResult.percent}%` : "";
   els.masteryMode.textContent = `基于 ${summary.done} 项打卡、${Object.keys(state.quizResults || {}).length} 道测评${diagnosticText}`;
   els.knowledgePanel.className = "result-grid";
@@ -1787,7 +1880,10 @@ function renderKnowledge() {
           <span class="mini-label">课程依据</span>
           <h3>课程资料与可核验引用</h3>
         </div>
-        <button class="ghost-button" type="button" data-manage-sources>管理资料</button>
+        <div class="course-grounding-actions">
+          ${ragTrace.enabled ? `<span class="status-pill ${ragTrace.grounded ? "ok" : ""}">${ragTrace.llmUsed ? `LLM 全文资料 · ${Number(ragTrace.usedCitationIds?.length || 0)} 个引用` : "全文资料 · 模型未使用"}</span>` : ""}
+          <button class="ghost-button" type="button" data-manage-sources>管理资料</button>
+        </div>
       </div>
       ${courseSources.length ? `
         <div class="bound-source-list">
@@ -1798,7 +1894,7 @@ function renderKnowledge() {
         <div class="course-citation-grid">
           ${sourceCitations.length
             ? sourceCitations.slice(0, 6).map(renderCitationCard).join("")
-            : "<p class=\"hint-text\">资料绑定已就绪；在生成当日资料或向导师提问时会按问题实时检索。</p>"}
+            : "<p class=\"hint-text\">资料绑定已就绪；在生成当日资料或向导师提问时会读取所选文件全文。</p>"}
         </div>
       ` : "<p class=\"hint-text\">这门课程尚未绑定自有资料，当前内容基于学习画像和系统知识生成。</p>"}
     </article>
@@ -3747,7 +3843,7 @@ async function askTutor() {
     });
     els.coachAnswer.innerHTML = `${renderMarkdown(data.answer)}${data.citations?.length ? `
       <section class="tutor-citations">
-        <strong>本次回答检索的课程资料</strong>
+        <strong>本次回答引用的课程资料</strong>
         ${data.citations.map(renderCitationCard).join("")}
       </section>
     ` : ""}`;
@@ -3757,7 +3853,7 @@ async function askTutor() {
       { role: "tutor", content: data.answer, mode: data.tutorMode, hintLevel: data.hintLevel, at: new Date().toISOString() }
     ].slice(-12);
     saveState();
-    els.coachMode.textContent = data.mode === "llm"
+    els.coachMode.textContent = data.mode === "llm" || data.mode === "llm-full-context-tutor"
       ? `大模型回答 · ${tutorModeLabel(data.tutorMode)} · 提示 ${data.hintLevel}`
       : `本地提示 · ${tutorModeLabel(data.tutorMode)} · 提示 ${data.hintLevel}`;
   } catch (error) {

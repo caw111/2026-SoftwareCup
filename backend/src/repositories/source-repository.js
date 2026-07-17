@@ -198,8 +198,12 @@ export async function replacePlanSourceRecords(userId, planId, sourceIds) {
       knowledgeGrounding: {
         context: "",
         citations: [],
+        mode: "full-context",
+        sourceCount: sourceRows.length,
+        loadedChunks: 0,
+        fullContextChars: 0,
         searchedChunks: 0,
-        instruction: "课程资料绑定已更新；将在下一次内容生成或导师问答时按问题实时检索。"
+        instruction: "课程资料绑定已更新；将在下一次内容生成或导师问答时读取所选资料全文。"
       }
     };
     await connection.execute(

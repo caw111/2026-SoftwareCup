@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 
+import { RAG_CONFIG } from "../config.js";
 import {
   buildRagContext,
   chunkCourseSource,
@@ -108,6 +109,79 @@ export async function searchSourcesForUser(userId, payload) {
     results: results.map(({ content, ...result }) => result),
     ...grounding
   };
+}
+
+export async function loadFullSourceContextForUser(userId, payload = {}) {
+  const sourceIds = normalizeSourceIds(payload?.sourceIds);
+  const planId = String(payload?.planId || "").slice(0, 64) || null;
+  if (!sourceIds.length && !planId) {
+    const error = new Error("请选择课程资料或提供学习方案 ID");
+    error.statusCode = 400;
+    throw error;
+  }
+  if (sourceIds.length) await assertSourcesForUser(userId, sourceIds);
+  const chunks = await getSourceChunksForUser(userId, { sourceIds, planId });
+  return buildFullSourceContext(chunks, {
+    maxChars: RAG_CONFIG.fullContextMaxChars
+  });
+}
+
+export function buildFullSourceContext(chunks, options = {}) {
+  const maxChars = Math.max(10000, Number(options.maxChars || RAG_CONFIG.fullContextMaxChars));
+  const readableChunks = (Array.isArray(chunks) ? chunks : [])
+    .map((chunk) => ({ ...chunk, content: String(chunk?.content || "").trim() }))
+    .filter((chunk) => chunk.content);
+  if (!readableChunks.length) {
+    const error = new Error("所选文件没有可供大模型阅读的已解析内容，请重新解析或上传其他文件");
+    error.statusCode = 422;
+    throw error;
+  }
+
+  const citations = [];
+  const blocks = readableChunks.map((chunk, index) => {
+    const id = `S${index + 1}`;
+    const sourceName = String(chunk.sourceName || "课程资料").trim();
+    const locator = String(chunk.locator || chunk.title || `片段 ${index + 1}`).trim();
+    const title = [sourceName, locator].filter(Boolean).join(" · ");
+    citations.push({
+      id,
+      sourceId: String(chunk.sourceId || ""),
+      chunkId: String(chunk.id || ""),
+      title,
+      locator,
+      quote: excerpt(chunk.content, 800),
+      score: 1
+    });
+    return `[${id}] ${title}\n${chunk.content}`;
+  });
+  const context = blocks.join("\n\n");
+  if (context.length > maxChars) {
+    const error = new Error(
+      `所选文件的完整解析内容共 ${context.length.toLocaleString("zh-CN")} 个字符，超过当前单次模型上下文上限 ${maxChars.toLocaleString("zh-CN")}。请减少所选文件后重试；系统不会截断或遗漏文件内容。`
+    );
+    error.statusCode = 413;
+    error.code = "FULL_CONTEXT_TOO_LARGE";
+    error.contextChars = context.length;
+    error.maxContextChars = maxChars;
+    throw error;
+  }
+
+  return {
+    mode: "full-context",
+    context,
+    citations,
+    sourceIds: [...new Set(readableChunks.map((chunk) => String(chunk.sourceId || "")).filter(Boolean))],
+    sourceCount: new Set(readableChunks.map((chunk) => String(chunk.sourceId || "")).filter(Boolean)).size,
+    loadedChunks: readableChunks.length,
+    fullContextChars: context.length,
+    searchedChunks: 0,
+    instruction: "以下是所选文件的全部已解析内容。回答和课程生成只能依据这些完整文件内容，并使用对应的 [S编号] 标注依据。"
+  };
+}
+
+function excerpt(value, limit) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > limit ? `${text.slice(0, Math.max(1, limit - 1))}…` : text;
 }
 
 export function normalizeSourceIds(values) {
