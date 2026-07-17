@@ -838,9 +838,7 @@ function renderDayCard(day, progress, index = 0, currentIndex = 0) {
 
 function completeMaterialsForDisplay(day, data, index) {
   const materials = Array.isArray(day.materials) ? day.materials : [];
-  const alreadyComplete = materials.some((item) => item?.sections?.length >= 3)
-    && materials.some((item) => item?.questions?.length >= 2);
-  if (alreadyComplete) return materials;
+  if (materials.length) return materials;
 
   const input = data?.input || {};
   const concepts = data?.knowledgeGraph?.concepts || [];

@@ -1,7 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { distributeQuizChoiceAnswers, durationToDays, normalizeInput, redistributeChoiceAnswer, runLocalAgents } from "../src/learning.js";
+import {
+  distributeQuizChoiceAnswers,
+  durationToDays,
+  normalizeDailyPlan,
+  normalizeInput,
+  redistributeChoiceAnswer,
+  runLocalAgents
+} from "../src/learning.js";
 
 test("durationToDays converts the configured learning period to calendar days", () => {
   assert.equal(durationToDays("3 天"), 3);
@@ -30,6 +37,59 @@ test("generic courses use semantic concept names instead of numbered placeholder
 
   assert.doesNotMatch(visibleText, /知识点\s*\d+/);
   assert.match(plan.dailyPlan[0].title, /基本术语与问题边界/);
+});
+
+test("model-generated daily materials are preserved during plan normalization", () => {
+  const fallback = [{
+    day: 1,
+    title: "本地标题",
+    tasks: ["本地任务"],
+    materials: [{ title: "本地讲义", content: "本地内容" }]
+  }];
+  const generated = [{
+    day: 1,
+    title: "模型标题",
+    tasks: ["模型任务 1", "模型任务 2", "模型任务 3"],
+    materials: [{ title: "模型讲义", content: "模型生成的针对性内容" }]
+  }];
+
+  const [day] = normalizeDailyPlan(generated, fallback);
+
+  assert.equal(day.title, "模型标题");
+  assert.deepEqual(day.materials, generated[0].materials);
+});
+
+test("daily plan normalization only falls back when model materials are missing", () => {
+  const fallback = [{
+    day: 1,
+    tasks: ["本地任务"],
+    materials: [{ title: "本地讲义" }]
+  }];
+
+  const [day] = normalizeDailyPlan([{ day: 1, tasks: [] }], fallback);
+
+  assert.deepEqual(day.tasks, fallback[0].tasks);
+  assert.deepEqual(day.materials, fallback[0].materials);
+});
+
+test("partial model batches are matched by day number instead of array position", () => {
+  const fallback = Array.from({ length: 3 }, (_, index) => ({
+    day: index + 1,
+    title: `本地第 ${index + 1} 天`,
+    tasks: ["本地任务"],
+    materials: [{ title: "本地讲义" }]
+  }));
+  const generated = [{
+    day: 3,
+    title: "模型第 3 天",
+    tasks: ["模型任务"],
+    materials: [{ title: "模型讲义" }]
+  }];
+
+  const normalized = normalizeDailyPlan(generated, fallback);
+
+  assert.equal(normalized[0].title, "本地第 1 天");
+  assert.equal(normalized[2].title, "模型第 3 天");
 });
 
 test("choice answers can be distributed without changing the correct option", () => {

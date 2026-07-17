@@ -1470,23 +1470,30 @@ function normalizePlanShape(plan, fallback) {
     governanceReport: plan.governanceReport || fallback.governanceReport,
     personalInsights: plan.personalInsights || fallback.personalInsights,
     resourcePackage: plan.resourcePackage || fallback.resourcePackage,
-    dailyPlan: normalizeDailyPlan(plan.dailyPlan, fallback.dailyPlan, resources),
+    dailyPlan: normalizeDailyPlan(plan.dailyPlan, fallback.dailyPlan),
     tutorCards: ensureArray(plan.tutorCards, fallback.tutorCards)
   };
 }
 
-function normalizeDailyPlan(candidate, fallback, resources) {
+export function normalizeDailyPlan(candidate, fallback) {
   const supplied = ensureArray(candidate, []);
+  const suppliedByDay = new Map(
+    supplied
+      .filter((day) => Number.isInteger(Number(day?.day)))
+      .map((day) => [Number(day.day), day])
+  );
+  const hasDayNumbers = suppliedByDay.size > 0;
   return fallback.map((fallbackDay, index) => {
-    const day = supplied[index] || fallbackDay;
+    const dayNumber = index + 1;
+    const day = suppliedByDay.get(dayNumber)
+      || (!hasDayNumbers ? supplied[index] : null)
+      || fallbackDay;
     return {
       ...fallbackDay,
       ...day,
-      day: index + 1,
+      day: dayNumber,
       tasks: ensureArray(day.tasks, fallbackDay.tasks),
-      // The local structured lesson is the completeness baseline. Model output may
-      // improve titles/tasks, but must not replace it with one-line summaries.
-      materials: fallbackDay.materials
+      materials: ensureArray(day.materials, fallbackDay.materials)
     };
   });
 }
@@ -1632,30 +1639,110 @@ async function callLargeModelForPlan(input, localPlan) {
     weak: localPlan.learnerProfile.weakestDimensions,
     requiredDays: durationToDays(input.duration)
   };
-  const prompt = `你是一个中文多智能体学习系统。请基于学生输入生成完整可执行学习方案。
-只返回 JSON，不要 Markdown。字段必须包含：
+  const corePrompt = `你是一个中文多智能体学习系统。请基于学生输入生成个性化学习方案的核心结构。
+只返回 JSON，不要 Markdown，也不要生成 dailyPlan。字段必须包含：
 {
  "learnerProfile":{"summary":"","mastery":[{"dimension":"","score":0,"evidence":"","source":"estimated"}],"weakestDimensions":[{"dimension":"","score":0}],"tags":[],"behaviorSignals":[],"strategyPriorities":[]},
  "path":[{"stage":"","task":"","outcome":""}],
  "resources":[{"type":"","title":"","content":""}],
  "assessment":{"quiz":[{"id":"","type":"choice","dimension":"","question":"","options":[],"answerIndex":0,"explanation":"","score":25}],"rubric":[],"nextActions":[]},
  "resourcePackage":{"title":"","audience":"","packageScore":0,"sections":[{"type":"","title":"","items":[]}],"deliverables":[],"usageGuide":[],"sourceTrace":[]},
- "dailyPlan":[{"day":1,"title":"","estimate":"","focus":"","tasks":[],"materials":[{"title":"","content":""}],"checkpoint":""}],
  "tutorCards":[{"title":"","prompt":""}]
 }
 
 要求：
-1. dailyPlan 必须生成且仅生成 ${planSeed.requiredDays} 天，每天 3 个任务；每一天还要提供 2-3 条 materials（讲义要点、案例、练习或可靠资料名称及用途），不能只写抽象行动。
-2. assessment.quiz 必须是 4 道选择题，带 options、answerIndex、explanation，并能与 dailyPlan 的进度相关。
+1. path 必须体现从当前水平到学习目标的阶段性递进。
+2. assessment.quiz 必须是 4 道选择题，带 options、answerIndex、explanation。
 3. learnerProfile.mastery 必须说明 evidence/source，不能伪装成真实测量数据。
-4. 内容要针对学生输入，不要泛泛而谈。materials 中的讲义和案例正文应包含概念定义、适用条件、分步过程、具体例子与反例或检查方法，每项 180-400 字；其他长文本控制在 120 字以内。
+4. 内容要针对学生输入，不要泛泛而谈；单个长文本控制在 160 字以内。
 
 学生输入：${JSON.stringify(input)}
 本地画像种子：${JSON.stringify(planSeed)}`;
 
+  const coreRequest = captureModelRequest(async () => {
+    const content = await requestChatCompletion([
+      { role: "system", content: "你是严谨的个性化学习资源生成专家，必须输出可解析 JSON。" },
+      { role: "user", content: corePrompt }
+    ], { temperature: 0.3, maxTokens: 2600 });
+    return parseJsonFromModel(content);
+  });
+
+  const dailyBatches = splitDailyPlanBatches(localPlan.dailyPlan, planSeed.requiredDays);
+  const dailyRequests = mapWithConcurrency(dailyBatches, 3, (batch) => (
+    captureModelRequest(() => callLargeModelForDailyBatch(input, planSeed, batch))
+  ));
+  const [coreResult, dailyResults] = await Promise.all([coreRequest, dailyRequests]);
+  const generatedDays = dailyResults
+    .filter((result) => result.ok)
+    .flatMap((result) => ensureArray(result.value?.dailyPlan, []));
+
+  if (!coreResult.ok && !generatedDays.length) {
+    const firstBatchError = dailyResults.find((result) => !result.ok)?.error;
+    throw coreResult.error || firstBatchError || new Error("大模型未返回可用学习方案。");
+  }
+
+  return {
+    ...(coreResult.ok ? coreResult.value : {}),
+    ...(generatedDays.length ? { dailyPlan: generatedDays } : {})
+  };
+}
+
+async function callLargeModelForDailyBatch(input, planSeed, batch) {
+  const requestedDays = batch.map((day) => day.day);
+  const prompt = `请为学生生成个性化的每日学习路径。
+只返回 JSON，不要 Markdown。格式为：
+{"dailyPlan":[{"day":1,"title":"","estimate":"","focus":"","tasks":["","",""],"materials":[{"type":"核心讲义","title":"","content":""},{"type":"案例与练习","title":"","content":""}],"checkpoint":""}]}
+
+要求：
+1. 仅生成第 ${requestedDays.join("、")} 天，day 值必须与这些天数一致，不得缺失。
+2. 每天恰好 3 个可执行任务，并与前后学习进度衔接。
+3. 每天生成 2 份针对当天主题的材料：核心讲义必须解释定义、原理和适用边界；案例与练习必须给出具体情境、步骤和自检方法。每份 content 控制在 120-220 个中文字。
+4. 必须针对学生的主题、目标和薄弱点，不要使用“核心知识点”等占位表达。
+
+学生输入：${JSON.stringify(input)}
+总天数：${planSeed.requiredDays}
+当前批次种子：${JSON.stringify(batch.map((day) => ({
+    day: day.day,
+    title: day.title,
+    focus: day.focus,
+    tasks: day.tasks
+  })))}`;
+
   const content = await requestChatCompletion([
     { role: "system", content: "你是严谨的个性化学习资源生成专家，必须输出可解析 JSON。" },
     { role: "user", content: prompt }
-  ], { temperature: 0.35, maxTokens: 2800 });
+  ], { temperature: 0.3, maxTokens: Math.min(7000, 1000 + batch.length * 520) });
   return parseJsonFromModel(content);
+}
+
+function splitDailyPlanBatches(dailyPlan, requiredDays) {
+  const batchSize = requiredDays <= 14 ? 7 : requiredDays <= 30 ? 10 : 15;
+  const batches = [];
+  for (let index = 0; index < dailyPlan.length; index += batchSize) {
+    batches.push(dailyPlan.slice(index, index + batchSize));
+  }
+  return batches;
+}
+
+async function captureModelRequest(work) {
+  try {
+    return { ok: true, value: await work() };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
+async function mapWithConcurrency(items, limit, mapper) {
+  if (!items.length) return [];
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
