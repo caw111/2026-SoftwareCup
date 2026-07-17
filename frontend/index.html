@@ -163,6 +163,7 @@
 
             <nav class="course-mode-nav" aria-label="学习模式">
               <button class="nav-link active" type="button" data-view="daily" data-group="path">学习路径</button>
+              <button class="nav-link" type="button" data-view="notes">我的笔记</button>
               <button class="nav-link" type="button" data-view="knowledge" data-group="mastery">掌握度</button>
               <button class="nav-link" type="button" data-view="practice" data-group="assessment">测验与复习</button>
               <button class="nav-link" type="button" data-view="report" data-group="report">学习报告</button>
@@ -189,11 +190,11 @@
               <button id="continueTodayButton" class="primary-button" type="button">继续学习</button>
             </section>
 
-            <div class="mode-toolbar">
-              <button class="nav-link" type="button" data-view="daily" data-group="path">学习路径</button>
-              <button class="nav-link" type="button" data-view="practice" data-group="assessment">测验与复习</button>
-              <button class="nav-link" type="button" data-view="report" data-group="report">学习报告</button>
-            </div>
+            <nav class="assessment-subnav" aria-label="测验与复习导航">
+              <button class="nav-link" type="button" data-view="practice">随堂测验</button>
+              <button class="nav-link" type="button" data-view="mistakes">错题复习</button>
+              <button class="nav-link" type="button" data-view="exam">综合考试</button>
+            </nav>
 
             <section class="course-mode active" data-mode="daily">
               <div class="section-heading">
@@ -205,6 +206,19 @@
               </div>
               <div id="dailyPanel" class="empty-state">
                 <p>生成或选择课程后，这里会出现可打卡的章节任务。</p>
+              </div>
+            </section>
+
+            <section class="course-mode" data-mode="notes">
+              <div class="section-heading">
+                <div>
+                  <h2>我的笔记</h2>
+                  <p>集中查看当前课程的学习笔记与错因记录，内容按 Markdown 格式渲染。</p>
+                </div>
+                <span id="notesMode">等待笔记</span>
+              </div>
+              <div id="notesPanel" class="empty-state">
+                <p>在学习路径中写下笔记后，这里会自动保存并显示。</p>
               </div>
             </section>
 
@@ -255,9 +269,6 @@
                 </div>
                 <div class="heading-actions">
                   <span id="judgeStatus" class="status-pill">服务端判题检测中</span>
-                  <button id="regenerateQuizButton" class="ghost-button" type="button">重新出题</button>
-                  <button class="ghost-button nav-link" type="button" data-view="mistakes" data-group="assessment">错题复习</button>
-                  <button class="ghost-button nav-link" type="button" data-view="exam" data-group="assessment">综合考试</button>
                 </div>
               </div>
               <div id="practicePanel" class="empty-state">
@@ -438,6 +449,20 @@
         <div class="confirm-dialog-actions">
           <button id="cancelDeleteButton" class="ghost-button" type="button">取消</button>
           <button id="confirmDeleteButton" class="danger-button" type="button">确认删除</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="confirmResetProgressDialog" class="confirm-dialog" aria-labelledby="confirmResetProgressTitle">
+      <div class="confirm-dialog-content">
+        <span class="confirm-dialog-icon" aria-hidden="true">!</span>
+        <div>
+          <h2 id="confirmResetProgressTitle">确认重置学习进度</h2>
+          <p>确定要重置“<strong id="confirmResetProgressCourseName">当前课程</strong>”的学习进度吗？已完成任务将被清空，学习笔记会保留。</p>
+        </div>
+        <div class="confirm-dialog-actions">
+          <button id="cancelResetProgressButton" class="ghost-button" type="button">取消</button>
+          <button id="confirmResetProgressButton" class="danger-button" type="button">确认重置</button>
         </div>
       </div>
     </dialog>

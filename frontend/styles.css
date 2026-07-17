@@ -952,6 +952,43 @@ meter {
   display: block;
 }
 
+.assessment-subnav {
+  display: none;
+  position: sticky;
+  z-index: 12;
+  top: 68px;
+  gap: 8px;
+  margin: -4px 0 22px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+  background: rgba(247, 244, 239, 0.94);
+  backdrop-filter: blur(14px);
+}
+
+body[data-course-mode="practice"] .assessment-subnav,
+body[data-course-mode="mistakes"] .assessment-subnav,
+body[data-course-mode="exam"] .assessment-subnav {
+  display: flex;
+}
+
+.assessment-subnav button {
+  min-height: 38px;
+  padding: 0 15px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  color: var(--muted);
+  background: var(--paper);
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.assessment-subnav button:hover,
+.assessment-subnav button.active {
+  color: var(--white);
+  border-color: var(--black);
+  background: var(--black);
+}
+
 .panel,
 .result-card,
 .quiz-item,
@@ -2563,6 +2600,54 @@ textarea.code-answer {
   background: transparent;
 }
 
+.study-notes-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.study-notes-footer p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.notes-board {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+}
+
+.notes-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-soft);
+}
+
+.notes-preview-head h3 {
+  margin: 4px 0 0;
+  font-family: Georgia, "Times New Roman", "Noto Serif SC", serif;
+  font-size: 20px;
+  font-weight: 500;
+}
+
+.notes-markdown {
+  min-height: 360px;
+  padding: 28px 32px;
+}
+
+.notes-empty {
+  justify-items: center;
+  text-align: center;
+}
+
 .course-overview-panel {
   position: sticky;
   top: 88px;
@@ -2698,6 +2783,16 @@ textarea.code-answer {
     font-size: 24px;
   }
 
+  .assessment-subnav {
+    top: 0;
+    overflow-x: auto;
+  }
+
+  .assessment-subnav button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
   .mode-toolbar {
     gap: 18px;
     overflow-x: auto;
@@ -2713,6 +2808,21 @@ textarea.code-answer {
 
   .report-text {
     min-height: 420px;
+    padding: 20px 16px;
+  }
+
+  .study-notes-footer,
+  .notes-preview-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .study-notes-footer .heading-actions {
+    justify-content: flex-start;
+  }
+
+  .notes-markdown {
+    min-height: 300px;
     padding: 20px 16px;
   }
 

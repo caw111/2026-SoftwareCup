@@ -12,8 +12,10 @@ let persistTimer = null;
 let examTimer = null;
 let examSubmitting = false;
 let deleteConfirmationResolver = null;
+let progressResetConfirmationResolver = null;
 const COURSE_MODES = [
   "daily",
+  "notes",
   "diagnostic",
   "knowledge",
   "remediation",
@@ -54,6 +56,8 @@ const els = {
   resultMode: document.querySelector("#resultMode"),
   dailyPanel: document.querySelector("#dailyPanel"),
   progressSummary: document.querySelector("#progressSummary"),
+  notesPanel: document.querySelector("#notesPanel"),
+  notesMode: document.querySelector("#notesMode"),
   serviceStatus: document.querySelector("#serviceStatus"),
   modelStatus: document.querySelector("#modelStatus"),
   llmTestButton: document.querySelector("#llmTestButton"),
@@ -97,7 +101,6 @@ const els = {
   remediationPanel: document.querySelector("#remediationPanel"),
   remediationMode: document.querySelector("#remediationMode"),
   practicePanel: document.querySelector("#practicePanel"),
-  regenerateQuizButton: document.querySelector("#regenerateQuizButton"),
   judgeStatus: document.querySelector("#judgeStatus"),
   governancePanel: document.querySelector("#governancePanel"),
   governanceMode: document.querySelector("#governanceMode"),
@@ -116,19 +119,28 @@ const els = {
   confirmDeleteDialog: document.querySelector("#confirmDeleteDialog"),
   confirmDeleteCourseName: document.querySelector("#confirmDeleteCourseName"),
   cancelDeleteButton: document.querySelector("#cancelDeleteButton"),
-  confirmDeleteButton: document.querySelector("#confirmDeleteButton")
+  confirmDeleteButton: document.querySelector("#confirmDeleteButton"),
+  confirmResetProgressDialog: document.querySelector("#confirmResetProgressDialog"),
+  confirmResetProgressCourseName: document.querySelector("#confirmResetProgressCourseName"),
+  cancelResetProgressButton: document.querySelector("#cancelResetProgressButton"),
+  confirmResetProgressButton: document.querySelector("#confirmResetProgressButton")
 };
 
 els.llmTestButton.addEventListener("click", testLargeModel);
 els.form.addEventListener("submit", generatePlan);
 els.coachButton.addEventListener("click", askTutor);
-els.regenerateQuizButton.addEventListener("click", () => loadQuiz(true));
 els.practicePanel.addEventListener("keydown", handleCodeTextareaKeydown, true);
 els.cancelDeleteButton.addEventListener("click", () => closeDeleteConfirmation(false));
 els.confirmDeleteButton.addEventListener("click", () => closeDeleteConfirmation(true));
 els.confirmDeleteDialog.addEventListener("cancel", (event) => {
   event.preventDefault();
   closeDeleteConfirmation(false);
+});
+els.cancelResetProgressButton.addEventListener("click", () => closeResetProgressConfirmation(false));
+els.confirmResetProgressButton.addEventListener("click", () => closeResetProgressConfirmation(true));
+els.confirmResetProgressDialog.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeResetProgressConfirmation(false);
 });
 window.addEventListener("hashchange", syncRoute);
 document.querySelectorAll(".nav-link").forEach((link) => {
@@ -380,6 +392,7 @@ function renderAll() {
   renderCourseChrome();
   renderSavedPlans();
   renderDailyPlan();
+  renderNotes();
   renderDiagnostic();
   renderKnowledge();
   renderRemediation();
@@ -747,9 +760,15 @@ function renderDailyPlan() {
     <section class="study-notes">
       <label>
         学习笔记与错因记录
-        <textarea id="studyNotes" rows="5" placeholder="写下今天的卡点、错因、收获。">${escapeHtml(plan.notes || "")}</textarea>
+        <textarea id="studyNotes" rows="7" placeholder="支持 Markdown，例如：&#10;## 今日收获&#10;- 关键知识点&#10;&#10;## 错因&#10;1. 审题遗漏条件">${escapeHtml(plan.notes || "")}</textarea>
       </label>
-      <button class="text-button" type="button" id="resetProgressButton">重置进度</button>
+      <div class="study-notes-footer">
+        <p>支持 Markdown，输入内容会自动保存到“我的笔记”。</p>
+        <div class="heading-actions">
+          <button class="ghost-button" type="button" id="openNotesButton">查看我的笔记</button>
+          <button class="text-button" type="button" id="resetProgressButton">重置进度</button>
+        </div>
+      </div>
     </section>
   `;
 
@@ -783,8 +802,52 @@ function renderDailyPlan() {
     button.addEventListener("click", () => setView(button.dataset.view));
   });
   els.dailyPanel.querySelector("#studyNotes").addEventListener("input", updateNotes);
+  els.dailyPanel.querySelector("#openNotesButton").addEventListener("click", () => setView("notes"));
   els.dailyPanel.querySelector("#resetProgressButton").addEventListener("click", resetProgress);
   updateProgressSummary();
+}
+
+function renderNotes() {
+  const plan = getCurrentPlan();
+  if (!plan) {
+    els.notesMode.textContent = "等待课程";
+    els.notesPanel.className = "empty-state notes-empty";
+    els.notesPanel.innerHTML = "<p>先生成或选择一门课程，再开始记录学习笔记。</p>";
+    return;
+  }
+
+  const notes = String(plan.notes || "").trim();
+  els.notesMode.textContent = notes ? `已保存 · ${notes.length} 字符` : "暂无内容";
+  if (!notes) {
+    els.notesPanel.className = "empty-state notes-empty";
+    els.notesPanel.innerHTML = `
+      <p>还没有笔记。在学习路径的“学习笔记与错因记录”中输入内容后，会自动保存到这里。</p>
+      <button class="primary-button" type="button" data-edit-notes>开始写笔记</button>
+    `;
+  } else {
+    els.notesPanel.className = "notes-board";
+    els.notesPanel.innerHTML = `
+      <div class="notes-preview-head">
+        <div>
+          <span class="mini-label">当前课程</span>
+          <h3>${escapeHtml(plan.title || "未命名课程")}</h3>
+        </div>
+        <button class="ghost-button" type="button" data-edit-notes>编辑笔记</button>
+      </div>
+      <article class="notes-markdown markdown-body" aria-label="Markdown 格式学习笔记">${renderMarkdown(notes)}</article>
+    `;
+  }
+
+  els.notesPanel.querySelector("[data-edit-notes]")?.addEventListener("click", openNotesEditor);
+}
+
+function openNotesEditor() {
+  setView("daily");
+  requestAnimationFrame(() => {
+    const textarea = els.dailyPanel.querySelector("#studyNotes");
+    textarea?.scrollIntoView({ behavior: "smooth", block: "center" });
+    textarea?.focus();
+  });
 }
 
 function renderDayCard(day, progress, index = 0, currentIndex = 0) {
@@ -971,6 +1034,7 @@ function updateNotes(event) {
   if (!plan) return;
   plan.notes = event.target.value;
   saveState();
+  renderNotes();
   if (!state.databaseReady) return;
   clearTimeout(persistTimer);
   const planId = plan.id;
@@ -984,9 +1048,10 @@ function updateNotes(event) {
   }, 350);
 }
 
-function resetProgress() {
+async function resetProgress() {
   const plan = getCurrentPlan();
   if (!plan) return;
+  if (!(await requestResetProgressConfirmation(plan))) return;
   plan.progress = {};
   state.quiz = [];
   state.quizResults = {};
@@ -997,6 +1062,23 @@ function resetProgress() {
     }).catch(reportPersistenceError);
   }
   renderAll();
+}
+
+function requestResetProgressConfirmation(plan) {
+  if (progressResetConfirmationResolver) closeResetProgressConfirmation(false);
+  els.confirmResetProgressCourseName.textContent = plan?.title || "当前课程";
+  els.confirmResetProgressDialog.showModal();
+  els.confirmResetProgressButton.focus();
+  return new Promise((resolve) => {
+    progressResetConfirmationResolver = resolve;
+  });
+}
+
+function closeResetProgressConfirmation(confirmed) {
+  if (els.confirmResetProgressDialog.open) els.confirmResetProgressDialog.close();
+  const resolve = progressResetConfirmationResolver;
+  progressResetConfirmationResolver = null;
+  resolve?.(confirmed);
 }
 
 function renderDiagnostic() {
@@ -1476,8 +1558,7 @@ function renderReport() {
           <div><dt>已完成任务</dt><dd>${progress.done}/${progress.total}</dd></div>
           <div><dt>当前错题</dt><dd>${mistakes.length}</dd></div>
         </dl>
-        <p>点击后将使用 LLM 根据这一刻的学习证据生成 Markdown 报告，不使用通用报告模板。</p>
-        <button class="primary-button" type="button" data-generate-report>使用 LLM 生成学习报告</button>
+        <button class="primary-button" type="button" data-generate-report>生成学习报告</button>
         <p class="report-generation-status" aria-live="polite"></p>
       </section>
     `;
@@ -1493,7 +1574,7 @@ function renderReport() {
         <p>由 LLM 根据 ${escapeHtml(formatDate(report.generatedAt))} 的学习状态生成。完成新任务或测评后，可重新生成以纳入最新证据。</p>
       </div>
       <div class="heading-actions">
-        <button class="primary-button" type="button" data-generate-report>使用 LLM 重新生成</button>
+        <button class="primary-button" type="button" data-generate-report>重新生成</button>
         <button class="ghost-button" type="button" data-export-report="copy">复制 Markdown</button>
         <button class="ghost-button" type="button" data-export-report="md">下载 MD</button>
         <button class="ghost-button" type="button" data-export-report="json">下载 JSON</button>
