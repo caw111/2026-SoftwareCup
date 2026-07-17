@@ -1654,7 +1654,7 @@ async function callLargeModelForPlan(input, localPlan) {
 1. path 必须体现从当前水平到学习目标的阶段性递进。
 2. assessment.quiz 必须是 4 道选择题，带 options、answerIndex、explanation。
 3. learnerProfile.mastery 必须说明 evidence/source，不能伪装成真实测量数据。
-4. 内容要针对学生输入，不要泛泛而谈；单个长文本控制在 160 字以内。
+4. 内容要针对学生输入，不要泛泛而谈。
 
 学生输入：${JSON.stringify(input)}
 本地画像种子：${JSON.stringify(planSeed)}`;
@@ -1667,14 +1667,13 @@ async function callLargeModelForPlan(input, localPlan) {
     return parseJsonFromModel(content);
   });
 
-  const dailyBatches = splitDailyPlanBatches(localPlan.dailyPlan, planSeed.requiredDays);
-  const dailyRequests = mapWithConcurrency(dailyBatches, 3, (batch) => (
-    captureModelRequest(() => callLargeModelForDailyBatch(input, planSeed, batch))
+  const dailyRequests = mapWithConcurrency(localPlan.dailyPlan, 3, (day) => (
+    captureModelRequest(() => callLargeModelForDailyLesson(input, planSeed, day))
   ));
   const [coreResult, dailyResults] = await Promise.all([coreRequest, dailyRequests]);
   const generatedDays = dailyResults
     .filter((result) => result.ok)
-    .flatMap((result) => ensureArray(result.value?.dailyPlan, []));
+    .map((result) => result.value);
 
   if (!coreResult.ok && !generatedDays.length) {
     const firstBatchError = dailyResults.find((result) => !result.ok)?.error;
@@ -1687,41 +1686,137 @@ async function callLargeModelForPlan(input, localPlan) {
   };
 }
 
-async function callLargeModelForDailyBatch(input, planSeed, batch) {
-  const requestedDays = batch.map((day) => day.day);
-  const prompt = `请为学生生成个性化的每日学习路径。
-只返回 JSON，不要 Markdown。格式为：
-{"dailyPlan":[{"day":1,"title":"","estimate":"","focus":"","tasks":["","",""],"materials":[{"type":"核心讲义","title":"","content":""},{"type":"案例与练习","title":"","content":""}],"checkpoint":""}]}
+async function callLargeModelForDailyLesson(input, planSeed, day) {
+  let previousIssues = [];
+  let lastError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const prompt = buildDetailedDailyLessonPrompt(input, planSeed, day, previousIssues);
+      const content = await requestChatCompletion([
+        {
+          role: "system",
+          content: "你是严谨的课程讲义与练习设计专家。必须把当节涉及的所有知识点完整讲清楚，不得为了简短而省略定义、原理、边界、例子、反例、练习或解析。只输出原生 GFM Markdown。"
+        },
+        { role: "user", content: prompt }
+      ], {
+        temperature: 0.25,
+        timeoutMs: 0,
+        stream: true
+      });
+      const generatedDay = parseDetailedDailyLessonMarkdown(content, day);
+      previousIssues = validateDetailedDailyLesson(generatedDay, day.day);
+      if (!previousIssues.length) return generatedDay;
+    } catch (error) {
+      lastError = error;
+      previousIssues = [error instanceof Error ? error.message : String(error)];
+    }
+  }
+  throw lastError || new Error(`第 ${day.day} 天的模型资料未通过完整性检查：${previousIssues.join("；")}`);
+}
 
-要求：
-1. 仅生成第 ${requestedDays.join("、")} 天，day 值必须与这些天数一致，不得缺失。
-2. 每天恰好 3 个可执行任务，并与前后学习进度衔接。
-3. 每天生成 2 份针对当天主题的材料：核心讲义必须解释定义、原理和适用边界；案例与练习必须给出具体情境、步骤和自检方法。每份 content 控制在 120-220 个中文字。
-4. 必须针对学生的主题、目标和薄弱点，不要使用“核心知识点”等占位表达。
+function buildDetailedDailyLessonPrompt(input, planSeed, day, previousIssues) {
+  const repairRequest = previousIssues.length
+    ? `\n上一次生成未通过完整性检查，本次必须修正：${previousIssues.join("；")}。`
+    : "";
+  return `请为第 ${day.day} 天生成一节可直接学习的完整课程，不是大纲或摘要。
+只输出 GFM Markdown，不要使用包裹整份内容的代码块，不要输出 JSON。
+整份输出必须按以下顺序：
+1. 以“# 第 ${day.day} 天完整讲义：具体主题”开头。
+2. 先写学习目标和知识地图。
+3. 对每个知识点使用严格格式“## 知识点：知识点精确名称”建立独立章节。
+4. 讲义结束后，单独输出一行分隔符“<!-- CASES_AND_PRACTICE -->”。
+5. 分隔符后以“# 第 ${day.day} 天案例与练习：具体主题”开头。
+
+内容完整性要求：
+1. 知识点要覆盖当天标题、focus 和 3 个任务实际涉及的全部内容，不设固定数量，不得用“知识点 1”等占位词。
+2. “完整讲义”必须逐项详细讲解定义、背景、核心原理、组成或语法、分步过程、适用条件、边界与限制、具体正例、反例、常见误区和检查方法。技术课程应在需要时给出可运行的代码块、输入输出和逐步解释。
+3. “案例与练习”必须在“## 覆盖的知识点”中逐项原样列出讲义的全部知识点名称，并至少包含基础完整案例、综合或边界案例、案例背景、问题分析、分步实现、结果检查与复盘。练习必须同时包含概念理解、实际应用、错误排查或反例分析、综合迁移等层次，并在后面使用“## 参考答案与解析”给出完整答案、推导步骤和错因说明。
+4. 全部内容必须是结构清晰的 GFM Markdown，可使用标题、列表、表格、引用和代码块。
+5. 不限制讲义、案例或练习的字数。不得为了缩短输出而合并或遗漏知识点，以把当节所有知识点讲清楚为唯一长度标准。
+6. 不要重新设计学习天数、标题或任务，只需将下面的当日设计扩展成完整可学的资料。${repairRequest}
 
 学生输入：${JSON.stringify(input)}
 总天数：${planSeed.requiredDays}
-当前批次种子：${JSON.stringify(batch.map((day) => ({
+当日设计种子：${JSON.stringify({
     day: day.day,
     title: day.title,
+    estimate: day.estimate,
     focus: day.focus,
-    tasks: day.tasks
-  })))}`;
-
-  const content = await requestChatCompletion([
-    { role: "system", content: "你是严谨的个性化学习资源生成专家，必须输出可解析 JSON。" },
-    { role: "user", content: prompt }
-  ], { temperature: 0.3, maxTokens: Math.min(7000, 1000 + batch.length * 520) });
-  return parseJsonFromModel(content);
+    tasks: day.tasks,
+    checkpoint: day.checkpoint
+  })}`;
 }
 
-function splitDailyPlanBatches(dailyPlan, requiredDays) {
-  const batchSize = requiredDays <= 14 ? 7 : requiredDays <= 30 ? 10 : 15;
-  const batches = [];
-  for (let index = 0; index < dailyPlan.length; index += batchSize) {
-    batches.push(dailyPlan.slice(index, index + batchSize));
+export function parseDetailedDailyLessonMarkdown(content, day) {
+  const markdown = String(content || "").trim();
+  const marker = "<!-- CASES_AND_PRACTICE -->";
+  let splitIndex = markdown.indexOf(marker);
+  if (splitIndex === -1) {
+    const fallbackHeading = markdown.match(/^#\s+.*案例与练习.*$/m);
+    splitIndex = fallbackHeading?.index ?? -1;
   }
-  return batches;
+  if (splitIndex === -1) throw new Error("模型 Markdown 缺少讲义与案例练习分隔符。");
+
+  const lectureContent = markdown.slice(0, splitIndex).trim();
+  const practiceStart = markdown.startsWith(marker, splitIndex) ? splitIndex + marker.length : splitIndex;
+  const practiceContent = markdown.slice(practiceStart).trim();
+  const knowledgePoints = lectureContent
+    .split(/\r?\n/)
+    .map((line) => line.trim().match(/^##\s+知识点[：:]\s*(.+)$/)?.[1]?.trim())
+    .filter(Boolean);
+
+  return {
+    ...day,
+    knowledgePoints,
+    materials: [
+      {
+        type: "完整讲义",
+        title: extractMarkdownTitle(lectureContent) || `第 ${day.day} 天完整讲义`,
+        content: lectureContent
+      },
+      {
+        type: "案例与练习",
+        title: extractMarkdownTitle(practiceContent) || `第 ${day.day} 天案例与练习`,
+        content: practiceContent
+      }
+    ]
+  };
+}
+
+function extractMarkdownTitle(content) {
+  return String(content || "").split(/\r?\n/).map((line) => line.trim()).find((line) => /^#\s+/.test(line))?.replace(/^#\s+/, "").trim();
+}
+
+export function validateDetailedDailyLesson(day, expectedDay) {
+  const issues = [];
+  if (!day || typeof day !== "object") return ["缺少 dailyPlan 对象"];
+  if (Number(day.day) !== Number(expectedDay)) issues.push(`day 必须为 ${expectedDay}`);
+  if (ensureArray(day.tasks, []).length !== 3) issues.push("必须包含恰好 3 个任务");
+
+  const knowledgePoints = ensureArray(day.knowledgePoints, []).map((item) => clean(item, 200)).filter(Boolean);
+  if (knowledgePoints.length < 2) issues.push("未列出完整知识点");
+  const materials = ensureArray(day.materials, []);
+  const lecture = materials.find((item) => String(item?.type || "").includes("讲义")) || materials[0];
+  const practice = materials.find((item) => /(案例|练习)/.test(String(item?.type || ""))) || materials[1];
+  const lectureContent = String(lecture?.content || "").trim();
+  const practiceContent = String(practice?.content || "").trim();
+
+  if (lectureContent.length < 800) issues.push("讲义过短，未达到完整讲解要求");
+  if (countMarkdownSections(lectureContent) < 4) issues.push("讲义缺少分知识点的 Markdown 章节");
+  const missingKnowledge = knowledgePoints.filter((point) => !lectureContent.includes(point));
+  if (missingKnowledge.length) issues.push(`讲义未逐项覆盖：${missingKnowledge.join("、")}`);
+  if (practiceContent.length < 600) issues.push("案例与练习过短，未达到完整设计要求");
+  if (countMarkdownSections(practiceContent) < 3) issues.push("案例与练习缺少 Markdown 章节");
+  if (!/(参考答案|答案与解析|练习解析)/.test(practiceContent)) {
+    issues.push("练习缺少完整参考答案与解析");
+  }
+  const uncoveredPracticeKnowledge = knowledgePoints.filter((point) => !practiceContent.includes(point));
+  if (uncoveredPracticeKnowledge.length) issues.push(`案例与练习未覆盖：${uncoveredPracticeKnowledge.join("、")}`);
+  return issues;
+}
+
+function countMarkdownSections(content) {
+  return String(content || "").split(/\r?\n/).filter((line) => /^##\s+\S/.test(line.trim())).length;
 }
 
 async function captureModelRequest(work) {

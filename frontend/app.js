@@ -904,7 +904,7 @@ function renderLearningMaterial(material, index) {
     <article class="material-card">
       <span>${escapeHtml(material.type || `学习资料 ${index + 1}`)}</span>
       <h4>${escapeHtml(material.title || "本节资料")}</h4>
-      ${material.content ? `<p>${escapeHtml(material.content)}</p>` : ""}
+      ${material.content ? `<div class="material-markdown markdown-body">${renderMarkdown(material.content)}</div>` : ""}
       ${sections.map((section) => `
         <section class="material-section">
           <strong>${escapeHtml(section.heading || "知识点")}</strong>

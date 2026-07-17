@@ -6,8 +6,10 @@ import {
   durationToDays,
   normalizeDailyPlan,
   normalizeInput,
+  parseDetailedDailyLessonMarkdown,
   redistributeChoiceAnswer,
-  runLocalAgents
+  runLocalAgents,
+  validateDetailedDailyLesson
 } from "../src/learning.js";
 
 test("durationToDays converts the configured learning period to calendar days", () => {
@@ -90,6 +92,41 @@ test("partial model batches are matched by day number instead of array position"
 
   assert.equal(normalized[0].title, "本地第 1 天");
   assert.equal(normalized[2].title, "模型第 3 天");
+});
+
+test("detailed model lessons must cover every declared knowledge point", () => {
+  const knowledgePoints = ["事件循环", "await 让出控制权"];
+  const lecture = `# 完整讲义\n\n## 学习目标\n${"目标说明。".repeat(60)}\n\n## 事件循环\n${"定义、原理、边界和示例。".repeat(45)}\n\n## await 让出控制权\n${"语法、步骤、反例和排查。".repeat(45)}\n\n## 知识总结\n${"联系与迁移。".repeat(30)}`;
+  const practice = `# 案例与练习\n\n## 覆盖的知识点\n- ${knowledgePoints.join("\n- ")}\n\n## 基础案例\n${"背景、分析、实现与检查。".repeat(35)}\n\n## 综合练习\n${"题目与迁移任务。".repeat(35)}\n\n## 参考答案\n${"完整步骤、解析和错因说明。".repeat(35)}`;
+  const day = {
+    day: 1,
+    knowledgePoints,
+    tasks: ["任务 1", "任务 2", "任务 3"],
+    materials: [
+      { type: "完整讲义", content: lecture },
+      { type: "案例与练习", content: practice }
+    ]
+  };
+
+  assert.deepEqual(validateDetailedDailyLesson(day, 1), []);
+  assert.match(
+    validateDetailedDailyLesson({ ...day, materials: [{ type: "完整讲义", content: lecture.replace(knowledgePoints[1], "") }, day.materials[1]] }, 1).join(" "),
+    /讲义未逐项覆盖/
+  );
+});
+
+test("streamed Markdown lessons are split into lecture and practice materials", () => {
+  const markdown = `# 第 1 天完整讲义：异步编程\n\n## 知识点：事件循环\n讲义内容\n\n## 知识点：await\n讲义内容\n\n<!-- CASES_AND_PRACTICE -->\n\n# 第 1 天案例与练习\n\n## 覆盖的知识点\n- 事件循环\n- await`;
+  const day = parseDetailedDailyLessonMarkdown(markdown, {
+    day: 1,
+    title: "异步编程",
+    tasks: ["任务 1", "任务 2", "任务 3"]
+  });
+
+  assert.deepEqual(day.knowledgePoints, ["事件循环", "await"]);
+  assert.equal(day.materials[0].type, "完整讲义");
+  assert.equal(day.materials[1].type, "案例与练习");
+  assert.doesNotMatch(day.materials[0].content, /CASES_AND_PRACTICE/);
 });
 
 test("choice answers can be distributed without changing the correct option", () => {

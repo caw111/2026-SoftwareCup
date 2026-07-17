@@ -1200,6 +1200,29 @@ meter {
   font-size: 17px;
 }
 
+.material-markdown {
+  min-width: 0;
+  color: var(--text);
+}
+
+.material-markdown h1 {
+  font-size: 24px;
+}
+
+.material-markdown h2 {
+  font-size: 19px;
+}
+
+.material-markdown h3 {
+  font-size: 16px;
+}
+
+.material-markdown pre,
+.material-markdown table {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
 .material-section {
   display: grid;
   gap: 6px;
