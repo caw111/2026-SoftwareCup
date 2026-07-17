@@ -33,7 +33,8 @@ test("migration runner only includes canonical sql migration files", () => {
       "003_create_plan_tasks.sql",
       "004_create_quizzes.sql",
       "005_create_legacy_imports.sql",
-      "006_create_learning_evidence.sql"
+      "006_create_learning_evidence.sql",
+      "010_create_app_states.sql"
     ]
   );
 });
@@ -56,7 +57,8 @@ test("数据库迁移包含全部核心业务表", () => {
     "concept_mastery",
     "content_reviews",
     "teacher_reports",
-    "legacy_imports"
+    "legacy_imports",
+    "app_states"
   ]) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
   }

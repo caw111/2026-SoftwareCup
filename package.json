@@ -33,6 +33,12 @@
     "directories": {
       "output": "dist"
     },
+    "extraResources": [
+      {
+        "from": ".cache/python-3.13.14-embed-amd64",
+        "to": "python"
+      }
+    ],
     "files": [
       "backend/**/*",
       "database/**/*",

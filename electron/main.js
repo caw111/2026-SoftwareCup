@@ -21,7 +21,9 @@ if (!gotLock) {
     process.env.BACKEND_PORT = String(backendPort);
     process.env.FRONTEND_PORT = String(frontendPort);
     process.env.JUDGE_AUTO_BOOTSTRAP = "false";
+    process.env.LOCAL_SINGLE_USER = "true";
     process.env.SOFTWARECUP_DATA_DIR = path.join(app.getPath("userData"), "data");
+    process.env.PYTHON_EXECUTABLE = path.join(process.resourcesPath, "python", "python.exe");
 
     try {
       await import("../backend/server.js");

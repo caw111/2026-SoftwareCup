@@ -13,3 +13,5 @@ CLAUDE.md
 .playwright-mcp/
 dist/
 dist-portable/
+.cache/
+docs/submission/.qa/

@@ -16,7 +16,9 @@ const frontendPort = await findFreePort();
 process.env.BACKEND_PORT = String(backendPort);
 process.env.FRONTEND_PORT = String(frontendPort);
 process.env.JUDGE_AUTO_BOOTSTRAP = "false";
-process.env.SOFTWARECUP_DATA_DIR = path.join(userDataDir, "data");
+process.env.LOCAL_SINGLE_USER = "true";
+process.env.SOFTWARECUP_DATA_DIR ||= path.join(userDataDir, "data");
+process.env.PYTHON_EXECUTABLE ||= path.join(appRoot, "..", "runtime", "python", "python.exe");
 
 for (const key of [
   "MYSQL_URL",

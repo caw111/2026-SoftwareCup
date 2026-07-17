@@ -203,10 +203,30 @@ async function loadDiskState() {
       });
       databaseState = await request("/api/workspace");
     }
+    const appState = await request("/api/app-state");
+    applyPersistentAppState(appState?.state);
     applyDatabaseState(databaseState);
     state.databaseReady = true;
+    saveState();
   } catch {
     state.databaseReady = false;
+  }
+}
+
+function applyPersistentAppState(saved) {
+  if (!saved || typeof saved !== "object") return;
+  for (const key of [
+    "tutorHistory",
+    "settings",
+    "behaviorEvents",
+    "exam",
+    "projectTasks",
+    "projectProgress",
+    "projectSubmissions",
+    "mistakeFilters",
+    "lastQuizOptions"
+  ]) {
+    if (Object.hasOwn(saved, key)) state[key] = saved[key];
   }
 }
 
@@ -3116,8 +3136,38 @@ async function request(path, options) {
   return response.json();
 }
 
+let appStateSyncTimer = null;
+
 function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeState()));
+  if (!state.databaseReady) return;
+  clearTimeout(appStateSyncTimer);
+  appStateSyncTimer = setTimeout(syncPersistentAppState, 150);
+}
+
+async function syncPersistentAppState() {
+  appStateSyncTimer = null;
+  const serialized = serializeState();
+  const persistentState = {
+    tutorHistory: serialized.tutorHistory,
+    settings: serialized.settings,
+    behaviorEvents: serialized.behaviorEvents,
+    exam: serialized.exam,
+    projectTasks: serialized.projectTasks,
+    projectProgress: serialized.projectProgress,
+    projectSubmissions: serialized.projectSubmissions,
+    mistakeFilters: serialized.mistakeFilters,
+    lastQuizOptions: serialized.lastQuizOptions
+  };
+  try {
+    await request("/api/app-state", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state: persistentState })
+    });
+  } catch {
+    // localStorage remains a fallback if the local database is temporarily busy.
+  }
 }
 
 function serializeState() {

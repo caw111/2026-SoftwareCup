@@ -1,8 +1,10 @@
 import { spawn } from "node:child_process";
 
+import fs from "node:fs";
+
 import path from "node:path";
 
-import { CONTAINER_CONFIG, JUDGE_AUTO_BOOTSTRAP, JUDGE_BUILD_DIR, JUDGE_IMAGE, JUDGE_TIMEOUT_MS, MODEL_CONFIG } from "./config.js";
+import { CONTAINER_CONFIG, JUDGE_AUTO_BOOTSTRAP, JUDGE_BUILD_DIR, JUDGE_IMAGE, JUDGE_TIMEOUT_MS, MODEL_CONFIG, PROJECT_ROOT, PYTHON_EXECUTABLE } from "./config.js";
 
 import { clean, ensureArray, normalizeCodeLanguage } from "./utils.js";
 
@@ -467,13 +469,31 @@ async function runCodeInLocalJudge(language, code, tests) {
     code,
     tests
   });
-  const { stdout } = await runCommand("python", [
-    path.join(JUDGE_BUILD_DIR, "run_python.py")
-  ], {
+  const normalizedLanguage = normalizeCodeLanguage(language);
+  const runner = normalizedLanguage === "python"
+    ? path.join(JUDGE_BUILD_DIR, "safe_python_runner.py")
+    : path.join(JUDGE_BUILD_DIR, "run_python.py");
+  const args = normalizedLanguage === "python"
+    ? ["-I", "-S", "-B", runner]
+    : [runner];
+  const { stdout } = await runCommand(resolvePythonExecutable(), args, {
     input: payload,
-    timeoutMs: JUDGE_TIMEOUT_MS
+    timeoutMs: JUDGE_TIMEOUT_MS,
+    env: {
+      PYTHONNOUSERSITE: "1",
+      PYTHONDONTWRITEBYTECODE: "1",
+      PYTHONUTF8: "1"
+    }
   });
   return JSON.parse(stdout);
+}
+
+function resolvePythonExecutable() {
+  const candidates = [
+    PYTHON_EXECUTABLE,
+    path.resolve(PROJECT_ROOT, "..", "runtime", "python", "python.exe")
+  ].filter(Boolean);
+  return candidates.find((candidate) => fs.existsSync(candidate)) || "python";
 }
 
 export async function bootstrapJudgeRuntime() {

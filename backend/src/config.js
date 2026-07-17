@@ -50,6 +50,7 @@ function normalizeEnvKey(key) {
     mysql_password: "MYSQL_PASSWORD",
     mysql_database: "MYSQL_DATABASE",
     mysql_connection_limit: "MYSQL_CONNECTION_LIMIT",
+    sqlite_file: "SQLITE_FILE",
     workspace_state_key: "WORKSPACE_STATE_KEY",
     frontend_origins: "FRONTEND_ORIGINS",
     session_cookie_name: "SESSION_COOKIE_NAME",
@@ -61,7 +62,8 @@ function normalizeEnvKey(key) {
     judge_docker_host: "JUDGE_DOCKER_HOST",
     judge_image: "JUDGE_IMAGE",
     judge_timeout_ms: "JUDGE_TIMEOUT_MS",
-    judge_auto_bootstrap: "JUDGE_AUTO_BOOTSTRAP"
+    judge_auto_bootstrap: "JUDGE_AUTO_BOOTSTRAP",
+    python_executable: "PYTHON_EXECUTABLE"
   };
   return map[key.trim().toLowerCase()] || key.trim();
 }
@@ -78,6 +80,10 @@ export const DATA_DIR = process.env.SOFTWARECUP_DATA_DIR
 
 export const WORKSPACE_STATE_FILE = path.join(DATA_DIR, "workspace-state.json");
 
+export const SQLITE_FILE = path.resolve(
+  process.env.SQLITE_FILE || path.join(DATA_DIR, "learning.sqlite3")
+);
+
 export const JUDGE_IMAGE = process.env.JUDGE_IMAGE || "softwarecup-code-judge:latest";
 
 export const JUDGE_BUILD_DIR = path.join(PROJECT_ROOT, "backend", "judge", "python");
@@ -85,6 +91,8 @@ export const JUDGE_BUILD_DIR = path.join(PROJECT_ROOT, "backend", "judge", "pyth
 export const JUDGE_TIMEOUT_MS = Number(process.env.JUDGE_TIMEOUT_MS || 10000);
 
 export const JUDGE_AUTO_BOOTSTRAP = process.env.JUDGE_AUTO_BOOTSTRAP !== "false";
+
+export const PYTHON_EXECUTABLE = process.env.PYTHON_EXECUTABLE || "";
 
 export const CONTAINER_CONFIG = {
   cli: process.env.CONTAINER_CLI || process.env.DOCKER_CLI || "docker",
