@@ -13,8 +13,7 @@ import {
   buildDiagnosticPretest,
   buildGovernanceReport,
   buildKnowledgeGraph,
-  buildRemediationPlan,
-  buildPersonalLearningInsights
+  buildRemediationPlan
 } from "./adaptive-learning.js";
 
 export function normalizeInput(body) {
@@ -44,7 +43,7 @@ export async function generateLearningPlan(input) {
   const localPlan = runLocalAgents(input);
 
   if (!MODEL_CONFIG.apiKey) {
-    return { mode: "local", input, agents, ...localPlan };
+    return { mode: "local", input, agents, ...prepareNewCoursePlan(localPlan) };
   }
 
   try {
@@ -53,7 +52,7 @@ export async function generateLearningPlan(input) {
       mode: "llm-core",
       input,
       agents,
-      ...mergeLearningPlan(localPlan, llmPlan),
+      ...prepareNewCoursePlan(mergeLearningPlan(localPlan, llmPlan)),
       llmGenerated: true
     };
   } catch (error) {
@@ -63,9 +62,128 @@ export async function generateLearningPlan(input) {
       agents,
       warning: "大模型结构化生成失败，已返回本地可用学习方案。",
       detail: error instanceof Error ? error.message : String(error),
-      ...localPlan
+      ...prepareNewCoursePlan(localPlan)
     };
   }
+}
+
+export async function generateDailyLearningMaterials(input, requestedDay, totalDays) {
+  const localPlan = runLocalAgents(input);
+  const suppliedDayNumber = Number(requestedDay?.day || 1);
+  const requestedDayNumber = Math.max(1, Math.min(
+    localPlan.dailyPlan.length,
+    Number.isInteger(suppliedDayNumber) ? suppliedDayNumber : 1
+  ));
+  const fallbackDay = localPlan.dailyPlan[requestedDayNumber - 1];
+  const requestedTasks = ensureArray(requestedDay?.tasks, []);
+  const day = {
+    ...fallbackDay,
+    ...requestedDay,
+    day: requestedDayNumber,
+    title: clean(requestedDay?.title || fallbackDay.title),
+    estimate: clean(requestedDay?.estimate || fallbackDay.estimate),
+    focus: clean(requestedDay?.focus || fallbackDay.focus),
+    tasks: (requestedTasks.length === 3 ? requestedTasks : fallbackDay.tasks).map((task) => clean(task)),
+    checkpoint: clean(requestedDay?.checkpoint || fallbackDay.checkpoint),
+    materials: []
+  };
+  const suppliedTotalDays = Number(totalDays || localPlan.dailyPlan.length);
+  const requiredDays = Math.max(requestedDayNumber, Number.isInteger(suppliedTotalDays) ? suppliedTotalDays : localPlan.dailyPlan.length);
+
+  if (!MODEL_CONFIG.apiKey) {
+    return { ...day, materials: fallbackDay.materials, materialsGeneratedAt: new Date().toISOString() };
+  }
+
+  try {
+    const generatedDay = await callLargeModelForDailyLesson(input, { requiredDays }, day);
+    return { ...generatedDay, materialsGeneratedAt: new Date().toISOString() };
+  } catch {
+    return { ...day, materials: fallbackDay.materials, materialsGeneratedAt: new Date().toISOString() };
+  }
+}
+
+export function prepareNewCoursePlan(plan) {
+  return {
+    ...plan,
+    personalInsights: null,
+    learningReport: null,
+    dailyPlan: ensureArray(plan?.dailyPlan, []).map((day) => ({
+      ...day,
+      knowledgePoints: [],
+      materials: [],
+      materialsGeneratedAt: null
+    }))
+  };
+}
+
+export async function generateLearningReportWithLlm(context) {
+  if (!MODEL_CONFIG.apiKey) {
+    const error = new Error("未配置大模型，无法生成学习报告");
+    error.statusCode = 503;
+    throw error;
+  }
+
+  let previousIssues = [];
+  let lastError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const repairRequest = previousIssues.length
+        ? `\n上一次报告未通过质量检查，本次必须修正：${previousIssues.join("；")}。`
+        : "";
+      const prompt = `请根据下面的学习状态快照，生成一份真正个性化的中文学习报告。
+只输出 GFM Markdown，不要输出 JSON，不要用代码块包裹整份报告。
+
+核心要求：
+1. 只能使用状态快照中的真实证据，不得伪造完成情况、分数、掌握度、错因或学习行为。缺少的数据要明确写“暂无证据”。
+2. 不要生成空洞的通用建议。每个判断都要紧邻对应证据，例如已完成任务、具体错题、诊断得分、掌握度、学习笔记、考试、项目提交或行为时间线。
+3. 报告必须包含：当前学习快照、进度与执行分析、知识掌握与薄弱点、错题与错因证据、学习资料使用情况、诊断/练习/考试/项目表现、学习策略评估、按优先级排列的下一步行动、下一次复测标准、证据局限。
+4. “下一步行动”必须可执行、可检查，说明优先级、对应知识点、具体动作、完成标准和建议复测时机。
+5. 在报告中保留快照里的关键数字，特别是当前进度 ${Number(context?.progress?.percent || 0)}%。
+6. 使用清晰的 Markdown 标题、表格、列表和引用组织证据，报告应能直接供学习者复盘和制定下一阶段计划。${repairRequest}
+
+学习状态快照：
+${JSON.stringify(context)}`;
+      const markdown = await requestChatCompletion([
+        {
+          role: "system",
+          content: "你是证据导向的学习分析专家。你的报告必须严格基于用户的当前学习数据，不伪造证据，不输出空洞模板套话。"
+        },
+        { role: "user", content: prompt }
+      ], { temperature: 0.25, timeoutMs: 0, stream: true });
+      previousIssues = validateLearningReportMarkdown(markdown, context);
+      if (!previousIssues.length) {
+        return {
+          markdown: String(markdown).trim(),
+          generatedAt: new Date().toISOString(),
+          source: "llm",
+          snapshot: {
+            progressPercent: Number(context?.progress?.percent || 0),
+            completedTasks: Number(context?.progress?.done || 0),
+            totalTasks: Number(context?.progress?.total || 0),
+            mistakeCount: ensureArray(context?.mistakes, []).length,
+            behaviorCount: ensureArray(context?.behaviorEvents, []).length
+          }
+        };
+      }
+    } catch (error) {
+      lastError = error;
+      previousIssues = [error instanceof Error ? error.message : String(error)];
+    }
+  }
+  throw lastError || new Error(`学习报告未通过质量检查：${previousIssues.join("；")}`);
+}
+
+export function validateLearningReportMarkdown(markdown, context) {
+  const content = String(markdown || "").trim();
+  const issues = [];
+  if (content.length < 1200) issues.push("报告过短，没有展开学习证据和行动计划");
+  if (!/^#\s+\S/m.test(content)) issues.push("缺少 Markdown 一级标题");
+  if (countMarkdownSections(content) < 6) issues.push("报告章节不完整");
+  if (!content.includes(`${Number(context?.progress?.percent || 0)}%`)) issues.push("未保留当前学习进度");
+  if (!/(证据|数据依据)/.test(content)) issues.push("缺少证据导向分析");
+  if (!/(下一步|行动计划)/.test(content)) issues.push("缺少可执行的下一步计划");
+  if (!/(证据局限|数据局限|暂无证据)/.test(content)) issues.push("缺少证据局限说明");
+  return issues;
 }
 
 export async function streamLearningPlan(res, input) {
@@ -84,7 +202,7 @@ export async function streamLearningPlan(res, input) {
     const localPlan = await runLocalAgentsWithEvents(input, emit);
 
     if (!MODEL_CONFIG.apiKey) {
-      emit({ type: "final", result: { mode: "local", input, agents, ...localPlan } });
+      emit({ type: "final", result: { mode: "local", input, agents, ...prepareNewCoursePlan(localPlan) } });
       res.end();
       return;
     }
@@ -100,7 +218,7 @@ export async function streamLearningPlan(res, input) {
 
     try {
       const llmPlan = await callLargeModelForPlan(input, localPlan);
-      const merged = mergeLearningPlan(localPlan, llmPlan);
+      const merged = prepareNewCoursePlan(mergeLearningPlan(localPlan, llmPlan));
       emit({
         type: "agent-done",
         agentId: "llm-agent",
@@ -124,7 +242,7 @@ export async function streamLearningPlan(res, input) {
           agents,
           warning: "大模型结构化生成失败，已返回本地可用学习方案。",
           detail: error instanceof Error ? error.message : String(error),
-          ...localPlan
+          ...prepareNewCoursePlan(localPlan)
         }
       });
     }
@@ -155,15 +273,6 @@ export function runLocalAgents(input) {
     dailyPlan,
     knowledgeGraph
   });
-  const personalInsights = buildPersonalLearningInsights({
-    input,
-    learnerProfile,
-    dailyPlan,
-    assessment,
-    knowledgeGraph,
-    governanceReport,
-    adaptiveState
-  });
   const resourcePackage = buildResourcePackage(input, learnerProfile, path, resources, assessment, generationLoop);
   const tutorCards = buildTutorCards(input, learnerProfile);
   const profile = {
@@ -184,7 +293,8 @@ export function runLocalAgents(input) {
     generationLoop,
     remediationPlan,
     governanceReport,
-    personalInsights,
+    personalInsights: null,
+    learningReport: null,
     resourcePackage,
     dailyPlan,
     tutorCards
@@ -296,16 +406,6 @@ async function runLocalAgentsWithEvents(input, emit) {
     knowledgeGraph
   }));
 
-  const personalInsights = buildPersonalLearningInsights({
-    input,
-    learnerProfile,
-    dailyPlan,
-    assessment,
-    knowledgeGraph,
-    governanceReport,
-    adaptiveState
-  });
-
   const resourcePackage = await runStage({
     agentId: "package-agent",
     agent: "方案装配智能体",
@@ -336,7 +436,8 @@ async function runLocalAgentsWithEvents(input, emit) {
     },
     remediationPlan,
     governanceReport,
-    personalInsights,
+    personalInsights: null,
+    learningReport: null,
     resourcePackage,
     dailyPlan,
     tutorCards
@@ -1667,13 +1768,14 @@ async function callLargeModelForPlan(input, localPlan) {
     return parseJsonFromModel(content);
   });
 
-  const dailyRequests = mapWithConcurrency(localPlan.dailyPlan, 3, (day) => (
-    captureModelRequest(() => callLargeModelForDailyLesson(input, planSeed, day))
+  const dailyBatches = splitDailyOutlineBatches(localPlan.dailyPlan);
+  const dailyRequests = mapWithConcurrency(dailyBatches, 3, (batch) => (
+    captureModelRequest(() => callLargeModelForDailyOutlineBatch(input, planSeed, batch))
   ));
   const [coreResult, dailyResults] = await Promise.all([coreRequest, dailyRequests]);
   const generatedDays = dailyResults
     .filter((result) => result.ok)
-    .map((result) => result.value);
+    .flatMap((result) => ensureArray(result.value?.dailyPlan, []));
 
   if (!coreResult.ok && !generatedDays.length) {
     const firstBatchError = dailyResults.find((result) => !result.ok)?.error;
@@ -1684,6 +1786,43 @@ async function callLargeModelForPlan(input, localPlan) {
     ...(coreResult.ok ? coreResult.value : {}),
     ...(generatedDays.length ? { dailyPlan: generatedDays } : {})
   };
+}
+
+async function callLargeModelForDailyOutlineBatch(input, planSeed, batch) {
+  const requestedDays = batch.map((day) => day.day);
+  const prompt = `请为学生生成轻量的每日学习路径结构。
+只返回 JSON，不要 Markdown，不要生成讲义、案例、练习正文或 materials。
+格式为：
+{"dailyPlan":[{"day":1,"title":"","estimate":"","focus":"","tasks":["","",""],"checkpoint":""}]}
+
+要求：
+1. 仅生成第 ${requestedDays.join("、")} 天，day 值必须与这些天数一致。
+2. 每天恰好 3 个可执行任务，只规划学习目标和行动，不展开教学正文。
+3. 标题、focus、任务和 checkpoint 必须针对学生的主题、目标和薄弱点，并与前后日期递进衔接。
+
+学生输入：${JSON.stringify(input)}
+总天数：${planSeed.requiredDays}
+当前批次种子：${JSON.stringify(batch.map((day) => ({
+    day: day.day,
+    title: day.title,
+    focus: day.focus,
+    tasks: day.tasks,
+    checkpoint: day.checkpoint
+  })))}`;
+
+  const content = await requestChatCompletion([
+    { role: "system", content: "你是学习路径规划专家，只输出可解析 JSON，不生成课程正文。" },
+    { role: "user", content: prompt }
+  ], { temperature: 0.3, maxTokens: 900 + batch.length * 260 });
+  return parseJsonFromModel(content);
+}
+
+function splitDailyOutlineBatches(dailyPlan) {
+  const batches = [];
+  for (let index = 0; index < dailyPlan.length; index += 7) {
+    batches.push(dailyPlan.slice(index, index + 7));
+  }
+  return batches;
 }
 
 async function callLargeModelForDailyLesson(input, planSeed, day) {

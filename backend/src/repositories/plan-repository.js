@@ -40,7 +40,7 @@ export async function createPlanRecord(userId, plan) {
 
     await upsertConceptMastery(connection, userId, plan.id, plan.data?.adaptiveState?.concepts || []);
     await insertContentReview(connection, userId, plan.id, plan.data?.governanceReport);
-    await insertInsightReport(connection, userId, plan.id, plan.data?.personalInsights);
+    await insertInsightReport(connection, userId, plan.id, plan.data?.learningReport || plan.data?.personalInsights);
 
     await connection.execute(
       `INSERT INTO user_workspaces (user_id, active_plan_id)
@@ -216,7 +216,7 @@ export async function updatePlanContentRecord(userId, planId, payload) {
 
     await upsertConceptMastery(connection, userId, planId, payload.data?.adaptiveState?.concepts || []);
     await insertContentReview(connection, userId, planId, payload.data?.governanceReport);
-    await insertInsightReport(connection, userId, planId, payload.data?.personalInsights);
+    await insertInsightReport(connection, userId, planId, payload.data?.learningReport || payload.data?.personalInsights);
     return true;
   });
 }

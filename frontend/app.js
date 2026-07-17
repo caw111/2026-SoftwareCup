@@ -737,7 +737,7 @@ function renderDailyPlan() {
   const current = currentLearningDay(plan);
   const displayDays = data.dailyPlan.map((day, index) => ({
     ...day,
-    materials: completeMaterialsForDisplay(day, data, index)
+    materials: Array.isArray(day.materials) ? day.materials : []
   }));
   els.dailyPanel.className = "learning-path";
   els.dailyPanel.innerHTML = `
@@ -776,6 +776,9 @@ function renderDailyPlan() {
       (firstUnchecked || details?.querySelector(".task-item input"))?.focus();
     });
   });
+  els.dailyPanel.querySelectorAll("[data-generate-materials]").forEach((button) => {
+    button.addEventListener("click", () => generateDailyMaterialsForDay(button));
+  });
   els.dailyPanel.querySelectorAll(".review-panel [data-view]").forEach((button) => {
     button.addEventListener("click", () => setView(button.dataset.view));
   });
@@ -788,7 +791,8 @@ function renderDayCard(day, progress, index = 0, currentIndex = 0) {
   const tasks = day.tasks || [];
   const materials = day.materials || [];
   const complete = isDayComplete(day, progress);
-  const current = index === currentIndex && !complete;
+  const today = index === currentIndex;
+  const current = today && !complete;
   const locked = index > currentIndex;
   const stateClass = complete ? "completed" : current ? "current" : locked ? "locked" : "pending";
   const actionText = complete ? "复习本节" : current ? "继续学习" : "未解锁";
@@ -816,8 +820,15 @@ function renderDayCard(day, progress, index = 0, currentIndex = 0) {
         <section class="learning-materials" aria-label="本节学习资料">
           <strong>本节学习资料</strong>
           ${materials.length
-            ? `<div class="material-list">${materials.map(renderLearningMaterial).join("")}</div>`
-            : `<p>围绕“${escapeHtml(day.focus || day.title)}”阅读课程讲义，并结合任务完成一个例题和一次自测。</p>`}
+            ? `<div class="material-list">${materials.map(renderLearningMaterial).join("")}</div>
+              ${today ? `<button class="ghost-button regenerate-materials-button" type="button" data-generate-materials="${day.day}">重新生成当日学习资料</button>` : ""}`
+            : today
+              ? `<div class="material-generation-empty">
+                  <p>当日学习路径已就绪。点击后将根据今日全部知识点生成完整 Markdown 讲义、案例、练习和答案解析。</p>
+                  <button class="primary-button" type="button" data-generate-materials="${day.day}">生成当日学习资料</button>
+                  <p class="material-generation-status" aria-live="polite"></p>
+                </div>`
+              : `<p>该学习日解锁后，可生成当日完整学习资料。</p>`}
         </section>
         <p class="checkpoint">${escapeHtml(day.checkpoint || "")}</p>
         ${complete ? `
@@ -836,62 +847,50 @@ function renderDayCard(day, progress, index = 0, currentIndex = 0) {
   `;
 }
 
-function completeMaterialsForDisplay(day, data, index) {
-  const materials = Array.isArray(day.materials) ? day.materials : [];
-  if (materials.length) return materials;
+async function generateDailyMaterialsForDay(button) {
+  const plan = getCurrentPlan();
+  const dayNumber = Number(button?.dataset.generateMaterials || 0);
+  const day = plan?.data?.dailyPlan?.find((item) => Number(item.day) === dayNumber);
+  if (!plan || !day) return;
 
-  const input = data?.input || {};
-  const concepts = data?.knowledgeGraph?.concepts || [];
-  const concept = concepts[index % Math.max(1, concepts.length)] || {};
-  const title = displayConceptTitle(concept.title || day.title, input.topic, index);
-  const standard = concept.standard || `理解 ${title} 的定义、工作原理、使用条件和实际应用。`;
-  const misconceptions = concept.misconceptions || ["只背定义而忽略条件", "机械套用方法而不验证结果"];
-  return [
-    {
-      type: "详细讲义",
-      title: `${title} 完整讲义`,
-      content: standard,
-      sections: [
-        { heading: "一、概念与目标", body: `${title} 是本节需要掌握的核心知识点。学习后应能说明它解决的问题、输入与输出，并能用自己的例子解释概念，而不是只记住名称。` },
-        { heading: "二、核心原理", body: `理解 ${title} 时按“明确问题—核对条件—执行方法—验证结果”建立知识链。每一步都要写出依据和中间结果，这样才能判断错误出在哪一步。` },
-        { heading: "三、适用条件与边界", body: `应用前应确认目标明确、信息充分且方法假设与问题一致。若关键条件缺失或结果无法验证，应先补充信息或更换方法，不能直接沿用结论。` },
-        { heading: "四、误区与纠正", body: `常见误区包括：${misconceptions.join("；")}。纠正时写出选择依据、成立条件和一个反例，再检查结论是否仍然有效。` },
-        { heading: "五、掌握标准", body: `能够解释 ${title}、区分适用与不适用场景、独立完成案例，并能发现错误和提出修正，才算完成本节学习。` }
-      ]
-    },
-    {
-      type: "完整案例",
-      title: `案例：${title} 的实际应用`,
-      content: `案例围绕“${input.goal || input.topic || "当前学习目标"}”演示从问题定义到结果复盘的全过程。`,
-      sections: [
-        { heading: "案例背景", body: `先把学习目标拆成一个可以检查结果的小任务，明确已知信息、限制条件和成功标准。` },
-        { heading: "执行步骤", body: `使用 ${title} 完成任务，并保留每一步的判断依据。`, steps: ["明确输入、输出和评价标准。", "核对本节方法要求的必要条件。", "逐步执行并记录中间结果。", "用正常样例和边界反例验证结果。"] },
-        { heading: "结论与迁移", body: "替换案例中的一个输入或限制条件，重新判断哪些步骤需要改变；能够解释变化原因，才说明可以迁移到新问题。" }
-      ]
-    },
-    {
-      type: "练习与解析",
-      title: `${title} 基础题与变式题`,
-      content: "请先独立完成，再展开参考解析进行订正。",
-      questions: [
-        { prompt: `解释 ${title}，写出两个适用条件和一个反例。`, answer: "答案应包含概念、用途、成立条件和明确指出失效条件的反例。" },
-        { prompt: `如何把 ${title} 用于当前学习目标？请列出步骤和验证方法。`, answer: "先定义可检查的成果，再核对条件、逐步执行，并使用正常样例与边界样例验证。" },
-        { prompt: "关键条件发生变化时应如何调整？", answer: "指出失效条件及影响，补充信息、调整步骤或更换方法，然后重新验证结果。" }
-      ]
-    }
-  ];
-}
+  const originalText = button.textContent;
+  const status = button.closest(".learning-materials")?.querySelector(".material-generation-status");
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  button.textContent = "正在生成完整资料…";
+  if (status) status.textContent = "正在逐项生成讲义、案例、练习和答案解析，请保持页面打开。";
 
-function displayConceptTitle(rawTitle, topic = "当前主题", index = 0) {
-  const cleaned = String(rawTitle || "").replace(/^第\s*\d+\s*天[：:]?\s*/, "").trim();
-  if (cleaned && !/(?:核心)?知识点\s*\d+|^(?:概念补强|练习迁移|项目复盘)$/.test(cleaned)) return cleaned;
-  const names = [
-    "基本术语与问题边界", "核心组成与相互关系", "基本原理与运行机制", "标准工作流程",
-    "适用条件与限制", "典型方法与选择依据", "基础案例分析", "常见错误与排查方法",
-    "结果评价与质量标准", "改进与优化策略", "复杂情境应用", "综合项目设计",
-    "表达、汇报与复盘", "迁移应用与自主提升"
-  ];
-  return `${topic || "当前主题"} 的${names[index % names.length]}`;
+  try {
+    const result = await request("/api/daily-materials", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        input: plan.data.input || {},
+        totalDays: plan.data.dailyPlan.length,
+        day: {
+          day: day.day,
+          title: day.title,
+          estimate: day.estimate,
+          focus: day.focus,
+          tasks: day.tasks,
+          checkpoint: day.checkpoint
+        }
+      })
+    });
+    day.knowledgePoints = result.day?.knowledgePoints || [];
+    day.materials = result.day?.materials || [];
+    day.materialsGeneratedAt = result.day?.materialsGeneratedAt || new Date().toISOString();
+    recordBehavior("daily-materials-generated", { planId: plan.id, detail: `Day ${day.day}` });
+    saveState();
+    await persistPlanContent(plan);
+    renderDailyPlan();
+    renderReport();
+  } catch (error) {
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+    button.textContent = originalText;
+    if (status) status.textContent = `生成失败：${error.message}`;
+  }
 }
 
 function renderLearningMaterial(material, index) {
@@ -1457,17 +1456,44 @@ function renderReport() {
     els.reportMode.textContent = "等待方案";
     return;
   }
-  const reportText = buildLearningReport(plan);
+  const report = plan.data?.learningReport;
   const mistakes = buildMistakeBook(plan);
-  els.reportMode.textContent = `${mistakes.length} 条错题 · ${progressSummaryFor(plan).percent}% 进度`;
+  const progress = progressSummaryFor(plan);
+  els.reportMode.textContent = `${mistakes.length} 条错题 · ${progress.percent}% 进度`;
   els.reportPanel.className = "remediation-board";
+
+  if (!report?.markdown) {
+    els.reportPanel.innerHTML = `
+      <section class="remediation-head">
+        <div>
+          <strong>${escapeHtml(plan.title)} 学习报告</strong>
+          <p>报告尚未生成。生成时会读取当前任务进度、诊断、测验、错题、掌握度、学习资料、笔记、考试和项目数据。</p>
+        </div>
+      </section>
+      <section class="report-generation-empty">
+        <dl class="overview-stats report-snapshot-stats">
+          <div><dt>当前进度</dt><dd>${progress.percent}%</dd></div>
+          <div><dt>已完成任务</dt><dd>${progress.done}/${progress.total}</dd></div>
+          <div><dt>当前错题</dt><dd>${mistakes.length}</dd></div>
+        </dl>
+        <p>点击后将使用 LLM 根据这一刻的学习证据生成 Markdown 报告，不使用通用报告模板。</p>
+        <button class="primary-button" type="button" data-generate-report>使用 LLM 生成学习报告</button>
+        <p class="report-generation-status" aria-live="polite"></p>
+      </section>
+    `;
+    els.reportPanel.querySelector("[data-generate-report]")?.addEventListener("click", (event) => generateLearningReport(event.currentTarget));
+    return;
+  }
+
+  const reportText = report.markdown;
   els.reportPanel.innerHTML = `
     <section class="remediation-head">
       <div>
         <strong>${escapeHtml(plan.title)} 学习报告</strong>
-        <p>报告会随诊断、练习、考试、项目提交和行为记录实时更新。</p>
+        <p>由 LLM 根据 ${escapeHtml(formatDate(report.generatedAt))} 的学习状态生成。完成新任务或测评后，可重新生成以纳入最新证据。</p>
       </div>
       <div class="heading-actions">
+        <button class="primary-button" type="button" data-generate-report>使用 LLM 重新生成</button>
         <button class="ghost-button" type="button" data-export-report="copy">复制 Markdown</button>
         <button class="ghost-button" type="button" data-export-report="md">下载 MD</button>
         <button class="ghost-button" type="button" data-export-report="json">下载 JSON</button>
@@ -1475,12 +1501,47 @@ function renderReport() {
         <button class="ghost-button" type="button" data-export-report="print">打印 PDF</button>
       </div>
     </section>
+    <p class="report-generation-status" aria-live="polite"></p>
     <article id="reportText" class="report-text markdown-body" aria-label="Markdown 格式学习报告"></article>
   `;
   els.reportPanel.querySelector("#reportText").innerHTML = renderMarkdown(reportText);
+  els.reportPanel.querySelector("[data-generate-report]")?.addEventListener("click", (event) => generateLearningReport(event.currentTarget));
   els.reportPanel.querySelectorAll("[data-export-report]").forEach((button) => {
     button.addEventListener("click", () => exportLearningReport(button.dataset.exportReport, plan, reportText));
   });
+}
+
+async function generateLearningReport(button) {
+  const plan = getCurrentPlan();
+  if (!plan || !button) return;
+  const originalText = button.textContent;
+  const status = els.reportPanel.querySelector(".report-generation-status");
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  button.textContent = "正在分析当前学习状态…";
+  if (status) status.textContent = "正在汇总进度、掌握度、错题、笔记、考试和项目证据，请保持页面打开。";
+
+  try {
+    const result = await request("/api/learning-report", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ context: buildLearningReportContext(plan) })
+    });
+    plan.data.learningReport = result.report;
+    plan.data.personalInsights = null;
+    recordBehavior("learning-report-generated", {
+      planId: plan.id,
+      detail: `${progressSummaryFor(plan).percent}% 进度快照`
+    });
+    saveState();
+    await persistPlanContent(plan);
+    renderReport();
+  } catch (error) {
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+    button.textContent = originalText;
+    if (status) status.textContent = `生成失败：${error.message}`;
+  }
 }
 
 function renderExam() {
@@ -2264,46 +2325,110 @@ function stripQuestionContext(question) {
     .trim();
 }
 
-function buildLearningReport(plan) {
+function buildLearningReportContext(plan) {
   const progress = progressSummaryFor(plan);
   const mistakes = buildMistakeBook(plan);
-  const insights = plan.data?.personalInsights || buildPersonalFallbackInsights(plan);
   const mastery = plan.data?.adaptiveState?.concepts || plan.data?.knowledgeGraph?.concepts || [];
   const latestExam = state.exam?.planId === plan.id ? state.exam : null;
-  const project = state.projectSubmissions?.[plan.id];
-  return [
-    `# ${plan.title}`,
-    "",
-    `生成时间：${formatDate(plan.createdAt)}`,
-    `学习目标：${plan.data?.input?.goal || ""}`,
-    `当前进度：${progress.done}/${progress.total} 项，${progress.percent}%`,
-    "",
-    "## 个人学习洞察",
-    insights.exportSummary || "等待更多学习证据。",
-    ...(insights.nextActions || []).map((item) => `- ${item}`),
-    "",
-    "## 掌握度概览",
-    ...mastery.slice(0, 8).map((item) => `- ${item.title || item.conceptTitle || item.dimension}：${Number(item.masteryScore || item.score || 0)}，${item.nextAction || ""}`),
-    "",
-    "## 错题与错因",
-    ...(mistakes.length ? mistakes.slice(0, 10).map((item) => `- [${typeLabel(item.type)}] ${item.dimension}：${item.reasonTag}，得分 ${Number(item.score || 0)}/${Number(item.maxScore || 0)}`) : ["- 暂无错题。"]),
-    "",
-    "## 补救路径",
-    ...((plan.data?.remediationPlan?.sequence || []).map((item) => `- ${item.step}：${item.action}`)),
-    "",
-    "## 考试记录",
-    latestExam?.status === "submitted"
-      ? `- 最近考试：${examScoreText(latestExam)}`
-      : "- 暂无已提交考试。",
-    "",
-    "## 项目任务",
-    project
-      ? `- 已提交：${formatDate(project.at)}，${project.content.slice(0, 120)}`
-      : "- 暂无项目提交。",
-    "",
-    "## 行为记录摘要",
-    ...((state.behaviorEvents || []).filter((event) => event.planId === plan.id).slice(-8).map((event) => `- ${formatDate(event.at)} ${behaviorLabel(event.type)} ${event.detail || ""}`))
-  ].join("\n");
+  const examResults = Object.values(latestExam?.results || {});
+  const projectSubmission = state.projectSubmissions?.[plan.id] || null;
+  const notes = String(plan.notes || "");
+  const dailyPlan = plan.data?.dailyPlan || [];
+  return {
+    snapshotAt: new Date().toISOString(),
+    course: {
+      id: plan.id,
+      title: plan.title,
+      createdAt: plan.createdAt,
+      input: plan.data?.input || {},
+      learnerProfile: plan.data?.learnerProfile || plan.data?.profile || null
+    },
+    progress: {
+      ...progress,
+      currentDay: currentLearningDay(plan).day?.day || null,
+      days: dailyPlan.map((day) => ({
+        day: day.day,
+        title: day.title,
+        focus: day.focus,
+        checkpoint: day.checkpoint,
+        materialsGeneratedAt: day.materialsGeneratedAt || null,
+        knowledgePoints: day.knowledgePoints || [],
+        materials: (day.materials || []).map((material) => ({
+          type: material.type,
+          title: material.title,
+          contentCharacters: String(material.content || "").length
+        })),
+        tasks: (day.tasks || []).map((task, taskIndex) => ({
+          task,
+          completed: Boolean(plan.progress?.[progressId(day.day, taskIndex)])
+        }))
+      }))
+    },
+    diagnostic: plan.data?.diagnosticResult || null,
+    mastery: mastery.map((item) => ({
+      conceptId: item.conceptId || item.id,
+      concept: item.title || item.conceptTitle || item.dimension,
+      dimension: item.dimension,
+      masteryScore: Number(item.masteryScore ?? item.score ?? 0),
+      confidence: item.confidence,
+      evidence: item.evidence,
+      source: item.source,
+      nextAction: item.nextAction
+    })),
+    masteryEvidence: (plan.masteryEvidence || []).slice(-30),
+    masteryHistory: (plan.masteryHistory || []).slice(-30),
+    mistakes: mistakes.slice(0, 30).map((item) => ({
+      source: item.source,
+      type: item.type,
+      dimension: item.dimension || item.conceptTitle,
+      question: stripQuestionContext(item.question).slice(0, 1500),
+      score: Number(item.score || 0),
+      maxScore: Number(item.maxScore || 0),
+      reasonTag: item.reasonTag,
+      feedback: item.feedback || item.explanation,
+      at: item.at
+    })),
+    quizHistory: (plan.quizHistory || []).slice(-30).map((item) => ({
+      source: item.source,
+      type: item.type,
+      dimension: item.dimension,
+      question: stripQuestionContext(item.question || "").slice(0, 1500),
+      correct: item.correct,
+      score: item.score,
+      maxScore: item.maxScore,
+      feedback: item.feedback || item.result?.feedback,
+      at: item.at
+    })),
+    remediationPlan: plan.data?.remediationPlan || null,
+    notes: notes.slice(0, 20000),
+    notesTruncated: notes.length > 20000,
+    exam: latestExam ? {
+      status: latestExam.status,
+      score: examResults.reduce((sum, item) => sum + Number(item.score || 0), 0),
+      maxScore: examResults.reduce((sum, item) => sum + Number(item.maxScore || 0), 0),
+      submittedAt: latestExam.submittedAt || null,
+      results: (latestExam.quiz || []).map((question) => ({
+        type: question.type,
+        dimension: question.dimension,
+        question: String(question.question || "").slice(0, 1500),
+        result: latestExam.results?.[question.id] || null
+      }))
+    } : null,
+    project: {
+      tasks: state.projectTasks?.[plan.id] || null,
+      progress: state.projectProgress?.[plan.id] || null,
+      submission: projectSubmission ? {
+        at: projectSubmission.at,
+        content: String(projectSubmission.content || "").slice(0, 20000),
+        truncated: String(projectSubmission.content || "").length > 20000
+      } : null
+    },
+    behaviorEvents: (state.behaviorEvents || [])
+      .filter((event) => event.planId === plan.id)
+      .slice(-30)
+      .map((event) => ({ type: event.type, label: behaviorLabel(event.type), at: event.at, detail: event.detail })),
+    settings: withDefaultSettings(state.settings || {})
+  };
 }
 
 function exportLearningReport(format, plan, reportText) {
@@ -2661,14 +2786,6 @@ async function persistPlanContent(plan) {
   }
 }
 
-function buildPersonalFallbackInsights(plan) {
-  const weak = plan.data?.adaptiveState?.weakestConcepts || plan.data?.knowledgeGraph?.concepts?.slice(0, 3) || [];
-  return {
-    exportSummary: weak.length ? `建议优先补强 ${weak.map((item) => item.title || item.conceptTitle).join("、")}。` : "等待更多学习证据。",
-    nextActions: ["完成一次诊断前测。", "按默认设置生成练习。", "把错题写入复盘记录。"]
-  };
-}
-
 function examScoreText(exam) {
   const results = Object.values(exam?.results || {});
   const score = results.reduce((sum, item) => sum + Number(item.score || 0), 0);
@@ -2686,6 +2803,8 @@ function behaviorLabel(type) {
     "exam-submitted": "提交考试",
     "project-step": "项目步骤",
     "project-submitted": "提交项目",
+    "daily-materials-generated": "生成当日学习资料",
+    "learning-report-generated": "生成学习报告",
     "report-exported": "导出报告",
     "settings-updated": "更新设置"
   }[type] || type;

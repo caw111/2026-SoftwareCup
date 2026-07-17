@@ -7,9 +7,11 @@ import {
   normalizeDailyPlan,
   normalizeInput,
   parseDetailedDailyLessonMarkdown,
+  prepareNewCoursePlan,
   redistributeChoiceAnswer,
   runLocalAgents,
-  validateDetailedDailyLesson
+  validateDetailedDailyLesson,
+  validateLearningReportMarkdown
 } from "../src/learning.js";
 
 test("durationToDays converts the configured learning period to calendar days", () => {
@@ -39,6 +41,53 @@ test("generic courses use semantic concept names instead of numbered placeholder
 
   assert.doesNotMatch(visibleText, /知识点\s*\d+/);
   assert.match(plan.dailyPlan[0].title, /基本术语与问题边界/);
+});
+
+test("new course payloads omit daily materials without mutating the local fallback", () => {
+  const localPlan = runLocalAgents(normalizeInput({ topic: "项目管理", duration: "3 天" }));
+  const coursePlan = prepareNewCoursePlan(localPlan);
+
+  assert.ok(localPlan.dailyPlan.every((day) => day.materials.length === 3));
+  assert.ok(coursePlan.dailyPlan.every((day) => day.materials.length === 0));
+  assert.ok(coursePlan.dailyPlan.every((day) => day.materialsGeneratedAt === null));
+  assert.equal(coursePlan.personalInsights, null);
+  assert.equal(coursePlan.learningReport, null);
+});
+
+test("learning reports must be detailed, evidence-oriented, and preserve current progress", () => {
+  const context = { progress: { percent: 42, done: 5, total: 12 } };
+  const detail = "本节判断直接来自任务完成记录、错题和测验等证据，并说明对应影响与检查方法。".repeat(16);
+  const report = `# 当前课程学习报告
+
+## 当前学习快照
+当前学习进度为 42%，以下结论均基于已有证据。${detail}
+
+## 进度与执行分析
+${detail}
+
+## 知识掌握与薄弱点
+${detail}
+
+## 错题与错因证据
+${detail}
+
+## 学习资料使用情况
+${detail}
+
+## 学习策略评估
+${detail}
+
+## 下一步行动计划
+优先完成薄弱知识点复习，并以重新测验达到既定标准作为验收条件。${detail}
+
+## 证据局限
+当前没有提供的维度标记为暂无证据，不据此推断学习表现。${detail}`;
+
+  assert.deepEqual(validateLearningReportMarkdown(report, context), []);
+  assert.match(
+    validateLearningReportMarkdown(report.replace("42%", "41%"), context).join(" "),
+    /未保留当前学习进度/
+  );
 });
 
 test("model-generated daily materials are preserved during plan normalization", () => {

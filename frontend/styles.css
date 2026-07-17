@@ -1176,6 +1176,54 @@ meter {
   gap: 14px;
 }
 
+.material-generation-empty {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  padding: 18px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  background: var(--paper);
+}
+
+.material-generation-empty p,
+.material-generation-status {
+  margin: 0;
+}
+
+.material-generation-status {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.regenerate-materials-button {
+  justify-self: start;
+}
+
+.report-generation-empty {
+  display: grid;
+  justify-items: start;
+  gap: 16px;
+  padding: 22px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  background: var(--paper);
+}
+
+.report-generation-empty > p,
+.report-generation-status {
+  margin: 0;
+}
+
+.report-generation-status {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.report-snapshot-stats {
+  width: 100%;
+}
+
 .material-card {
   display: grid;
   gap: 10px;

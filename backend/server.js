@@ -11,6 +11,8 @@ import { setCors, sendJson, readJson } from "./src/http.js";
 import { friendlyJudgeError, getJudgeStatus, bootstrapJudgeRuntime } from "./src/judge.js";
 import {
   generateAdaptiveQuiz,
+  generateDailyLearningMaterials,
+  generateLearningReportWithLlm,
   generateLearningPlan,
   normalizeInput,
   runLocalAgents,
@@ -209,6 +211,31 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/generate-stream") {
       const input = normalizeInput(await readJson(req));
       await streamLearningPlan(res, input);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/daily-materials") {
+      const body = await readJson(req);
+      const input = normalizeInput(body.input || {});
+      if (!body.day || typeof body.day !== "object") {
+        const error = new Error("缺少当日学习路径数据");
+        error.statusCode = 400;
+        throw error;
+      }
+      const day = await generateDailyLearningMaterials(input, body.day, body.totalDays);
+      sendJson(res, 200, { day });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/learning-report") {
+      const body = await readJson(req);
+      if (!body.context || typeof body.context !== "object") {
+        const error = new Error("缺少当前学习状态快照");
+        error.statusCode = 400;
+        throw error;
+      }
+      const report = await generateLearningReportWithLlm(body.context);
+      sendJson(res, 200, { report });
       return;
     }
 
