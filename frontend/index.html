@@ -192,7 +192,7 @@
                       <option selected>完整学习方案</option>
                       <option>偏重讲义和例题</option>
                       <option>偏重练习和测评</option>
-                      <option>偏重项目任务</option>
+                      <option>偏重综合应用</option>
                     </select>
                   </label>
                   <label class="wide-field">
@@ -261,6 +261,7 @@
               <div class="course-nav-section">
                 <span class="course-nav-label">核心学习</span>
                 <button class="nav-link active" type="button" data-view="daily">学习路径</button>
+                <button class="nav-link" type="button" data-view="calendar">学习日历</button>
                 <button class="nav-link" type="button" data-view="path-revisions">路径变更</button>
                 <button class="nav-link" type="button" data-view="notes">我的笔记</button>
               </div>
@@ -275,7 +276,6 @@
                 <button class="nav-link" type="button" data-view="practice">随堂测验</button>
                 <button class="nav-link" type="button" data-view="mistakes">错题复习</button>
                 <button class="nav-link" type="button" data-view="exam">综合考试</button>
-                <button class="nav-link" type="button" data-view="project">项目任务</button>
               </div>
               <div class="course-nav-section">
                 <span class="course-nav-label">成果与系统</span>
@@ -346,6 +346,19 @@
               </div>
             </section>
 
+            <section class="course-mode" data-mode="calendar">
+              <div class="section-heading">
+                <div>
+                  <h2>学习日历</h2>
+                  <p>按真实学习事件统计自然日连续学习、年度热力、月历明细和徽章进度。</p>
+                </div>
+                <span id="calendarMode">等待学习事件</span>
+              </div>
+              <div id="calendarPanel" class="empty-state">
+                <p>完成任务、提交测验或诊断后，这里会出现学习日历和热力图。</p>
+              </div>
+            </section>
+
             <section class="course-mode" data-mode="diagnostic">
               <div class="section-heading">
                 <div>
@@ -362,8 +375,8 @@
             <section class="course-mode" data-mode="knowledge">
               <div class="section-heading">
                 <div>
-                  <h2>掌握度</h2>
-                  <p>知识掌握由自评、打卡、课前测和测评共同计算。</p>
+                  <h2>交互式知识图谱</h2>
+                  <p>围绕知识点、先修关系、掌握证据和下一步动作探索当前课程。</p>
                 </div>
                 <span id="masteryMode">等待学习数据</span>
               </div>
@@ -426,24 +439,11 @@
               </div>
             </section>
 
-            <section class="course-mode" data-mode="project">
-              <div class="section-heading">
-                <div>
-                  <h2>项目任务</h2>
-                  <p>把知识图谱转成可提交的小项目、验收标准和交付物。</p>
-                </div>
-                <span id="projectMode">等待课程</span>
-              </div>
-              <div id="projectPanel" class="empty-state">
-                <p>生成课程后会出现项目化练习。</p>
-              </div>
-            </section>
-
             <section class="course-mode" data-mode="report">
               <div class="section-heading">
                 <div>
                   <h2>学习报告</h2>
-                  <p>汇总学习画像、掌握度、错题、复习路径、考试和项目记录。</p>
+                  <p>汇总学习画像、掌握度、错题、复习路径、考试和综合应用记录。</p>
                 </div>
                 <span id="reportMode">等待学习数据</span>
               </div>

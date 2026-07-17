@@ -15,11 +15,11 @@ test("课程侧栏开放全部成熟学习功能并按信息架构分组", () =>
     "notes",
     "diagnostic",
     "knowledge",
+    "calendar",
     "remediation",
     "practice",
     "mistakes",
     "exam",
-    "project",
     "report",
     "governance",
     "agents",
@@ -33,6 +33,7 @@ test("课程侧栏开放全部成熟学习功能并按信息架构分组", () =>
   views.forEach((view) => {
     assert.equal((nav.match(new RegExp(`data-view="${view}"`, "g")) || []).length, 1, `${view} 应有且只有一个侧栏入口`);
   });
+  assert.doesNotMatch(nav, /data-view="project"|data-view="mindmap"|项目任务|思维导图/);
 });
 
 test("移动端课程导航复用同一组入口而不是复制子导航", () => {

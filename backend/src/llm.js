@@ -176,6 +176,7 @@ if ($env:LLM_STREAM -eq 'true') {
 `;
     const child = spawn("powershell.exe", ["-NoProfile", "-Command", script], {
       stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
       env: {
         ...process.env,
         LLM_API_KEY: MODEL_CONFIG.apiKey,

@@ -15,6 +15,7 @@ let deleteConfirmationResolver = null;
 let progressResetConfirmationResolver = null;
 const COURSE_MODES = [
   "daily",
+  "calendar",
   "path-revisions",
   "notes",
   "diagnostic",
@@ -23,7 +24,6 @@ const COURSE_MODES = [
   "practice",
   "mistakes",
   "exam",
-  "project",
   "report",
   "coach",
   "settings",
@@ -120,6 +120,8 @@ const els = {
   overviewMastery: document.querySelector("#overviewMastery"),
   overviewStreak: document.querySelector("#overviewStreak"),
   currentAdvice: document.querySelector("#currentAdvice"),
+  calendarPanel: document.querySelector("#calendarPanel"),
+  calendarMode: document.querySelector("#calendarMode"),
   knowledgePanel: document.querySelector("#knowledgePanel"),
   masteryMode: document.querySelector("#masteryMode"),
   diagnosticPanel: document.querySelector("#diagnosticPanel"),
@@ -136,8 +138,6 @@ const els = {
   reportMode: document.querySelector("#reportMode"),
   examPanel: document.querySelector("#examPanel"),
   examMode: document.querySelector("#examMode"),
-  projectPanel: document.querySelector("#projectPanel"),
-  projectMode: document.querySelector("#projectMode"),
   settingsPanel: document.querySelector("#settingsPanel"),
   settingsMode: document.querySelector("#settingsMode"),
   tutorMode: document.querySelector("#tutorMode"),
@@ -486,6 +486,20 @@ async function loadKnowledgeSources() {
   }
 }
 
+async function refreshLearningActivityForCurrentPlan() {
+  const plan = getCurrentPlan();
+  if (!state.databaseReady || !plan) {
+    renderLearningCalendar();
+    return;
+  }
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const data = await request(`/api/activity/summary?planId=${encodeURIComponent(plan.id)}&tz=${encodeURIComponent(timeZone)}`);
+  state.activitySummary = data;
+  saveState();
+  renderCourseChrome();
+  renderLearningCalendar();
+}
+
 function renderSourceLibrary() {
   const sources = state.knowledgeSources || [];
   const selected = new Set(state.selectedSourceIds || []);
@@ -826,6 +840,7 @@ async function loadDiskState() {
     state.databaseReady = true;
     await loadKnowledgeSources();
     await refreshPathRevisionsForCurrentPlan();
+    await refreshLearningActivityForCurrentPlan();
   } catch {
     state.databaseReady = false;
     renderSourceLibrary();
@@ -879,10 +894,11 @@ function setView(view, options = {}) {
   document.body.dataset.courseMode = isCourseMode ? activeCourseMode : "";
   if (!options.replace) location.hash = activeView;
   renderCourseChrome();
+  if (activeView === "calendar") refreshLearningActivityForCurrentPlan().catch(() => {});
 }
 
 function courseModeGroup(view) {
-  if (view === "daily" || view === "path-revisions") return "path";
+  if (view === "daily" || view === "calendar" || view === "path-revisions") return "path";
   if (view === "knowledge" || view === "remediation") return "mastery";
   if (["practice", "mistakes", "exam", "diagnostic"].includes(view)) return "assessment";
   if (view === "report") return "report";
@@ -1007,6 +1023,7 @@ function renderAll() {
   renderCourseChrome();
   renderSavedPlans();
   renderDailyPlan();
+  renderLearningCalendar();
   renderPathRevisions();
   renderNotes();
   renderDiagnostic();
@@ -1015,7 +1032,6 @@ function renderAll() {
   renderPractice();
   renderMistakes();
   renderExam();
-  renderProject();
   renderReport();
   renderSettings();
   renderGovernance();
@@ -1049,7 +1065,7 @@ function renderCourseChrome() {
   const summary = progressSummaryFor(plan);
   const current = currentLearningDay(plan);
   const mastery = averageMastery(plan);
-  const streak = learningStreak(plan);
+  const streak = activityStreakFor(plan);
   const description = plan.data?.learnerProfile?.summary
     || plan.data?.input?.goal
     || "这门课程会把章节、练习、测验和帮助问答串成一条学习路径。";
@@ -1127,6 +1143,12 @@ function learningStreak(plan) {
     streak += 1;
   }
   return streak;
+}
+
+function activityStreakFor(plan) {
+  const summary = state.activitySummary;
+  if (summary?.planId === plan?.id && summary?.streak) return Number(summary.streak.current || 0);
+  return learningStreak(plan);
 }
 
 function buildCurrentAdvice(plan, current, summary) {
@@ -1499,6 +1521,148 @@ function renderNotes() {
   els.notesPanel.querySelector("[data-edit-notes]")?.addEventListener("click", openNotesEditor);
 }
 
+function renderLearningCalendar() {
+  if (!els.calendarPanel || !els.calendarMode) return;
+  const plan = getCurrentPlan();
+  if (!plan) {
+    els.calendarMode.textContent = "等待课程";
+    els.calendarPanel.className = "empty-state";
+    els.calendarPanel.innerHTML = "<p>先生成或选择一门课程，再查看学习日历。</p>";
+    return;
+  }
+  const summary = state.activitySummary?.planId === plan.id ? state.activitySummary : null;
+  if (!summary) {
+    els.calendarMode.textContent = state.databaseReady ? "正在读取学习事件" : "需要数据库事件";
+    els.calendarPanel.className = "calendar-board";
+    els.calendarPanel.innerHTML = `
+      <section class="result-card full">
+        <h3>真实连续天数</h3>
+        <p class="hint-text">${state.databaseReady
+          ? "学习事件加载中。完成任务、提交测评或诊断后会按自然日统计。"
+          : "当前处于本地演示模式，无法从服务端事件计算真实连续天数。连接 MySQL 后会启用真实统计。"}</p>
+      </section>
+    `;
+    return;
+  }
+
+  const streak = summary.streak || {};
+  const today = new Date().toISOString().slice(0, 10);
+  els.calendarMode.textContent = `真实连续 ${Number(streak.current || 0)} 天 · 最长 ${Number(streak.longest || 0)} 天`;
+  els.calendarPanel.className = "calendar-board";
+  els.calendarPanel.innerHTML = `
+    <section class="calendar-summary">
+      <article class="result-card calendar-stat">
+        <span class="mini-label">真实连续学习</span>
+        <strong>${Number(streak.current || 0)} 天</strong>
+        <p>${escapeHtml(streak.todayActive ? "今天已有有效学习事件。" : streak.countedThrough ? "今天尚未形成有效学习事件。" : "最近没有连续学习记录。")}</p>
+      </article>
+      <article class="result-card calendar-stat">
+        <span class="mini-label">最长连续</span>
+        <strong>${Number(streak.longest || 0)} 天</strong>
+        <p>最后活跃：${escapeHtml(streak.lastActiveDate || "--")}</p>
+      </article>
+      <article class="result-card calendar-stat">
+        <span class="mini-label">今日强度</span>
+        <strong>${dailyScore(summary, today)}</strong>
+        <p>强度按有效学习事件加权，单日封顶。</p>
+      </article>
+    </section>
+    <section class="result-card full">
+      <div class="calendar-head">
+        <div>
+          <span class="mini-label">近一年学习热力</span>
+          <h3>学习热力图</h3>
+        </div>
+        <span class="status-pill">${escapeHtml(summary.timeZone || "UTC")}</span>
+      </div>
+      ${renderHeatmap(summary.heatmap || [])}
+    </section>
+    <section class="calendar-two-column">
+      <article class="result-card">
+        <h3>徽章进度</h3>
+        <div class="badge-grid">
+          ${(summary.badges || []).map(renderBadge).join("") || "<p class=\"hint-text\">暂无徽章规则。</p>"}
+        </div>
+      </article>
+      <article class="result-card">
+        <h3>最近学习事件</h3>
+        <div class="activity-list">
+          ${recentActivityEvents(summary).map((event) => `
+            <div>
+              <strong>${escapeHtml(eventTypeLabel(event.type))}</strong>
+              <span>${escapeHtml(formatDate(event.occurredAt))}</span>
+              <small>${escapeHtml(activityEventDetail(event))}</small>
+            </div>
+          `).join("") || "<p class=\"hint-text\">还没有服务端学习事件。</p>"}
+        </div>
+      </article>
+    </section>
+  `;
+}
+
+function renderHeatmap(heatmap) {
+  const byDate = new Map(heatmap.map((item) => [item.date, item]));
+  const days = [];
+  const cursor = new Date();
+  cursor.setHours(0, 0, 0, 0);
+  cursor.setDate(cursor.getDate() - 364);
+  for (let index = 0; index < 365; index += 1) {
+    const key = cursor.toISOString().slice(0, 10);
+    const item = byDate.get(key) || { date: key, level: 0, score: 0, eventCount: 0 };
+    days.push(`<span class="heat-cell level-${Number(item.level || 0)}" title="${escapeHtml(item.date)} · 强度 ${Number(item.score || 0)} · ${Number(item.eventCount || 0)} 个事件"></span>`);
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return `<div class="activity-heatmap" aria-label="近一年学习热力图">${days.join("")}</div>`;
+}
+
+function renderBadge(badge) {
+  return `
+    <div class="badge-card ${badge.unlocked ? "unlocked" : ""}">
+      <strong>${escapeHtml(badge.title)}</strong>
+      <p>${escapeHtml(badge.description)}</p>
+      <meter min="0" max="100" value="${Number(badge.progress || 0)}"></meter>
+      <small>${Number(badge.current || 0)} / ${Number(badge.target || 0)}${badge.unlockedAt ? ` · ${escapeHtml(badge.unlockedAt.slice(0, 10))}` : ""}</small>
+    </div>
+  `;
+}
+
+function dailyScore(summary, dateKey) {
+  const item = (summary.heatmap || []).find((day) => day.date === dateKey);
+  return item ? Number(item.score || 0) : 0;
+}
+
+function recentActivityEvents(summary) {
+  return (summary.calendar || [])
+    .flatMap((day) => (day.events || []).map((event) => ({ ...event, date: day.date })))
+    .sort((left, right) => new Date(right.occurredAt) - new Date(left.occurredAt))
+    .slice(0, 12);
+}
+
+function activityEventDetail(event) {
+  const payload = event.payload || {};
+  if (payload.taskKey) return payload.taskKey;
+  if (payload.score !== undefined && payload.maxScore !== undefined) return `${payload.score}/${payload.maxScore}`;
+  if (payload.title) return payload.title;
+  if (payload.mode) return tutorModeLabel(payload.mode);
+  return event.effective ? "计入真实连续学习" : "学习辅助事件";
+}
+
+function eventTypeLabel(type) {
+  return {
+    task_completed: "完成任务",
+    task_reopened: "重新打开任务",
+    quiz_attempt_evaluated: "提交测评",
+    diagnostic_completed: "完成诊断",
+    exam_submitted: "提交考试",
+    review_completed: "完成复习",
+    tutor_question_asked: "导师问答",
+    source_question_asked: "资料问答",
+    daily_materials_generated: "生成当日资料",
+    learning_report_generated: "生成学习报告",
+    knowledge_graph_refined: "LLM 增强图谱"
+  }[type] || behaviorLabel(type);
+}
+
 function openNotesEditor() {
   setView("daily");
   requestAnimationFrame(() => {
@@ -1586,6 +1750,7 @@ async function generateDailyMaterialsForDay(button) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        planId: plan.id,
         input: plan.data.input || {},
         totalDays: plan.data.dailyPlan.length,
         day: {
@@ -1604,6 +1769,7 @@ async function generateDailyMaterialsForDay(button) {
     recordBehavior("daily-materials-generated", { planId: plan.id, detail: `Day ${day.day}` });
     saveState();
     await persistPlanContent(plan);
+    await refreshLearningActivityForCurrentPlan();
     renderDailyPlan();
     renderReport();
   } catch (error) {
@@ -1671,7 +1837,7 @@ function updateProgress(event) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ completed })
       }
-    ).catch(reportPersistenceError);
+    ).then(() => refreshLearningActivityForCurrentPlan()).catch(reportPersistenceError);
   }
   renderDailyPlan();
   renderCourseChrome();
@@ -2133,6 +2299,7 @@ async function evaluateDiagnostic() {
           maxScore: result.maxScore
         }
       });
+      await refreshLearningActivityForCurrentPlan();
     }
     renderDiagnostic();
     renderKnowledge();
@@ -2202,14 +2369,15 @@ function renderKnowledge() {
 
   const mastery = computeMastery(plan);
   const summary = progressSummaryFor(plan);
-  const concepts = plan.data?.adaptiveState?.concepts || plan.data?.knowledgeGraph?.concepts || [];
+  const graph = currentKnowledgeGraph(plan);
+  const concepts = graph.nodes || [];
   const courseSources = plan.data?.input?.knowledgeSources || [];
   const sourceCitations = plan.data?.input?.knowledgeGrounding?.citations
     || plan.data?.resourcePackage?.sourceCitations
     || [];
   const ragTrace = plan.data?.rag || {};
   const diagnosticText = plan.data?.diagnosticResult ? `，诊断 ${plan.data.diagnosticResult.percent}%` : "";
-  els.masteryMode.textContent = `基于 ${summary.done} 项打卡、${Object.keys(state.quizResults || {}).length} 道测评${diagnosticText}`;
+  els.masteryMode.textContent = `图谱 ${concepts.length} 节点 · 基于 ${summary.done} 项打卡、${Object.keys(state.quizResults || {}).length} 道测评${diagnosticText}`;
   els.knowledgePanel.className = "result-grid";
   els.knowledgePanel.innerHTML = `
     <article class="result-card radar-card">
@@ -2229,16 +2397,42 @@ function renderKnowledge() {
         `).join("")}
       </div>
     </article>
-    <article class="result-card full">
-      <h3>知识图谱与先修关系</h3>
-      <div class="concept-grid">
-        ${concepts.map((concept) => `
-          <div class="concept-card">
-            <span>${escapeHtml(concept.dimension || "")} · ${escapeHtml(concept.status || "待观察")}</span>
-            <strong>${escapeHtml(concept.title || concept.conceptTitle || "")}</strong>
-            <meter min="0" max="100" value="${Number(concept.masteryScore || 0)}"></meter>
-            <small>掌握度 ${Number(concept.masteryScore || 0)} · 置信度 ${Math.round(Number(concept.confidence || 0) * 100)}% · ${escapeHtml(concept.nextAction || concept.source || "profile-estimate")}</small>
-          </div>
+    <article class="result-card full graph-card">
+      <div class="graph-toolbar">
+        <div>
+          <span class="mini-label">交互式图谱</span>
+          <h3>知识点、先修关系与掌握证据</h3>
+        </div>
+        <div class="graph-controls">
+          <input id="graphSearchInput" placeholder="搜索知识点" value="${escapeHtml(state.graphUi?.search || "")}" />
+          <select id="graphDimensionFilter">
+            <option value="all">全部维度</option>
+            ${(graph.filters?.dimensions || []).map((dimension) => `<option value="${escapeHtml(dimension)}" ${state.graphUi?.dimension === dimension ? "selected" : ""}>${escapeHtml(dimension)}</option>`).join("")}
+          </select>
+          <select id="graphMasteryFilter">
+            <option value="all" ${state.graphUi?.mastery === "all" ? "selected" : ""}>全部状态</option>
+            <option value="weak" ${state.graphUi?.mastery === "weak" ? "selected" : ""}>薄弱优先</option>
+            <option value="due" ${state.graphUi?.mastery === "due" ? "selected" : ""}>需要复习</option>
+          </select>
+          <button class="ghost-button" type="button" data-graph-zoom="out">-</button>
+          <button class="ghost-button" type="button" data-graph-zoom="in">+</button>
+          <button class="ghost-button" type="button" data-refine-graph>LLM 增强</button>
+        </div>
+      </div>
+      <div class="knowledge-graph-workbench">
+        <div class="knowledge-graph-canvas">
+          ${renderKnowledgeGraphSvg(graph)}
+        </div>
+        <aside class="knowledge-node-detail">
+          ${renderKnowledgeNodeDetail(selectedGraphNode(graph))}
+        </aside>
+      </div>
+      <div class="graph-list-view">
+        ${filteredGraphNodes(graph).map((node) => `
+          <button type="button" data-select-graph-node="${escapeHtml(node.id)}">
+            <strong>${escapeHtml(node.title)}</strong>
+            <span>${escapeHtml(node.dimension)} · 掌握 ${Number(node.masteryScore || 0)}</span>
+          </button>
         `).join("")}
       </div>
     </article>
@@ -2289,6 +2483,7 @@ function renderKnowledge() {
     setView("home");
     document.querySelector("#courseSourceTitle")?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
+  bindKnowledgeGraphControls(plan, graph);
   drawRadar("masteryRadar", mastery);
 }
 
@@ -2312,6 +2507,341 @@ function computeMastery(plan) {
       : `${adaptive?.evidence || `自评基础 ${item.score || 50}`} + 打卡 ${summary.percent}% + 测评 ${avgQuiz}%`;
     return { ...item, score, evidence };
   });
+}
+
+function currentKnowledgeGraph(plan) {
+  const serverGraph = state.graphUi?.serverGraph;
+  if (serverGraph?.planId === plan.id && Array.isArray(serverGraph.nodes)) return serverGraph;
+  return buildClientKnowledgeGraph(plan);
+}
+
+function buildClientKnowledgeGraph(plan) {
+  const data = plan?.data || {};
+  const adaptive = data.adaptiveState?.concepts || [];
+  const raw = adaptive.length ? adaptive : data.knowledgeGraph?.concepts || data.learnerProfile?.mastery || [];
+  const nodes = raw.map((concept, index) => {
+    const id = concept.conceptId || concept.id || slugClient(`${concept.title || concept.conceptTitle || concept.dimension}-${index}`);
+    const score = Number(concept.masteryScore ?? concept.score ?? 50);
+    const tasks = conceptTasksFor(plan, id, concept);
+    return {
+      id,
+      title: concept.title || concept.conceptTitle || concept.dimension || `节点 ${index + 1}`,
+      dimension: concept.dimension || "综合能力",
+      masteryScore: clamp(score),
+      confidence: Number(concept.confidence ?? 0.35),
+      status: concept.status || (score >= 82 ? "已掌握" : score >= 65 ? "巩固中" : "薄弱"),
+      nextAction: concept.nextAction || concept.evidence || "完成相关任务并进行一次测评。",
+      evidence: concept.evidence || "",
+      reviewDueAt: concept.reviewDueAt || null,
+      tasks,
+      resources: conceptResourcesFor(plan, concept),
+      quizzes: conceptQuizEvidenceFor(plan, id, concept),
+      layout: { x: 0, y: 0 }
+    };
+  });
+  const ids = new Set(nodes.map((node) => node.id));
+  const edges = [
+    ...(data.knowledgeGraph?.edges || []).map((edge) => ({
+      source: edge.source,
+      target: edge.target,
+      relation: edge.relation || "prerequisite"
+    })),
+    ...nodes.flatMap((node) => (raw.find((item) => (item.conceptId || item.id) === node.id)?.prerequisites || [])
+      .map((source) => ({ source, target: node.id, relation: "prerequisite" })))
+  ].filter((edge, index, arr) => ids.has(edge.source) && ids.has(edge.target) && edge.source !== edge.target
+    && arr.findIndex((item) => item.source === edge.source && item.target === edge.target) === index);
+  const positions = state.graphUi?.positions || {};
+  const laidOut = layoutClientGraph(nodes, edges, positions);
+  return {
+    id: `client-${plan.id}`,
+    planId: plan.id,
+    topic: data.input?.topic || plan.title,
+    source: "client-plan",
+    nodes: laidOut,
+    edges,
+    filters: {
+      dimensions: [...new Set(laidOut.map((node) => node.dimension).filter(Boolean))]
+    }
+  };
+}
+
+function layoutClientGraph(nodes, edges, positions) {
+  const incoming = new Map(nodes.map((node) => [node.id, []]));
+  edges.forEach((edge) => incoming.get(edge.target)?.push(edge.source));
+  const memo = new Map();
+  const levelOf = (id, stack = new Set()) => {
+    if (memo.has(id)) return memo.get(id);
+    if (stack.has(id)) return 0;
+    stack.add(id);
+    const level = Math.max(0, ...(incoming.get(id) || []).map((source) => levelOf(source, stack) + 1));
+    stack.delete(id);
+    memo.set(id, level);
+    return level;
+  };
+  const levels = new Map(nodes.map((node) => [node.id, levelOf(node.id)]));
+  const groups = new Map();
+  nodes.forEach((node) => {
+    const level = levels.get(node.id) || 0;
+    if (!groups.has(level)) groups.set(level, []);
+    groups.get(level).push(node);
+  });
+  return nodes.map((node) => {
+    const saved = positions[node.id];
+    if (saved) return { ...node, layout: { x: Number(saved.x), y: Number(saved.y), pinned: true } };
+    const level = levels.get(node.id) || 0;
+    const siblings = groups.get(level) || [];
+    const index = siblings.findIndex((item) => item.id === node.id);
+    return { ...node, layout: { x: 120 + level * 220, y: 90 + Math.max(0, index) * 94 } };
+  });
+}
+
+function filteredGraphNodes(graph) {
+  const search = String(state.graphUi?.search || "").trim().toLowerCase();
+  const dimension = state.graphUi?.dimension || "all";
+  const mastery = state.graphUi?.mastery || "all";
+  return (graph.nodes || []).filter((node) => {
+    if (dimension !== "all" && node.dimension !== dimension) return false;
+    if (mastery === "weak" && Number(node.masteryScore || 0) >= 70) return false;
+    if (mastery === "due" && !node.reviewDueAt && Number(node.masteryScore || 0) >= 80) return false;
+    if (search && !`${node.title} ${node.dimension} ${node.nextAction}`.toLowerCase().includes(search)) return false;
+    return true;
+  });
+}
+
+function renderKnowledgeGraphSvg(graph) {
+  const nodes = filteredGraphNodes(graph);
+  const visible = new Set(nodes.map((node) => node.id));
+  const edges = (graph.edges || []).filter((edge) => visible.has(edge.source) && visible.has(edge.target));
+  const zoom = Number(state.graphUi?.zoom || 1);
+  const selectedId = selectedGraphNode(graph)?.id;
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const width = Math.max(720, ...nodes.map((node) => Number(node.layout?.x || 0) + 190));
+  const height = Math.max(420, ...nodes.map((node) => Number(node.layout?.y || 0) + 120));
+  return `
+    <svg id="knowledgeGraphSvg" class="knowledge-graph-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="交互式知识图谱">
+      <g transform="scale(${zoom})">
+        ${edges.map((edge) => {
+          const source = nodeById.get(edge.source);
+          const target = nodeById.get(edge.target);
+          if (!source || !target) return "";
+          return `<line class="graph-edge" x1="${Number(source.layout.x) + 68}" y1="${Number(source.layout.y) + 28}" x2="${Number(target.layout.x) + 68}" y2="${Number(target.layout.y) + 28}" />`;
+        }).join("")}
+        ${nodes.map((node) => `
+          <g class="graph-node ${node.id === selectedId ? "selected" : ""} ${Number(node.masteryScore || 0) < 65 ? "weak" : ""}"
+             transform="translate(${Number(node.layout.x)}, ${Number(node.layout.y)})" data-graph-node="${escapeHtml(node.id)}" tabindex="0" role="button" aria-label="${escapeHtml(node.title)}">
+            <rect width="144" height="58" rx="8"></rect>
+            <text x="12" y="22">${escapeSvgText(node.title, 12)}</text>
+            <text x="12" y="42">${escapeSvgText(`${node.dimension} · ${Number(node.masteryScore || 0)}`, 14)}</text>
+          </g>
+        `).join("")}
+      </g>
+    </svg>
+  `;
+}
+
+function renderKnowledgeNodeDetail(node) {
+  if (!node) return "<p class=\"hint-text\">选择一个节点查看掌握证据、任务和下一步动作。</p>";
+  return `
+    <span class="mini-label">${escapeHtml(node.dimension || "知识节点")}</span>
+    <h3>${escapeHtml(node.title)}</h3>
+    <meter min="0" max="100" value="${Number(node.masteryScore || 0)}"></meter>
+    <p>${escapeHtml(node.nextAction || node.evidence || "完成相关任务后会更新证据。")}</p>
+    <dl class="node-evidence-list">
+      <div><dt>掌握度</dt><dd>${Number(node.masteryScore || 0)}</dd></div>
+      <div><dt>置信度</dt><dd>${Math.round(Number(node.confidence || 0) * 100)}%</dd></div>
+      <div><dt>状态</dt><dd>${escapeHtml(node.status || "待观察")}</dd></div>
+      <div><dt>复习到期</dt><dd>${escapeHtml(node.reviewDueAt || "--")}</dd></div>
+    </dl>
+    <div class="node-related-list">
+      <strong>关联任务</strong>
+      ${(node.tasks || []).slice(0, 5).map((task) => `<span>${task.completed ? "已完成" : "待完成"} · ${escapeHtml(task.title)}</span>`).join("") || "<small>暂无任务绑定。</small>"}
+    </div>
+    <div class="node-related-list">
+      <strong>测评证据</strong>
+      ${(node.quizzes || []).slice(-4).map((quiz) => `<span>${quiz.correct ? "通过" : "未通过"} · ${Number(quiz.score || 0)}/${Number(quiz.maxScore || 0)}</span>`).join("") || "<small>暂无测评证据。</small>"}
+    </div>
+  `;
+}
+
+function selectedGraphNode(graph) {
+  const nodes = filteredGraphNodes(graph);
+  const selected = state.graphUi?.selectedNodeId;
+  return nodes.find((node) => node.id === selected) || nodes[0] || null;
+}
+
+function bindKnowledgeGraphControls(plan, graph) {
+  const search = els.knowledgePanel.querySelector("#graphSearchInput");
+  const dimension = els.knowledgePanel.querySelector("#graphDimensionFilter");
+  const mastery = els.knowledgePanel.querySelector("#graphMasteryFilter");
+  search?.addEventListener("input", () => {
+    state.graphUi = { ...(state.graphUi || {}), search: search.value };
+    saveState();
+    renderKnowledge();
+  });
+  dimension?.addEventListener("change", () => {
+    state.graphUi = { ...(state.graphUi || {}), dimension: dimension.value };
+    saveState();
+    renderKnowledge();
+  });
+  mastery?.addEventListener("change", () => {
+    state.graphUi = { ...(state.graphUi || {}), mastery: mastery.value };
+    saveState();
+    renderKnowledge();
+  });
+  els.knowledgePanel.querySelectorAll("[data-select-graph-node], [data-graph-node]").forEach((element) => {
+    element.addEventListener("click", () => selectGraphNode(element.dataset.selectGraphNode || element.dataset.graphNode));
+    element.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        selectGraphNode(element.dataset.selectGraphNode || element.dataset.graphNode);
+      }
+    });
+  });
+  els.knowledgePanel.querySelectorAll("[data-graph-zoom]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const delta = button.dataset.graphZoom === "in" ? 0.1 : -0.1;
+      state.graphUi = { ...(state.graphUi || {}), zoom: Math.max(0.6, Math.min(1.5, Number(state.graphUi?.zoom || 1) + delta)) };
+      saveState();
+      renderKnowledge();
+    });
+  });
+  els.knowledgePanel.querySelector("[data-refine-graph]")?.addEventListener("click", (event) => refineKnowledgeGraph(plan, event.currentTarget));
+  bindGraphDrag(plan, graph);
+}
+
+function selectGraphNode(nodeId) {
+  state.graphUi = { ...(state.graphUi || {}), selectedNodeId: nodeId };
+  saveState();
+  renderKnowledge();
+}
+
+function bindGraphDrag(plan) {
+  const svg = els.knowledgePanel.querySelector("#knowledgeGraphSvg");
+  if (!svg) return;
+  let dragging = null;
+  svg.querySelectorAll("[data-graph-node]").forEach((node) => {
+    node.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      const id = node.dataset.graphNode;
+      const match = node.getAttribute("transform").match(/translate\(([-\d.]+),\s*([-\d.]+)\)/);
+      dragging = {
+        id,
+        node,
+        startX: event.clientX,
+        startY: event.clientY,
+        x: Number(match?.[1] || 0),
+        y: Number(match?.[2] || 0)
+      };
+      state.graphUi = { ...(state.graphUi || {}), selectedNodeId: id };
+      window.addEventListener("mousemove", handleMove);
+      window.addEventListener("mouseup", handleUp, { once: true });
+    });
+  });
+
+  function handleMove(event) {
+    if (!dragging) return;
+    const zoom = Number(state.graphUi?.zoom || 1);
+    const x = dragging.x + (event.clientX - dragging.startX) / zoom;
+    const y = dragging.y + (event.clientY - dragging.startY) / zoom;
+    dragging.node.setAttribute("transform", `translate(${x}, ${y})`);
+  }
+
+  function handleUp(event) {
+    window.removeEventListener("mousemove", handleMove);
+    if (!dragging) return;
+    const zoom = Number(state.graphUi?.zoom || 1);
+    const position = {
+      x: Math.round(dragging.x + (event.clientX - dragging.startX) / zoom),
+      y: Math.round(dragging.y + (event.clientY - dragging.startY) / zoom)
+    };
+    state.graphUi = {
+      ...(state.graphUi || {}),
+      positions: {
+        ...(state.graphUi?.positions || {}),
+        [dragging.id]: position
+      }
+    };
+    saveState();
+    saveGraphLayout(plan).catch(reportPersistenceError);
+    dragging = null;
+    renderKnowledge();
+  }
+}
+
+async function refineKnowledgeGraph(plan, button) {
+  if (!state.databaseReady) {
+    els.masteryMode.textContent = "LLM 增强需要数据库课程";
+    return;
+  }
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "LLM 增强中";
+  try {
+    const data = await request(`/api/plans/${encodeURIComponent(plan.id)}/knowledge-graph/refine`, { method: "POST" });
+    state.graphUi = {
+      ...(state.graphUi || {}),
+      serverGraph: data.graph,
+      selectedNodeId: data.graph.nodes?.[0]?.id || state.graphUi?.selectedNodeId
+    };
+    saveState();
+    renderKnowledge();
+  } catch (error) {
+    els.masteryMode.textContent = `LLM 增强失败：${error.message}`;
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+  }
+}
+
+async function saveGraphLayout(plan) {
+  if (!state.databaseReady || !plan) return;
+  await request(`/api/plans/${encodeURIComponent(plan.id)}/knowledge-graph`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      graphVersionId: state.graphUi?.serverGraph?.id || null,
+      positions: state.graphUi?.positions || {},
+      zoom: state.graphUi?.zoom || 1
+    })
+  });
+}
+
+function conceptTasksFor(plan, conceptId, concept) {
+  const title = concept.title || concept.conceptTitle || concept.dimension || "";
+  return (plan.data?.dailyPlan || []).flatMap((day) => (day.tasks || []).map((task, index) => {
+    const taskConcept = day.conceptIds?.[index] || day.conceptId;
+    const matched = taskConcept === conceptId || (!taskConcept && `${task} ${day.title || ""}`.includes(title));
+    if (!matched) return null;
+    const key = progressId(day, index);
+    return { day: day.day, taskKey: key, title: task, completed: Boolean(plan.progress?.[key]) };
+  }).filter(Boolean));
+}
+
+function conceptResourcesFor(plan, concept) {
+  const title = concept.title || concept.conceptTitle || concept.dimension || "";
+  const citations = plan.data?.input?.knowledgeGrounding?.citations || plan.data?.resourcePackage?.sourceCitations || [];
+  return citations.filter((citation) => `${citation.title || ""} ${citation.quote || ""}`.includes(title)).slice(0, 4);
+}
+
+function conceptQuizEvidenceFor(plan, conceptId, concept) {
+  const title = concept.title || concept.conceptTitle || concept.dimension || "";
+  return (plan.quizHistory || []).filter((item) => (
+    item.conceptId === conceptId || item.dimension === concept.dimension || String(item.question || "").includes(title)
+  )).slice(-6);
+}
+
+function slugClient(value) {
+  let hash = 0;
+  const text = String(value || "node");
+  for (let index = 0; index < text.length; index += 1) {
+    hash = ((hash << 5) - hash + text.charCodeAt(index)) | 0;
+  }
+  return `node-${Math.abs(hash).toString(36)}`;
+}
+
+function escapeSvgText(value, maxLength = 16) {
+  const text = String(value || "");
+  return escapeHtml(text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text);
 }
 
 function scorePercent(result) {
@@ -2569,7 +3099,7 @@ function renderReport() {
       <section class="remediation-head">
         <div>
           <strong>${escapeHtml(plan.title)} 学习报告</strong>
-          <p>报告尚未生成。生成时会读取当前任务进度、诊断、测验、错题、掌握度、学习资料、笔记、考试和项目数据。</p>
+          <p>报告尚未生成。生成时会读取当前任务进度、诊断、测验、错题、掌握度、学习资料、笔记、考试和综合应用数据。</p>
         </div>
       </section>
       <section class="report-generation-empty">
@@ -2620,13 +3150,13 @@ async function generateLearningReport(button) {
   button.disabled = true;
   button.setAttribute("aria-busy", "true");
   button.textContent = "正在分析当前学习状态…";
-  if (status) status.textContent = "正在汇总进度、掌握度、错题、笔记、考试和项目证据，请保持页面打开。";
+  if (status) status.textContent = "正在汇总进度、掌握度、错题、笔记、考试和综合应用证据，请保持页面打开。";
 
   try {
     const result = await request("/api/learning-report", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ context: buildLearningReportContext(plan) })
+      body: JSON.stringify({ planId: plan.id, context: buildLearningReportContext(plan) })
     });
     plan.data.learningReport = result.report;
     plan.data.personalInsights = null;
@@ -2636,6 +3166,7 @@ async function generateLearningReport(button) {
     });
     saveState();
     await persistPlanContent(plan);
+    await refreshLearningActivityForCurrentPlan();
     renderReport();
   } catch (error) {
     button.disabled = false;
@@ -2731,64 +3262,6 @@ function startExamTimer() {
 function clearExamTimer() {
   if (examTimer !== null) window.clearInterval(examTimer);
   examTimer = null;
-}
-
-function renderProject() {
-  const plan = getCurrentPlan();
-  if (!plan) {
-    els.projectPanel.className = "empty-state";
-    els.projectPanel.innerHTML = "<p>先生成或选择一个学习方案。</p>";
-    els.projectMode.textContent = "等待方案";
-    return;
-  }
-  state.projectTasks = state.projectTasks || {};
-  const task = state.projectTasks[plan.id] || buildProjectTask(plan);
-  state.projectTasks[plan.id] = task;
-  const progress = state.projectProgress?.[plan.id] || {};
-  const done = Object.values(progress).filter(Boolean).length;
-  const submission = state.projectSubmissions?.[plan.id];
-  els.projectMode.textContent = `${done}/${task.steps.length} 步 · ${submission ? "已提交" : "未提交"}`;
-  els.projectPanel.className = "remediation-board";
-  els.projectPanel.innerHTML = `
-    <section class="remediation-head">
-      <div>
-        <strong>${escapeHtml(task.title)}</strong>
-        <p>${escapeHtml(task.brief)}</p>
-      </div>
-      <span class="status-pill">${escapeHtml(task.difficulty)}</span>
-    </section>
-    <div class="concept-grid">
-      ${task.steps.map((step, index) => `
-        <article class="concept-card">
-          <label class="task-item">
-            <input type="checkbox" data-project-step="${index}" ${progress[index] ? "checked" : ""} />
-            <span>${escapeHtml(step.title)}</span>
-          </label>
-          <p>${escapeHtml(step.action)}</p>
-          <small>验收：${escapeHtml(step.acceptance)} · 交付：${escapeHtml(step.deliverable)}</small>
-        </article>
-      `).join("")}
-    </div>
-    <section class="study-notes">
-      <label>
-        项目提交说明
-        <textarea id="projectSubmissionText" rows="6" placeholder="写下你的方案、关键代码、实验结果或复盘。">${escapeHtml(submission?.content || "")}</textarea>
-      </label>
-      <button id="saveProjectButton" class="primary-button" type="button">保存项目提交</button>
-      ${submission ? `<p class="ok-text">上次提交：${formatDate(submission.at)}</p>` : ""}
-    </section>
-  `;
-  els.projectPanel.querySelectorAll("[data-project-step]").forEach((checkbox) => {
-    checkbox.addEventListener("change", () => {
-      state.projectProgress = state.projectProgress || {};
-      state.projectProgress[plan.id] = state.projectProgress[plan.id] || {};
-      state.projectProgress[plan.id][checkbox.dataset.projectStep] = checkbox.checked;
-      recordBehavior("project-step", { planId: plan.id, step: checkbox.dataset.projectStep, completed: checkbox.checked });
-      saveState();
-      renderProject();
-    });
-  });
-  els.projectPanel.querySelector("#saveProjectButton").addEventListener("click", saveProjectSubmission);
 }
 
 function renderSettings() {
@@ -3194,6 +3667,7 @@ async function evaluateQuiz(questionId) {
         body: JSON.stringify({ data: plan.data, masteryEvidence: plan.masteryEvidence || [] })
       }).catch(reportPersistenceError);
       if (result.correct === false) refreshPathRevisionsForCurrentPlan();
+      refreshLearningActivityForCurrentPlan().catch(() => {});
     }
     renderPractice();
     renderKnowledge();
@@ -3433,7 +3907,6 @@ function buildLearningReportContext(plan) {
   const mastery = plan.data?.adaptiveState?.concepts || plan.data?.knowledgeGraph?.concepts || [];
   const latestExam = state.exam?.planId === plan.id ? state.exam : null;
   const examResults = Object.values(latestExam?.results || {});
-  const projectSubmission = state.projectSubmissions?.[plan.id] || null;
   const notes = String(plan.notes || "");
   const dailyPlan = plan.data?.dailyPlan || [];
   return {
@@ -3516,15 +3989,6 @@ function buildLearningReportContext(plan) {
         result: latestExam.results?.[question.id] || null
       }))
     } : null,
-    project: {
-      tasks: state.projectTasks?.[plan.id] || null,
-      progress: state.projectProgress?.[plan.id] || null,
-      submission: projectSubmission ? {
-        at: projectSubmission.at,
-        content: String(projectSubmission.content || "").slice(0, 20000),
-        truncated: String(projectSubmission.content || "").length > 20000
-      } : null
-    },
     behaviorEvents: (state.behaviorEvents || [])
       .filter((event) => event.planId === plan.id)
       .slice(-30)
@@ -3545,8 +4009,7 @@ function exportLearningReport(format, plan, reportText) {
       plan,
       mistakes: buildMistakeBook(plan),
       behaviorEvents: state.behaviorEvents || [],
-      exam: state.exam?.planId === plan.id ? state.exam : null,
-      projectSubmission: state.projectSubmissions?.[plan.id] || null
+      exam: state.exam?.planId === plan.id ? state.exam : null
     }, null, 2), "application/json");
   } else if (format === "html" || format === "print") {
     const html = buildMarkdownDocument(`${plan.title} 学习报告`, reportText);
@@ -3732,45 +4195,6 @@ async function submitExam({ timeExpired = false } = {}) {
   }
 }
 
-function buildProjectTask(plan) {
-  const concepts = (plan.data?.adaptiveState?.weakestConcepts || plan.data?.knowledgeGraph?.concepts || []).slice(0, 5);
-  const topic = plan.data?.input?.topic || plan.title;
-  return {
-    title: `${topic} 个人项目任务`,
-    difficulty: concepts.some((item) => Number(item.difficulty || 1) >= 4) ? "进阶" : "入门",
-    brief: "用一个小项目串联概念、数据、方法、评估和复盘，提交后进入学习报告。",
-    steps: concepts.map((concept, index) => ({
-      title: `${index + 1}. ${concept.title || concept.conceptTitle || concept.dimension}`,
-      action: `围绕该知识点完成一个可验证的小产出，并说明它解决了什么问题。`,
-      acceptance: concept.standard || concept.nextAction || "能解释关键选择，并给出一个反例或边界条件。",
-      deliverable: index % 2 === 0 ? "文字说明 + 例子" : "代码/表格/实验记录"
-    })).concat(concepts.length ? [] : [{
-      title: "1. 项目目标定义",
-      action: `给 ${topic} 设计一个可验证的学习产出。`,
-      acceptance: "目标、输入、输出和评价指标清楚。",
-      deliverable: "项目说明"
-    }])
-  };
-}
-
-function saveProjectSubmission() {
-  const plan = getCurrentPlan();
-  if (!plan) return;
-  const content = els.projectPanel.querySelector("#projectSubmissionText")?.value.trim() || "";
-  if (!content) {
-    alert("请先填写项目提交说明。");
-    return;
-  }
-  state.projectSubmissions = state.projectSubmissions || {};
-  state.projectSubmissions[plan.id] = { content, at: new Date().toISOString() };
-  captureMasterySnapshot(plan, "project");
-  recordBehavior("project-submitted", { planId: plan.id, detail: `${content.length} 字` });
-  saveState();
-  renderProject();
-  renderReport();
-  renderSettings();
-}
-
 function saveSettingsFromPanel() {
   if (!validateQuestionComposition(els.settingsPanel, {
     total: "#settingQuestionCount",
@@ -3844,7 +4268,6 @@ function styleOptions(selected) {
   return [
     ["case", "案例驱动"],
     ["visual", "图文讲解"],
-    ["project", "项目实战"],
     ["drill", "题目训练"]
   ].map(([value, label]) => `<option value="${value}" ${selected === value ? "selected" : ""}>${label}</option>`).join("");
 }
@@ -3916,8 +4339,6 @@ function behaviorLabel(type) {
     "quiz-submitted": "提交练习",
     "exam-generated": "生成考试",
     "exam-submitted": "提交考试",
-    "project-step": "项目步骤",
-    "project-submitted": "提交项目",
     "daily-materials-generated": "生成当日学习资料",
     "learning-report-generated": "生成学习报告",
     "report-exported": "导出报告",
@@ -4033,7 +4454,7 @@ function startFlowSession() {
     <div class="flow-row">
       <span>2</span>
       <strong>生成章节</strong>
-      <em>组织每日路径、阅读任务和项目练习</em>
+      <em>组织每日路径、阅读任务和综合应用练习</em>
     </div>
     <div class="flow-row">
       <span>3</span>
@@ -4242,6 +4663,7 @@ async function askTutor() {
     els.coachMode.textContent = data.mode === "llm" || data.mode === "llm-full-context-tutor"
       ? `大模型回答 · ${tutorModeLabel(data.tutorMode)} · 提示 ${data.hintLevel}`
       : `本地提示 · ${tutorModeLabel(data.tutorMode)} · 提示 ${data.hintLevel}`;
+    refreshLearningActivityForCurrentPlan().catch(() => {});
   } catch (error) {
     els.coachAnswer.textContent = `导师回答失败：${error.message}`;
   } finally {
@@ -4373,15 +4795,14 @@ function serializeState() {
     settings: withDefaultSettings(state.settings),
     behaviorEvents: state.behaviorEvents || [],
     exam: state.exam || null,
-    projectTasks: state.projectTasks || {},
-    projectProgress: state.projectProgress || {},
-    projectSubmissions: state.projectSubmissions || {},
     pathRevisions: state.pathRevisions || {},
     mistakeFilters: state.mistakeFilters || { concept: "all", type: "all", reason: "all" },
     lastQuizOptions: state.lastQuizOptions || null,
     profileInterview: state.profileInterview || null,
     knowledgeSources: state.knowledgeSources || [],
-    selectedSourceIds: state.selectedSourceIds || []
+    selectedSourceIds: state.selectedSourceIds || [],
+    activitySummary: state.activitySummary || null,
+    graphUi: state.graphUi || {}
   };
 }
 
@@ -4398,15 +4819,14 @@ function loadState() {
       settings: withDefaultSettings(saved?.settings || {}),
       behaviorEvents: saved?.behaviorEvents || [],
       exam: saved?.exam || null,
-      projectTasks: saved?.projectTasks || {},
-      projectProgress: saved?.projectProgress || {},
-      projectSubmissions: saved?.projectSubmissions || {},
       pathRevisions: saved?.pathRevisions || {},
       mistakeFilters: saved?.mistakeFilters || { concept: "all", type: "all", reason: "all" },
       lastQuizOptions: saved?.lastQuizOptions || null,
       profileInterview: saved?.profileInterview || null,
       knowledgeSources: saved?.knowledgeSources || [],
       selectedSourceIds: saved?.selectedSourceIds || [],
+      activitySummary: saved?.activitySummary || null,
+      graphUi: saved?.graphUi || {},
       databaseReady: false
     };
   } catch {
@@ -4420,15 +4840,14 @@ function loadState() {
       settings: withDefaultSettings({}),
       behaviorEvents: [],
       exam: null,
-      projectTasks: {},
-      projectProgress: {},
-      projectSubmissions: {},
       pathRevisions: {},
       mistakeFilters: { concept: "all", type: "all", reason: "all" },
       lastQuizOptions: null,
       profileInterview: null,
       knowledgeSources: [],
       selectedSourceIds: [],
+      activitySummary: null,
+      graphUi: {},
       databaseReady: false
     };
   }

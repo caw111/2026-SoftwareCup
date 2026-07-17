@@ -1884,6 +1884,7 @@ meter {
 .practice-panel,
 .diagnostic-board,
 .remediation-board,
+.calendar-board,
 .path-revision-board,
 .path-revision-list,
 .governance-board,
@@ -1966,6 +1967,226 @@ meter {
 .path-revision-diff {
   display: flex;
   gap: 14px;
+}
+
+.calendar-summary,
+.calendar-two-column {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.calendar-two-column {
+  grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+}
+
+.calendar-stat {
+  padding: 18px;
+}
+
+.calendar-stat strong {
+  display: block;
+  margin: 4px 0;
+  font-family: Georgia, "Times New Roman", "Noto Serif SC", serif;
+  font-size: 34px;
+  line-height: 1;
+}
+
+.calendar-head,
+.graph-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.activity-heatmap {
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(7, 12px);
+  grid-auto-columns: 12px;
+  gap: 4px;
+  max-width: 100%;
+  padding: 6px 0 2px;
+  overflow-x: auto;
+}
+
+.heat-cell {
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: #eee7dd;
+}
+
+.heat-cell.level-1 { background: #d9e7d5; }
+.heat-cell.level-2 { background: #a9caa9; }
+.heat-cell.level-3 { background: #6f9b78; }
+.heat-cell.level-4 { background: var(--sage); }
+
+.badge-grid,
+.activity-list {
+  display: grid;
+  gap: 10px;
+}
+
+.badge-card,
+.activity-list div {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper-soft);
+  text-align: left;
+}
+
+.badge-card.unlocked {
+  border-color: rgba(40, 115, 79, 0.35);
+  background: #f1f7ef;
+}
+
+.badge-card p,
+.activity-list small {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.graph-card {
+  overflow: hidden;
+}
+
+.graph-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.graph-controls input,
+.graph-controls select {
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper);
+}
+
+.knowledge-graph-workbench {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.36fr);
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.knowledge-graph-canvas {
+  min-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--paper-soft);
+}
+
+.knowledge-graph-svg {
+  display: block;
+  min-width: 720px;
+  min-height: 420px;
+}
+
+.graph-edge {
+  stroke: var(--line-strong);
+  stroke-width: 2;
+}
+
+.graph-node {
+  cursor: grab;
+  outline: none;
+}
+
+.graph-node rect {
+  fill: var(--paper);
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+
+.graph-node text {
+  fill: var(--ink);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.graph-node.weak rect {
+  stroke: rgba(159, 43, 43, 0.55);
+}
+
+.graph-node.selected rect {
+  fill: #fff8e4;
+  stroke: var(--accent-strong);
+  stroke-width: 2;
+}
+
+.knowledge-node-detail {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+}
+
+.node-evidence-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.node-evidence-list div,
+.node-related-list span {
+  display: grid;
+  gap: 2px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper-soft);
+}
+
+.node-evidence-list dt,
+.node-related-list strong {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.node-evidence-list dd {
+  margin: 0;
+  font-weight: 700;
+}
+
+.node-related-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.graph-list-view {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  overflow-x: auto;
+}
+
+.graph-list-view button {
+  min-width: 170px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper-soft);
+  text-align: left;
+}
+
+.graph-list-view span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .path-revision-head {
@@ -3748,6 +3969,15 @@ textarea.code-answer {
     grid-column: 2;
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+
+  .calendar-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .knowledge-graph-workbench,
+  .calendar-two-column {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 900px) {
@@ -3789,6 +4019,15 @@ textarea.code-answer {
   .course-overview-panel {
     grid-template-columns: 1fr;
     margin-top: 28px;
+  }
+
+  .graph-toolbar,
+  .calendar-head {
+    display: grid;
+  }
+
+  .graph-controls {
+    justify-content: flex-start;
   }
 }
 
@@ -3858,5 +4097,29 @@ textarea.code-answer {
 
   .markdown-body h1 {
     font-size: 24px;
+  }
+
+  .calendar-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .activity-heatmap {
+    grid-template-rows: repeat(7, 10px);
+    grid-auto-columns: 10px;
+    gap: 3px;
+  }
+
+  .heat-cell {
+    width: 10px;
+    height: 10px;
+  }
+
+  .graph-controls input,
+  .graph-controls select {
+    width: 100%;
+  }
+
+  .node-evidence-list {
+    grid-template-columns: 1fr;
   }
 }

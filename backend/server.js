@@ -47,6 +47,12 @@ import {
   rejectPathRevisionForUser,
   undoPathRevisionForUser
 } from "./src/services/path-replanning-service.js";
+import { getLearningActivitySummaryForUser } from "./src/services/learning-activity-service.js";
+import {
+  getKnowledgeGraphForUser,
+  refineKnowledgeGraphForUser,
+  saveKnowledgeGraphLayoutForUser
+} from "./src/services/learning-graph-service.js";
 import { requireUserSession } from "./src/services/session-service.js";
 import { getStorageStatus, readWorkspaceState, writeWorkspaceState, storagePublicConfig } from "./src/storage.js";
 import { clean, ensureArray } from "./src/utils.js";
@@ -331,6 +337,45 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    const graphMatch = url.pathname.match(/^\/api\/plans\/([^/]+)\/knowledge-graph$/);
+    if (graphMatch) {
+      const session = await databaseSession(req, res);
+      const planId = decodePart(graphMatch[1]);
+      if (req.method === "GET") {
+        sendJson(res, 200, await getKnowledgeGraphForUser(session.userId, planId));
+        return;
+      }
+      if (req.method === "PATCH") {
+        sendJson(res, 200, await saveKnowledgeGraphLayoutForUser(
+          session.userId,
+          planId,
+          await readJson(req)
+        ));
+        return;
+      }
+    }
+
+    const graphRefineMatch = url.pathname.match(/^\/api\/plans\/([^/]+)\/knowledge-graph\/refine$/);
+    if (req.method === "POST" && graphRefineMatch) {
+      const session = await databaseSession(req, res);
+      sendJson(res, 200, await refineKnowledgeGraphForUser(
+        session.userId,
+        decodePart(graphRefineMatch[1])
+      ));
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/activity/summary") {
+      const session = await databaseSession(req, res);
+      sendJson(res, 200, await getLearningActivitySummaryForUser(session.userId, {
+        planId: url.searchParams.get("planId"),
+        timeZone: url.searchParams.get("tz"),
+        from: url.searchParams.get("from"),
+        to: url.searchParams.get("to")
+      }));
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === "/api/workspace-state") {
       if (isDatabaseConfigured()) throw legacyEndpointDisabled();
       sendJson(res, 200, await readWorkspaceState());
@@ -371,6 +416,19 @@ const server = http.createServer(async (req, res) => {
         throw error;
       }
       const day = await generateDailyLearningMaterials(input, body.day, body.totalDays);
+      if (body.planId && isDatabaseConfigured()) {
+        const session = await databaseSession(req, res);
+        await recordLearningEventForUser(session.userId, body.planId, {
+          type: "daily_materials_generated",
+          eventKey: `daily-materials:${body.day.day}:${day.materialsGeneratedAt || Date.now()}`,
+          payload: {
+            day: body.day.day,
+            title: body.day.title,
+            knowledgePoints: day.knowledgePoints || [],
+            materialCount: day.materials?.length || 0
+          }
+        });
+      }
       sendJson(res, 200, { day });
       return;
     }
@@ -383,6 +441,17 @@ const server = http.createServer(async (req, res) => {
         throw error;
       }
       const report = await generateLearningReportWithLlm(body.context);
+      if (body.planId && isDatabaseConfigured()) {
+        const session = await databaseSession(req, res);
+        await recordLearningEventForUser(session.userId, body.planId, {
+          type: "learning_report_generated",
+          eventKey: `learning-report:${Date.now()}`,
+          payload: {
+            reportChars: String(report || "").length,
+            progress: body.context?.progress || null
+          }
+        });
+      }
       sendJson(res, 200, { report });
       return;
     }
@@ -486,8 +555,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/tutor") {
       const body = await readJson(req);
       let grounding = null;
+      let session = null;
       if (ensureArray(body.sourceIds, []).length || body.planId) {
-        const session = await databaseSession(req, res);
+        session = await databaseSession(req, res);
         grounding = await loadFullSourceContextForUser(session.userId, {
           sourceIds: body.sourceIds,
           planId: body.planId
@@ -514,6 +584,18 @@ const server = http.createServer(async (req, res) => {
           hintLevel,
           history
         });
+      if (session && body.planId) {
+        await recordLearningEventForUser(session.userId, body.planId, {
+          type: "tutor_question_asked",
+          eventKey: `tutor-question:${Date.now()}`,
+          payload: {
+            mode: tutorMode,
+            hintLevel,
+            grounded: Boolean(grounding?.citations?.length),
+            questionChars: question.length
+          }
+        });
+      }
       sendJson(res, 200, { ...result, citations: result.citations || [] });
       return;
     }

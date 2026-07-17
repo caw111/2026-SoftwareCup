@@ -198,7 +198,7 @@ const ML_BLUEPRINTS = [
     prerequisites: ["ml-data-types", "ml-train-valid-test", "ml-metrics-classification"],
     standard: "能把需求拆成数据、特征、模型、评估、部署和复盘步骤。",
     misconceptions: ["先选模型再定义问题", "跳过评估指标"],
-    resources: ["流程模板", "项目任务"],
+    resources: ["流程模板", "综合应用练习"],
     diagnostic: {
       question: "开始一个机器学习项目前，最应该优先明确什么？",
       options: ["业务目标、预测对象、评价指标和可用数据", "模型名字", "电脑配置", "可视化颜色"],
