@@ -1,4 +1,6 @@
-const API_BASE = `${location.protocol}//${location.hostname || "127.0.0.1"}:3000`;
+// The frontend server proxies /api to the backend. Keeping requests same-origin
+// lets desktop builds select free ports automatically and avoids CORS issues.
+const API_BASE = "";
 const STORAGE_KEY = "software-cup-learning-workspace-v2";
 
 const state = loadState();

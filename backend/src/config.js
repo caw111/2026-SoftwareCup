@@ -70,7 +70,11 @@ loadEnvFile();
 
 export const PORT = Number(process.env.BACKEND_PORT || 3000);
 
-export const DATA_DIR = path.join(PROJECT_ROOT, "data");
+// Desktop builds live inside a read-only asar archive. Electron sets this
+// variable to a writable per-user directory before the backend is imported.
+export const DATA_DIR = process.env.SOFTWARECUP_DATA_DIR
+  ? path.resolve(process.env.SOFTWARECUP_DATA_DIR)
+  : path.join(PROJECT_ROOT, "data");
 
 export const WORKSPACE_STATE_FILE = path.join(DATA_DIR, "workspace-state.json");
 

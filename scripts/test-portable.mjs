@@ -1,0 +1,71 @@
+import fs from "node:fs";
+import path from "node:path";
+import { spawn } from "node:child_process";
+
+const projectRoot = path.resolve(import.meta.dirname, "..");
+const bundleRoot = path.join(projectRoot, "dist-portable", "PersonalizedLearning");
+const bundledNode = path.join(bundleRoot, "runtime", "node.exe");
+const entry = path.join(bundleRoot, "app", "desktop", "portable-main.js");
+
+const child = spawn(bundledNode, [entry], {
+  cwd: path.join(bundleRoot, "app"),
+  env: { ...process.env, SOFTWARECUP_HEADLESS: "true" },
+  stdio: ["ignore", "pipe", "pipe"]
+});
+
+let output = "";
+let resolveReady;
+const readyUrlPromise = new Promise((resolve) => { resolveReady = resolve; });
+child.stdout.on("data", (data) => {
+  output += data;
+  const match = output.match(/Portable services are ready at (http:\/\/127\.0\.0\.1:\d+)/);
+  if (match) resolveReady(match[1]);
+});
+child.stderr.on("data", (data) => { output += data; });
+
+let testExitCode = 0;
+try {
+  const baseUrl = await Promise.race([
+    readyUrlPromise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("Portable startup timed out")), 10000))
+  ]);
+  const health = await fetchJson(`${baseUrl}/api/health`);
+  const page = await fetch(baseUrl, { signal: AbortSignal.timeout(5000) });
+  const storage = await fetchJson(`${baseUrl}/api/storage/status`);
+  const judge = await fetchJson(`${baseUrl}/api/judge/status`);
+  const plan = await fetchJson(`${baseUrl}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ topic: "数据结构", level: "入门", goal: "掌握基础", duration: "7天" })
+  });
+  const zipPath = path.join(projectRoot, "dist-portable", "PersonalizedLearning-Portable-0.1.0.zip");
+  console.log(JSON.stringify({
+    pageStatus: page.status,
+    health: health.status,
+    databaseMode: health.storage.mode,
+    storage: storage.mode,
+    judgeOk: judge.ok,
+    judgeMode: judge.mode,
+    planGenerated: Boolean(plan.resourcePackage),
+    bundledNode,
+    zipMB: Math.round(fs.statSync(zipPath).size / 1024 / 1024 * 100) / 100
+  }, null, 2));
+} catch (error) {
+  testExitCode = 1;
+  console.error(error instanceof Error ? error.stack : String(error));
+  console.error(output);
+} finally {
+  child.kill("SIGKILL");
+  child.stdout.destroy();
+  child.stderr.destroy();
+  setTimeout(() => process.exit(testExitCode), 100);
+}
+
+async function fetchJson(url, options) {
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(15000),
+    ...(options || {})
+  });
+  if (!response.ok) throw new Error(`${url} returned ${response.status}`);
+  return response.json();
+}

@@ -11,3 +11,5 @@ __pycache__/
 AGENTS.md
 CLAUDE.md
 .playwright-mcp/
+dist/
+dist-portable/
