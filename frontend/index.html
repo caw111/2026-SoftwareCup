@@ -32,28 +32,116 @@
         <section id="home" class="view home-view active">
           <div class="hero-stage">
             <p class="eyebrow">Personalized AI Course Builder</p>
-            <h1>你想学习什么？</h1>
-            <p class="hero-subtitle">输入一个主题，我会为你生成一门个性化课程。</p>
+            <h1>先聊聊你想怎样学习</h1>
+            <p class="hero-subtitle">画像智能体会通过自然对话理解你的背景、目标和薄弱点，再生成真正适合你的课程。</p>
 
-            <form id="learningForm" class="prompt-card">
-              <div class="prompt-row">
-                <input
-                  id="topicInput"
-                  name="topic"
-                  value="机器学习基础"
-                  autocomplete="off"
-                  placeholder="例如：机器学习基础、数据结构、英语口语、操作系统..."
-                  aria-label="学习主题"
-                />
-                <button class="send-button" type="submit" aria-label="生成课程">↑</button>
+            <section class="profile-interview" aria-labelledby="profileInterviewTitle">
+              <div class="profile-conversation">
+                <div class="profile-interview-head">
+                  <div>
+                    <span class="mini-label">学习画像智能体</span>
+                    <h2 id="profileInterviewTitle">用一段话开始</h2>
+                  </div>
+                  <div class="profile-completeness" aria-live="polite">
+                    <strong id="profileCompleteness">0%</strong>
+                    <meter id="profileCompletenessMeter" min="0" max="100" value="0"></meter>
+                  </div>
+                </div>
+                <div id="profileMessages" class="profile-messages" aria-live="polite"></div>
+                <div id="profileSuggestions" class="profile-suggestions" aria-label="快捷回答"></div>
+                <form id="profileMessageForm" class="profile-message-form">
+                  <textarea id="profileMessageInput" rows="3" placeholder="例如：我是计算机专业大二学生，想在一个月内学会机器学习，每天能学 45 分钟，数学基础一般，喜欢项目实战。" aria-label="向画像智能体描述学习需求"></textarea>
+                  <button id="profileMessageButton" class="send-button" type="submit" aria-label="发送画像信息">↑</button>
+                </form>
+                <button id="resetProfileInterview" class="text-button profile-reset" type="button">重新构建画像</button>
+              </div>
+
+              <aside class="profile-preview" aria-label="实时学习画像">
+                <div class="profile-preview-head">
+                  <div>
+                    <span class="mini-label">实时画像</span>
+                    <h2>六维学习状态</h2>
+                  </div>
+                  <span id="profileReadyState" class="status-pill">正在了解你</span>
+                </div>
+                <canvas id="profileRadar" width="360" height="280" aria-label="对话式学习画像雷达图"></canvas>
+                <p id="profileSummary" class="profile-summary">完成几轮简短对话后，这里会形成带置信度和证据的初始画像。</p>
+                <div id="profileFieldChecklist" class="profile-field-checklist"></div>
+              </aside>
+            </section>
+
+            <section class="course-source-workspace" aria-labelledby="courseSourceTitle">
+              <div class="source-library-panel">
+                <div class="source-workspace-head">
+                  <div>
+                    <span class="mini-label">课程资料库</span>
+                    <h2 id="courseSourceTitle">让课程基于你的材料生成</h2>
+                    <p>支持 PDF、Word、PPT、Markdown、TXT、CSV 和 JSON。资料会被解析、分段并保留页码或章节位置。</p>
+                  </div>
+                  <div class="source-head-actions">
+                    <span id="sourceSelectionSummary" class="status-pill">未选择资料</span>
+                    <button id="sourceBindButton" class="ghost-button" type="button" hidden>应用到当前课程</button>
+                  </div>
+                </div>
+                <label id="sourceDropzone" class="source-dropzone" for="sourceFileInput">
+                  <span class="source-dropzone-icon" aria-hidden="true">＋</span>
+                  <strong>拖入课程文件，或点击选择</strong>
+                  <small>单文件不超过 12 MB · 最多同时选择 8 个文件 · 仅已勾选的资料用于课程生成</small>
+                  <input id="sourceFileInput" type="file" multiple accept=".pdf,.docx,.pptx,.md,.txt,.csv,.json" />
+                </label>
+                <div id="sourceUploadStatus" class="source-upload-status" aria-live="polite"></div>
+                <div id="sourceLibrary" class="source-library empty-state">
+                  <p>上传资料后，可在生成前验证检索结果与引用位置。</p>
+                </div>
+              </div>
+
+              <aside class="rag-preview-panel" aria-label="RAG 检索验证">
+                <div class="source-workspace-head compact">
+                  <div>
+                    <span class="mini-label">引用验证</span>
+                    <h2>先检索，再生成</h2>
+                    <p>输入一个课程问题，查看系统实际命中的资料片段。</p>
+                  </div>
+                </div>
+                <div class="rag-search-box">
+                  <textarea id="sourceSearchQuery" rows="3" placeholder="例如：梯度下降的学习率应该如何设置？"></textarea>
+                  <button id="sourceSearchButton" class="ghost-button" type="button">检索所选资料</button>
+                </div>
+                <div id="sourceSearchResults" class="rag-search-results empty-state">
+                  <p>检索结果会显示资料名、页码或章节、匹配摘录和引用编号。</p>
+                </div>
+              </aside>
+            </section>
+
+            <form id="learningForm" class="prompt-card profile-confirm-form">
+              <div class="profile-confirm-head">
+                <div>
+                  <span class="mini-label">生成前确认</span>
+                  <strong id="profileCourseSummary">画像完成后可在这里确认课程</strong>
+                </div>
+                <button id="generateCourseButton" class="primary-button" type="submit">确认画像并生成课程</button>
               </div>
 
               <details class="prompt-options">
                 <summary>
-                  <span>课程偏好</span>
-                  <span>调整目标、周期和难度</span>
+                  <span>精调画像与课程输出</span>
+                  <span>对话结果已自动回填，也可以手动修改</span>
                 </summary>
                 <div class="option-grid">
+                  <label class="wide-field">
+                    学习主题
+                    <input
+                      id="topicInput"
+                      name="topic"
+                      value="机器学习基础"
+                      autocomplete="off"
+                      placeholder="例如：机器学习基础、数据结构、英语口语、操作系统..."
+                    />
+                  </label>
+                  <label>
+                    专业背景
+                    <input name="major" value="计算机相关专业" placeholder="例如：计算机科学大二" />
+                  </label>
                   <label>
                     学习目标
                     <textarea name="goal" rows="3">理解核心概念，并完成一个入门项目</textarea>
@@ -106,6 +194,10 @@
                   <label class="wide-field">
                     当前薄弱点
                     <textarea name="weaknesses" rows="3">数学基础一般，对模型训练流程和评估指标不熟悉</textarea>
+                  </label>
+                  <label class="wide-field">
+                    学习历史
+                    <textarea name="learningHistory" rows="3" placeholder="例如：上学期学过 Python，做过一次数据分析课程设计"></textarea>
                   </label>
                 </div>
               </details>
@@ -161,12 +253,32 @@
               </div>
             </div>
 
-            <nav class="course-mode-nav" aria-label="学习模式">
-              <button class="nav-link active" type="button" data-view="daily" data-group="path">学习路径</button>
-              <button class="nav-link" type="button" data-view="notes">我的笔记</button>
-              <button class="nav-link" type="button" data-view="knowledge" data-group="mastery">掌握度</button>
-              <button class="nav-link" type="button" data-view="practice" data-group="assessment">测验与复习</button>
-              <button class="nav-link" type="button" data-view="report" data-group="report">学习报告</button>
+            <nav class="course-mode-nav" aria-label="课程功能导航">
+              <div class="course-nav-section">
+                <span class="course-nav-label">核心学习</span>
+                <button class="nav-link active" type="button" data-view="daily">学习路径</button>
+                <button class="nav-link" type="button" data-view="notes">我的笔记</button>
+              </div>
+              <div class="course-nav-section">
+                <span class="course-nav-label">学情分析</span>
+                <button class="nav-link" type="button" data-view="diagnostic">课前测</button>
+                <button class="nav-link" type="button" data-view="knowledge">掌握度</button>
+                <button class="nav-link" type="button" data-view="remediation">个性化补救</button>
+              </div>
+              <div class="course-nav-section">
+                <span class="course-nav-label">实践评测</span>
+                <button class="nav-link" type="button" data-view="practice">随堂测验</button>
+                <button class="nav-link" type="button" data-view="mistakes">错题复习</button>
+                <button class="nav-link" type="button" data-view="exam">综合考试</button>
+                <button class="nav-link" type="button" data-view="project">项目任务</button>
+              </div>
+              <div class="course-nav-section">
+                <span class="course-nav-label">成果与系统</span>
+                <button class="nav-link" type="button" data-view="report">学习报告</button>
+                <button class="nav-link" type="button" data-view="governance">质量治理</button>
+                <button class="nav-link" type="button" data-view="agents">Agent 协作</button>
+                <button class="nav-link" type="button" data-view="settings">学习设置</button>
+              </div>
             </nav>
           </aside>
 
@@ -189,12 +301,6 @@
               </div>
               <button id="continueTodayButton" class="primary-button" type="button">继续学习</button>
             </section>
-
-            <nav class="assessment-subnav" aria-label="测验与复习导航">
-              <button class="nav-link" type="button" data-view="practice">随堂测验</button>
-              <button class="nav-link" type="button" data-view="mistakes">错题复习</button>
-              <button class="nav-link" type="button" data-view="exam">综合考试</button>
-            </nav>
 
             <section class="course-mode active" data-mode="daily">
               <div class="section-heading">

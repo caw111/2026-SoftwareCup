@@ -40,6 +40,18 @@ import { requireUserSession } from "./src/services/session-service.js";
 import { getStorageStatus, readWorkspaceState, writeWorkspaceState, storagePublicConfig } from "./src/storage.js";
 import { clean, ensureArray } from "./src/utils.js";
 import { evaluateDiagnosticPretest } from "./src/adaptive-learning.js";
+import {
+  advanceProfileInterviewLocally,
+  createProfileInterviewState
+} from "./src/profile-interview.js";
+import {
+  assertSourcesForUser,
+  deleteSourceForUser,
+  listSourcesForUser,
+  replacePlanSourcesForUser,
+  searchSourcesForUser,
+  uploadSourceForUser
+} from "./src/services/source-service.js";
 import { migrateDatabase } from "../scripts/migrate.js";
 
 const server = http.createServer(async (req, res) => {
@@ -75,6 +87,63 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/agents") {
       sendJson(res, 200, { agents });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/profile/interview") {
+      sendJson(res, 200, createProfileInterviewState());
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/profile/interview") {
+      const body = await readJson(req);
+      sendJson(res, 200, advanceProfileInterviewLocally({
+        message: body.message,
+        draft: body.draft,
+        messages: body.messages
+      }));
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/sources") {
+      const session = await databaseSession(req, res);
+      const sources = await listSourcesForUser(session.userId, url.searchParams.get("planId"));
+      sendJson(res, 200, { sources });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/sources") {
+      const session = await databaseSession(req, res);
+      const result = await uploadSourceForUser(
+        session.userId,
+        await readJson(req, { maxBytes: 17 * 1024 * 1024 })
+      );
+      sendJson(res, result.deduplicated ? 200 : 201, result);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/sources/search") {
+      const session = await databaseSession(req, res);
+      sendJson(res, 200, await searchSourcesForUser(session.userId, await readJson(req)));
+      return;
+    }
+
+    const sourceMatch = url.pathname.match(/^\/api\/sources\/([^/]+)$/);
+    if (req.method === "DELETE" && sourceMatch) {
+      const session = await databaseSession(req, res);
+      sendJson(res, 200, await deleteSourceForUser(session.userId, decodePart(sourceMatch[1])));
+      return;
+    }
+
+    const planSourcesMatch = url.pathname.match(/^\/api\/plans\/([^/]+)\/sources$/);
+    if (req.method === "PUT" && planSourcesMatch) {
+      const session = await databaseSession(req, res);
+      const body = await readJson(req);
+      sendJson(res, 200, await replacePlanSourcesForUser(
+        session.userId,
+        decodePart(planSourcesMatch[1]),
+        body.sourceIds
+      ));
       return;
     }
 
@@ -202,21 +271,25 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/api/generate") {
-      const input = normalizeInput(await readJson(req));
+      const input = await groundedInput(req, res, await readJson(req));
       const result = await generateLearningPlan(input);
       sendJson(res, 200, result);
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/api/generate-stream") {
-      const input = normalizeInput(await readJson(req));
+      const input = await groundedInput(req, res, await readJson(req));
       await streamLearningPlan(res, input);
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/api/daily-materials") {
       const body = await readJson(req);
-      const input = normalizeInput(body.input || {});
+      const input = await groundedInput(req, res, body.input || {}, [
+        body.day?.title,
+        body.day?.focus,
+        ...ensureArray(body.day?.tasks, [])
+      ].filter(Boolean).join(" "));
       if (!body.day || typeof body.day !== "object") {
         const error = new Error("缺少当日学习路径数据");
         error.statusCode = 400;
@@ -303,14 +376,28 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/tutor") {
       const body = await readJson(req);
+      let grounding = null;
+      if (ensureArray(body.sourceIds, []).length || body.planId) {
+        const session = await databaseSession(req, res);
+        grounding = await searchSourcesForUser(session.userId, {
+          sourceIds: body.sourceIds,
+          planId: body.planId,
+          query: body.question,
+          limit: 5,
+          maxChars: 5000
+        });
+      }
       const result = await answerTutorQuestion({
         question: clean(body.question, 1000),
-        context: clean(body.context, 5000),
+        context: clean([
+          body.context,
+          grounding?.context ? `课程资料检索结果：\n${grounding.context}\n${grounding.instruction}` : ""
+        ].filter(Boolean).join("\n\n"), 11000),
         mode: clean(body.mode, 30),
         hintLevel: Number(body.hintLevel || 1),
         history: ensureArray(body.history, []).slice(-8)
       });
-      sendJson(res, 200, result);
+      sendJson(res, 200, { ...result, citations: grounding?.citations || [] });
       return;
     }
 
@@ -319,7 +406,8 @@ const server = http.createServer(async (req, res) => {
     const status = Number(error?.statusCode) || 500;
     sendJson(res, status, {
       message: status >= 500 ? "服务端处理失败" : error.message,
-      detail: error instanceof Error ? error.message : String(error)
+      detail: error instanceof Error ? error.message : String(error),
+      ...(error?.source ? { source: error.source } : {})
     });
   }
 });
@@ -331,6 +419,31 @@ async function databaseSession(req, res) {
     throw error;
   }
   return requireUserSession(req, res);
+}
+
+async function groundedInput(req, res, value, queryOverride = "") {
+  const input = normalizeInput(value || {});
+  if (!input.knowledgeSourceIds.length) return input;
+  const session = await databaseSession(req, res);
+  await assertSourcesForUser(session.userId, input.knowledgeSourceIds);
+  const grounding = await searchSourcesForUser(session.userId, {
+    sourceIds: input.knowledgeSourceIds,
+    query: queryOverride || [input.topic, input.goal, input.weaknesses].join(" "),
+    limit: 8,
+    maxChars: 9000
+  });
+  const sources = (await listSourcesForUser(session.userId))
+    .filter((source) => input.knowledgeSourceIds.includes(source.id));
+  return {
+    ...input,
+    knowledgeSources: sources.map(({ checksum, metadata, ...source }) => source),
+    knowledgeGrounding: {
+      context: grounding.context,
+      citations: grounding.citations,
+      instruction: grounding.instruction,
+      searchedChunks: grounding.searchedChunks
+    }
+  };
 }
 
 function decodePart(value) {

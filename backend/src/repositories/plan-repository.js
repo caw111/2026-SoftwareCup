@@ -42,6 +42,30 @@ export async function createPlanRecord(userId, plan) {
     await insertContentReview(connection, userId, plan.id, plan.data?.governanceReport);
     await insertInsightReport(connection, userId, plan.id, plan.data?.learningReport || plan.data?.personalInsights);
 
+    const sourceIds = [...new Set(Array.isArray(plan.data?.input?.knowledgeSourceIds)
+      ? plan.data.input.knowledgeSourceIds.map(String).filter(Boolean)
+      : [])].slice(0, 30);
+    if (sourceIds.length) {
+      const [sourceRows] = await connection.execute(
+        `SELECT id FROM course_sources
+          WHERE user_id = ? AND status = 'ready' AND deleted_at IS NULL
+            AND id IN (${sourceIds.map(() => "?").join(",")})`,
+        [userId, ...sourceIds]
+      );
+      const owned = new Set(sourceRows.map((row) => row.id));
+      if (owned.size !== sourceIds.length) {
+        const error = new Error("部分课程资料不存在、尚未解析完成或无权访问");
+        error.statusCode = 400;
+        throw error;
+      }
+      for (const sourceId of sourceIds) {
+        await connection.execute(
+          "INSERT INTO plan_sources (plan_id, source_id) VALUES (?, ?)",
+          [plan.id, sourceId]
+        );
+      }
+    }
+
     await connection.execute(
       `INSERT INTO user_workspaces (user_id, active_plan_id)
        VALUES (?, ?)
@@ -103,7 +127,6 @@ export async function getWorkspaceRecord(userId) {
       ORDER BY a.created_at`,
     [userId, ...planIds]
   );
-
   const progressByPlan = new Map();
   for (const row of taskRows) {
     if (!progressByPlan.has(row.plan_id)) progressByPlan.set(row.plan_id, {});
@@ -135,20 +158,19 @@ export async function getWorkspaceRecord(userId) {
       at: toIso(row.created_at)
     });
   }
-
   const plans = planRows.map((row) => ({
-    id: row.id,
-    title: row.title,
-    createdAt: toIso(row.created_at),
-    category: row.category,
-    data: parseJson(row.content_json, {}),
-    progress: progressByPlan.get(row.id) || {},
-    notes: row.notes || "",
-    masteryEvidence: parseJson(row.mastery_evidence_json, []),
-    quizHistory: historyByPlan.get(row.id) || [],
-    quizRound: Number(row.quiz_round || 0),
-    version: Number(row.version || 1)
-  }));
+      id: row.id,
+      title: row.title,
+      createdAt: toIso(row.created_at),
+      category: row.category,
+      data: parseJson(row.content_json, {}),
+      progress: progressByPlan.get(row.id) || {},
+      notes: row.notes || "",
+      masteryEvidence: parseJson(row.mastery_evidence_json, []),
+      quizHistory: historyByPlan.get(row.id) || [],
+      quizRound: Number(row.quiz_round || 0),
+      version: Number(row.version || 1)
+    }));
   const requestedActiveId = workspaceRows[0]?.active_plan_id;
   const currentPlanId = plans.some((plan) => plan.id === requestedActiveId)
     ? requestedActiveId

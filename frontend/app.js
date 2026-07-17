@@ -53,6 +53,27 @@ const RECOMMENDED_COURSES = [
 
 const els = {
   form: document.querySelector("#learningForm"),
+  profileMessageForm: document.querySelector("#profileMessageForm"),
+  profileMessageInput: document.querySelector("#profileMessageInput"),
+  profileMessageButton: document.querySelector("#profileMessageButton"),
+  profileMessages: document.querySelector("#profileMessages"),
+  profileSuggestions: document.querySelector("#profileSuggestions"),
+  profileCompleteness: document.querySelector("#profileCompleteness"),
+  profileCompletenessMeter: document.querySelector("#profileCompletenessMeter"),
+  profileReadyState: document.querySelector("#profileReadyState"),
+  profileSummary: document.querySelector("#profileSummary"),
+  profileFieldChecklist: document.querySelector("#profileFieldChecklist"),
+  profileCourseSummary: document.querySelector("#profileCourseSummary"),
+  resetProfileInterview: document.querySelector("#resetProfileInterview"),
+  sourceFileInput: document.querySelector("#sourceFileInput"),
+  sourceDropzone: document.querySelector("#sourceDropzone"),
+  sourceUploadStatus: document.querySelector("#sourceUploadStatus"),
+  sourceLibrary: document.querySelector("#sourceLibrary"),
+  sourceSelectionSummary: document.querySelector("#sourceSelectionSummary"),
+  sourceBindButton: document.querySelector("#sourceBindButton"),
+  sourceSearchQuery: document.querySelector("#sourceSearchQuery"),
+  sourceSearchButton: document.querySelector("#sourceSearchButton"),
+  sourceSearchResults: document.querySelector("#sourceSearchResults"),
   resultMode: document.querySelector("#resultMode"),
   dailyPanel: document.querySelector("#dailyPanel"),
   progressSummary: document.querySelector("#progressSummary"),
@@ -128,6 +149,15 @@ const els = {
 
 els.llmTestButton.addEventListener("click", testLargeModel);
 els.form.addEventListener("submit", generatePlan);
+els.form.addEventListener("input", syncProfileDraftFromForm);
+els.profileMessageForm.addEventListener("submit", submitProfileMessage);
+els.resetProfileInterview.addEventListener("click", resetProfileInterview);
+els.sourceFileInput.addEventListener("change", () => uploadCourseFiles([...els.sourceFileInput.files]));
+els.sourceDropzone.addEventListener("dragover", handleSourceDragOver);
+els.sourceDropzone.addEventListener("dragleave", handleSourceDragLeave);
+els.sourceDropzone.addEventListener("drop", handleSourceDrop);
+els.sourceSearchButton.addEventListener("click", searchSelectedSources);
+els.sourceBindButton.addEventListener("click", bindSourcesToCurrentPlan);
 els.coachButton.addEventListener("click", askTutor);
 els.practicePanel.addEventListener("keydown", handleCodeTextareaKeydown, true);
 els.cancelDeleteButton.addEventListener("click", () => closeDeleteConfirmation(false));
@@ -165,6 +195,7 @@ document.querySelectorAll("[data-topic-chip]").forEach((button) => {
       项目实战: "用 Node.js 做一个学习助手"
     };
     els.topicInput.value = examples[topic] || topic;
+    syncProfileDraftFromForm();
     els.topicInput.focus();
   });
 });
@@ -173,6 +204,7 @@ boot();
 
 function boot() {
   setView(activeView, { replace: true });
+  initializeProfileInterview();
   renderAll();
   renderIdleFlow();
   loadAgents();
@@ -182,6 +214,488 @@ function boot() {
   if (getCurrentPlan()) {
     els.coachMode.textContent = "已加载学习上下文";
   }
+}
+
+async function initializeProfileInterview() {
+  if (state.profileInterview?.messages?.length) {
+    renderProfileInterview();
+    return;
+  }
+  els.profileMessages.innerHTML = `<div class="profile-message">正在准备画像访谈...</div>`;
+  try {
+    state.profileInterview = await request("/api/profile/interview");
+    saveState();
+    renderProfileInterview();
+  } catch {
+    state.profileInterview = createLocalProfileInterview();
+    saveState();
+    renderProfileInterview();
+  }
+}
+
+async function submitProfileMessage(event) {
+  event.preventDefault();
+  const message = els.profileMessageInput.value.trim();
+  if (!message) {
+    els.profileMessageInput.focus();
+    return;
+  }
+  const current = state.profileInterview || createLocalProfileInterview();
+  els.profileMessageButton.disabled = true;
+  els.profileMessageButton.setAttribute("aria-busy", "true");
+  els.profileMessageInput.disabled = true;
+  const optimistic = {
+    ...current,
+    messages: [
+      ...(current.messages || []),
+      { role: "student", content: message, at: new Date().toISOString() },
+      { role: "assistant", content: "正在提取画像信息...", at: new Date().toISOString(), pending: true }
+    ]
+  };
+  state.profileInterview = optimistic;
+  renderProfileInterview();
+
+  try {
+    const result = await request("/api/profile/interview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message,
+        draft: current.draft || {},
+        messages: current.messages || []
+      })
+    });
+    state.profileInterview = result;
+    els.profileMessageInput.value = "";
+    applyProfileDraftToForm(result.draft || {});
+    saveState();
+    renderProfileInterview();
+  } catch (error) {
+    state.profileInterview = {
+      ...current,
+      messages: [
+        ...(current.messages || []),
+        { role: "student", content: message, at: new Date().toISOString() },
+        { role: "assistant", content: `暂时无法分析这段信息：${error.message}。你可以在下方精调信息中直接修改。`, at: new Date().toISOString() }
+      ]
+    };
+    saveState();
+    renderProfileInterview();
+  } finally {
+    els.profileMessageButton.disabled = false;
+    els.profileMessageButton.removeAttribute("aria-busy");
+    els.profileMessageInput.disabled = false;
+    els.profileMessageInput.focus();
+  }
+}
+
+async function resetProfileInterview() {
+  const previous = state.profileInterview;
+  els.resetProfileInterview.disabled = true;
+  try {
+    state.profileInterview = await request("/api/profile/interview");
+  } catch {
+    state.profileInterview = createLocalProfileInterview();
+  } finally {
+    els.resetProfileInterview.disabled = false;
+  }
+  if (previous?.draft?.topic) els.topicInput.value = previous.draft.topic;
+  saveState();
+  renderProfileInterview();
+  els.profileMessageInput.focus();
+}
+
+function renderProfileInterview() {
+  const interview = state.profileInterview || createLocalProfileInterview();
+  const messages = (interview.messages || []).filter((item) => item?.content);
+  els.profileMessages.innerHTML = messages.map((message) => `
+    <div class="profile-message ${message.role === "student" ? "student" : "assistant"} ${message.pending ? "pending" : ""}">
+      ${escapeHtml(message.content)}
+      <small>${message.role === "student" ? "你" : "画像智能体"} · ${profileMessageTime(message.at)}</small>
+    </div>
+  `).join("") || `<div class="profile-message">先介绍一下你的学习目标，我会逐步补齐画像。</div>`;
+  els.profileMessages.scrollTop = els.profileMessages.scrollHeight;
+
+  const suggestions = interview.suggestions || [];
+  els.profileSuggestions.innerHTML = suggestions.map((suggestion) => (
+    `<button type="button" data-profile-suggestion="${escapeHtml(suggestion)}">${escapeHtml(suggestion)}</button>`
+  )).join("");
+  els.profileSuggestions.querySelectorAll("[data-profile-suggestion]").forEach((button) => {
+    button.addEventListener("click", () => {
+      els.profileMessageInput.value = button.dataset.profileSuggestion;
+      els.profileMessageForm.requestSubmit();
+    });
+  });
+
+  const completeness = interview.completeness || profileCompletenessFromDraft(interview.draft || {});
+  els.profileCompleteness.textContent = `${Number(completeness.percent || 0)}%`;
+  els.profileCompletenessMeter.value = Number(completeness.percent || 0);
+  els.profileReadyState.textContent = interview.ready ? "画像可用" : completeness.percent >= 50 ? "继续补充" : "正在了解你";
+  els.profileReadyState.classList.toggle("ok", Boolean(interview.ready));
+  els.profileSummary.textContent = interview.profilePreview?.summary || "完成几轮简短对话后，这里会形成带置信度和证据的初始画像。";
+  els.profileFieldChecklist.innerHTML = (completeness.fields || []).map((field) => `
+    <span class="${field.completed ? "complete" : ""}" title="置信度 ${Math.round(Number(field.confidence || 0) * 100)}%">
+      ${escapeHtml(field.label)}${field.completed ? ` · ${Math.round(Number(field.confidence || 0) * 100)}%` : " · 待补充"}
+    </span>
+  `).join("");
+  const draft = interview.draft || {};
+  els.profileCourseSummary.textContent = draft.topic
+    ? `${draft.topic} · ${draft.level || "待校准基础"} · ${draft.duration || "待确认周期"} · ${draft.style || "自适应方式"}`
+    : "画像完成后可在这里确认课程";
+  const dimensions = interview.profilePreview?.dimensions || defaultProfileDimensions();
+  drawRadar("profileRadar", dimensions);
+}
+
+function syncProfileDraftFromForm() {
+  const interview = state.profileInterview || createLocalProfileInterview();
+  const values = Object.fromEntries(new FormData(els.form).entries());
+  const draft = { ...(interview.draft || {}), confidence: { ...(interview.draft?.confidence || {}) } };
+  ["topic", "major", "goal", "level", "duration", "dailyMinutes", "style", "weaknesses", "learningHistory"].forEach((field) => {
+    if (values[field]) {
+      draft[field] = values[field];
+      draft.confidence[field] = 1;
+    }
+  });
+  state.profileInterview = {
+    ...interview,
+    draft,
+    completeness: profileCompletenessFromDraft(draft),
+    ready: Boolean(draft.topic && draft.goal),
+    profilePreview: {
+      ...(interview.profilePreview || {}),
+      summary: `${draft.major || "当前学习者"}计划学习${draft.topic || "待确认主题"}，课程将优先围绕${draft.weaknesses || "诊断结果"}展开。`
+    }
+  };
+  saveState();
+  renderProfileInterview();
+}
+
+function applyProfileDraftToForm(draft) {
+  Object.entries(draft || {}).forEach(([name, value]) => {
+    if (name === "confidence" || !value) return;
+    const field = els.form.elements.namedItem(name);
+    if (!field) return;
+    if (field.tagName === "SELECT" && ![...field.options].some((option) => option.value === value)) {
+      field.add(new Option(value, value));
+    }
+    field.value = value;
+  });
+}
+
+function profileCompletenessFromDraft(draft) {
+  const definitions = [
+    ["topic", "学习主题", 20],
+    ["major", "专业背景", 10],
+    ["goal", "学习目标", 16],
+    ["level", "当前基础", 12],
+    ["duration", "学习周期", 10],
+    ["dailyMinutes", "每日时间", 10],
+    ["style", "学习偏好", 10],
+    ["weaknesses", "薄弱点", 12]
+  ];
+  const fields = definitions.map(([field, label]) => ({
+    field,
+    label,
+    completed: Boolean(draft?.[field]),
+    confidence: Number(draft?.confidence?.[field] || (draft?.[field] ? 0.7 : 0))
+  }));
+  return {
+    percent: definitions.reduce((sum, [field, , weight]) => sum + (draft?.[field] ? weight : 0), 0),
+    fields,
+    completed: fields.filter((item) => item.completed).map((item) => item.field),
+    missing: fields.filter((item) => !item.completed).map((item) => item.field)
+  };
+}
+
+function createLocalProfileInterview() {
+  const draft = {};
+  return {
+    draft,
+    messages: [{ role: "assistant", content: "你好，我是学习画像智能体。你最想系统学习的课程或主题是什么？", at: new Date().toISOString() }],
+    completeness: profileCompletenessFromDraft(draft),
+    profilePreview: { dimensions: defaultProfileDimensions(), summary: "当前画像尚未校准，请先描述你的学习需求。" },
+    suggestions: ["机器学习基础", "数据结构与算法", "操作系统"],
+    ready: false,
+    mode: "frontend-fallback"
+  };
+}
+
+function defaultProfileDimensions() {
+  return ["先修基础", "概念理解", "方法迁移", "实践应用", "表达复盘", "学习自驱"]
+    .map((dimension) => ({ dimension, score: 42 }));
+}
+
+function profileMessageTime(value) {
+  const date = Number.isNaN(Date.parse(value)) ? new Date() : new Date(value);
+  return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+}
+
+async function loadKnowledgeSources() {
+  if (!state.databaseReady) {
+    renderSourceLibrary();
+    return;
+  }
+  try {
+    const data = await request("/api/sources");
+    state.knowledgeSources = data.sources || [];
+    const available = new Set(state.knowledgeSources
+      .filter((source) => source.status === "ready")
+      .map((source) => source.id));
+    state.selectedSourceIds = (state.selectedSourceIds || []).filter((id) => available.has(id));
+    saveState();
+    renderSourceLibrary();
+  } catch (error) {
+    els.sourceUploadStatus.textContent = `资料库加载失败：${error.message}`;
+    els.sourceUploadStatus.className = "source-upload-status error";
+    renderSourceLibrary();
+  }
+}
+
+function renderSourceLibrary() {
+  const sources = state.knowledgeSources || [];
+  const selected = new Set(state.selectedSourceIds || []);
+  const readyCount = sources.filter((source) => source.status === "ready").length;
+  els.sourceSelectionSummary.textContent = selected.size
+    ? `已选 ${selected.size} / ${readyCount} 份`
+    : readyCount ? `${readyCount} 份可用 · 未选择` : "未选择资料";
+  els.sourceSelectionSummary.classList.toggle("ok", selected.size > 0);
+  const plan = getCurrentPlan();
+  const boundIds = new Set(plan?.data?.input?.knowledgeSourceIds || []);
+  const bindingChanged = plan && (
+    boundIds.size !== selected.size || [...boundIds].some((id) => !selected.has(id))
+  );
+  els.sourceBindButton.hidden = !state.databaseReady || !plan;
+  els.sourceBindButton.disabled = !bindingChanged;
+  els.sourceBindButton.textContent = bindingChanged ? "应用到当前课程" : "当前课程已同步";
+
+  if (!sources.length) {
+    els.sourceLibrary.className = "source-library empty-state";
+    els.sourceLibrary.innerHTML = `<p>${state.databaseReady
+      ? "还没有课程资料。上传后会自动解析并显示可引用片段数量。"
+      : "资料上传需要数据库服务；当前仍可使用原有的无资料课程生成。"}</p>`;
+    return;
+  }
+
+  els.sourceLibrary.className = "source-library";
+  els.sourceLibrary.innerHTML = sources.map((source) => {
+    const ready = source.status === "ready";
+    const statusLabel = ready ? "可检索" : source.status === "failed" ? "解析失败" : "解析中";
+    return `
+      <article class="source-item ${source.status}">
+        <label class="source-select-control" title="${ready ? "用于课程生成和导师问答" : "资料解析完成后才能选择"}">
+          <input type="checkbox" data-source-select="${escapeHtml(source.id)}"
+            ${selected.has(source.id) ? "checked" : ""} ${ready ? "" : "disabled"} />
+          <span class="source-file-icon">${escapeHtml(source.extension?.slice(1).toUpperCase() || "DOC")}</span>
+        </label>
+        <div class="source-item-body">
+          <strong title="${escapeHtml(source.name)}">${escapeHtml(source.name)}</strong>
+          <div class="source-meta">
+            <span class="source-state ${source.status}">${statusLabel}</span>
+            <span>${formatFileSize(source.byteSize)}</span>
+            ${ready ? `<span>${Number(source.charCount || 0).toLocaleString("zh-CN")} 字符</span><span>${Number(source.chunkCount || 0)} 个引用片段</span>` : ""}
+          </div>
+          ${source.errorMessage ? `<small class="source-error">${escapeHtml(source.errorMessage)}</small>` : ""}
+        </div>
+        <button class="source-remove-button" type="button" data-source-remove="${escapeHtml(source.id)}" aria-label="移除 ${escapeHtml(source.name)}">移除</button>
+      </article>
+    `;
+  }).join("");
+
+  els.sourceLibrary.querySelectorAll("[data-source-select]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const ids = new Set(state.selectedSourceIds || []);
+      if (input.checked) ids.add(input.dataset.sourceSelect);
+      else ids.delete(input.dataset.sourceSelect);
+      state.selectedSourceIds = [...ids];
+      saveState();
+      renderSourceLibrary();
+    });
+  });
+  els.sourceLibrary.querySelectorAll("[data-source-remove]").forEach((button) => {
+    button.addEventListener("click", () => requestSourceRemoval(button));
+  });
+}
+
+async function uploadCourseFiles(files) {
+  if (!files.length) return;
+  if (!state.databaseReady) {
+    els.sourceUploadStatus.textContent = "数据库尚未连接，暂时不能保存课程资料。";
+    els.sourceUploadStatus.className = "source-upload-status error";
+    return;
+  }
+  const selectedFiles = files.slice(0, 8);
+  els.sourceFileInput.disabled = true;
+  els.sourceDropzone.classList.add("uploading");
+  let completed = 0;
+  let failed = 0;
+  for (const file of selectedFiles) {
+    els.sourceUploadStatus.textContent = `正在解析 ${file.name} · ${completed + failed + 1}/${selectedFiles.length}`;
+    els.sourceUploadStatus.className = "source-upload-status working";
+    try {
+      validateSourceFileInBrowser(file);
+      const data = await request("/api/sources", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename: file.name,
+          mimeType: file.type,
+          contentBase64: await fileToBase64(file)
+        })
+      });
+      if (data.source?.status === "ready") {
+        state.selectedSourceIds = [...new Set([...(state.selectedSourceIds || []), data.source.id])];
+      }
+      completed += 1;
+    } catch (error) {
+      failed += 1;
+      els.sourceUploadStatus.textContent = `${file.name} 上传失败：${error.message}`;
+      els.sourceUploadStatus.className = "source-upload-status error";
+    }
+  }
+  await loadKnowledgeSources();
+  els.sourceFileInput.value = "";
+  els.sourceFileInput.disabled = false;
+  els.sourceDropzone.classList.remove("uploading", "dragging");
+  els.sourceUploadStatus.textContent = failed
+    ? `已完成 ${completed} 份，${failed} 份失败；失败资料保留原因，可移除后重试。`
+    : `已完成 ${completed} 份资料的解析、分段和索引，并自动选中。`;
+  els.sourceUploadStatus.className = `source-upload-status ${failed ? "error" : "success"}`;
+}
+
+function handleSourceDragOver(event) {
+  event.preventDefault();
+  if (!els.sourceFileInput.disabled) els.sourceDropzone.classList.add("dragging");
+}
+
+function handleSourceDragLeave(event) {
+  if (!els.sourceDropzone.contains(event.relatedTarget)) els.sourceDropzone.classList.remove("dragging");
+}
+
+function handleSourceDrop(event) {
+  event.preventDefault();
+  els.sourceDropzone.classList.remove("dragging");
+  if (!els.sourceFileInput.disabled) uploadCourseFiles([...event.dataTransfer.files]);
+}
+
+function validateSourceFileInBrowser(file) {
+  if (!/\.(pdf|docx|pptx|md|txt|csv|json)$/i.test(file.name)) {
+    throw new Error("仅支持 PDF、DOCX、PPTX、Markdown、TXT、CSV 和 JSON");
+  }
+  if (!file.size) throw new Error("不能上传空文件");
+  if (file.size > 12 * 1024 * 1024) throw new Error("单文件不能超过 12 MB");
+}
+
+async function fileToBase64(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
+}
+
+async function requestSourceRemoval(button) {
+  if (button.dataset.confirming !== "true") {
+    button.dataset.confirming = "true";
+    button.textContent = "确认移除";
+    button.classList.add("confirming");
+    setTimeout(() => {
+      if (!button.isConnected) return;
+      button.dataset.confirming = "false";
+      button.textContent = "移除";
+      button.classList.remove("confirming");
+    }, 4000);
+    return;
+  }
+  button.disabled = true;
+  try {
+    await request(`/api/sources/${encodeURIComponent(button.dataset.sourceRemove)}`, { method: "DELETE" });
+    state.selectedSourceIds = (state.selectedSourceIds || []).filter((id) => id !== button.dataset.sourceRemove);
+    await loadKnowledgeSources();
+    els.sourceUploadStatus.textContent = "资料已移除，相关课程绑定也已解除。";
+    els.sourceUploadStatus.className = "source-upload-status success";
+  } catch (error) {
+    els.sourceUploadStatus.textContent = `移除失败：${error.message}`;
+    els.sourceUploadStatus.className = "source-upload-status error";
+    button.disabled = false;
+  }
+}
+
+async function searchSelectedSources() {
+  const query = els.sourceSearchQuery.value.trim();
+  const sourceIds = state.selectedSourceIds || [];
+  if (!sourceIds.length || !query) {
+    els.sourceSearchResults.className = "rag-search-results empty-state";
+    els.sourceSearchResults.innerHTML = `<p>${sourceIds.length ? "请先输入想验证的问题。" : "请先从左侧勾选至少一份可用资料。"}</p>`;
+    return;
+  }
+  els.sourceSearchButton.disabled = true;
+  els.sourceSearchButton.textContent = "检索中";
+  els.sourceSearchResults.className = "rag-search-results loading";
+  els.sourceSearchResults.innerHTML = "<p>正在对资料分块进行相关性排序并生成引用…</p>";
+  try {
+    const data = await request("/api/sources/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, sourceIds, limit: 6 })
+    });
+    renderSourceSearchResults(data.citations || []);
+  } catch (error) {
+    els.sourceSearchResults.className = "rag-search-results empty-state";
+    els.sourceSearchResults.innerHTML = `<p>检索失败：${escapeHtml(error.message)}</p>`;
+  } finally {
+    els.sourceSearchButton.disabled = false;
+    els.sourceSearchButton.textContent = "检索所选资料";
+  }
+}
+
+function renderSourceSearchResults(citations) {
+  if (!citations.length) {
+    els.sourceSearchResults.className = "rag-search-results empty-state";
+    els.sourceSearchResults.innerHTML = "<p>所选资料中没有找到足够相关的片段。系统不会伪造引用，可换一种问法再试。</p>";
+    return;
+  }
+  els.sourceSearchResults.className = "rag-search-results";
+  els.sourceSearchResults.innerHTML = citations.map(renderCitationCard).join("");
+}
+
+function renderCitationCard(citation) {
+  return `
+    <article class="citation-card">
+      <div><span class="citation-marker">${escapeHtml(citation.id || "S")}</span><strong>${escapeHtml(citation.title || "课程资料")}</strong></div>
+      <small>${escapeHtml(citation.locator || citation.sectionTitle || "原文片段")}</small>
+      <p>${escapeHtml(citation.quote || "")}</p>
+    </article>
+  `;
+}
+
+async function bindSourcesToCurrentPlan() {
+  const plan = getCurrentPlan();
+  if (!plan || !state.databaseReady) return;
+  els.sourceBindButton.disabled = true;
+  els.sourceBindButton.textContent = "同步中";
+  try {
+    await request(`/api/plans/${encodeURIComponent(plan.id)}/sources`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sourceIds: state.selectedSourceIds || [] })
+    });
+    applyDatabaseState(await request("/api/workspace"));
+    await loadKnowledgeSources();
+    els.sourceUploadStatus.textContent = "当前课程的资料绑定已更新；后续课程生成和导师问答会实时检索新资料。";
+    els.sourceUploadStatus.className = "source-upload-status success";
+  } catch (error) {
+    els.sourceUploadStatus.textContent = `课程绑定失败：${error.message}`;
+    els.sourceUploadStatus.className = "source-upload-status error";
+    renderSourceLibrary();
+  }
+}
+
+function formatFileSize(value) {
+  const bytes = Number(value || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 async function checkJudgeStatus() {
@@ -215,8 +729,10 @@ async function loadDiskState() {
     }
     applyDatabaseState(databaseState);
     state.databaseReady = true;
+    await loadKnowledgeSources();
   } catch {
     state.databaseReady = false;
+    renderSourceLibrary();
   }
 }
 
@@ -331,13 +847,15 @@ async function generatePlan(event) {
   event.preventDefault();
   const submitButtons = [...els.form.querySelectorAll("button[type='submit']")];
   const submitButton = submitButtons[0];
+  const submitLabel = submitButton.textContent;
   submitButtons.forEach((button) => {
     button.disabled = true;
     button.setAttribute("aria-busy", "true");
   });
-  submitButton.textContent = "↑";
+  submitButton.textContent = "正在生成课程";
 
   const payload = Object.fromEntries(new FormData(els.form).entries());
+  payload.knowledgeSourceIds = state.databaseReady ? (state.selectedSourceIds || []) : [];
   startFlowSession();
   setView("home");
 
@@ -369,7 +887,7 @@ async function generatePlan(event) {
       button.disabled = false;
       button.removeAttribute("aria-busy");
     });
-    submitButton.textContent = "↑";
+    submitButton.textContent = submitLabel;
   }
 }
 
@@ -389,6 +907,7 @@ function normalizeNewPlan(data) {
 }
 
 function renderAll() {
+  renderSourceLibrary();
   renderCourseChrome();
   renderSavedPlans();
   renderDailyPlan();
@@ -604,6 +1123,7 @@ function bindRecommendedCourseActions(container) {
   container.querySelectorAll("[data-recommend-topic]").forEach((button) => {
     button.addEventListener("click", () => {
       els.topicInput.value = button.dataset.recommendTopic;
+      syncProfileDraftFromForm();
       setView("home");
       els.topicInput.focus();
     });
@@ -674,6 +1194,10 @@ async function activatePlan(planId) {
     saveState();
     renderAll();
   }
+  const activePlan = getCurrentPlan();
+  state.selectedSourceIds = [...(activePlan?.data?.input?.knowledgeSourceIds || [])];
+  saveState();
+  renderSourceLibrary();
 }
 
 function courseInitials(title) {
@@ -1219,6 +1743,10 @@ function renderKnowledge() {
   const mastery = computeMastery(plan);
   const summary = progressSummaryFor(plan);
   const concepts = plan.data?.adaptiveState?.concepts || plan.data?.knowledgeGraph?.concepts || [];
+  const courseSources = plan.data?.input?.knowledgeSources || [];
+  const sourceCitations = plan.data?.input?.knowledgeGrounding?.citations
+    || plan.data?.resourcePackage?.sourceCitations
+    || [];
   const diagnosticText = plan.data?.diagnosticResult ? `，诊断 ${plan.data.diagnosticResult.percent}%` : "";
   els.masteryMode.textContent = `基于 ${summary.done} 项打卡、${Object.keys(state.quizResults || {}).length} 道测评${diagnosticText}`;
   els.knowledgePanel.className = "result-grid";
@@ -1253,6 +1781,27 @@ function renderKnowledge() {
         `).join("")}
       </div>
     </article>
+    <article class="result-card full course-grounding-card">
+      <div class="course-grounding-head">
+        <div>
+          <span class="mini-label">课程依据</span>
+          <h3>课程资料与可核验引用</h3>
+        </div>
+        <button class="ghost-button" type="button" data-manage-sources>管理资料</button>
+      </div>
+      ${courseSources.length ? `
+        <div class="bound-source-list">
+          ${courseSources.map((source) => `
+            <span><b>${escapeHtml(source.extension?.slice(1).toUpperCase() || "DOC")}</b>${escapeHtml(source.name)}</span>
+          `).join("")}
+        </div>
+        <div class="course-citation-grid">
+          ${sourceCitations.length
+            ? sourceCitations.slice(0, 6).map(renderCitationCard).join("")
+            : "<p class=\"hint-text\">资料绑定已就绪；在生成当日资料或向导师提问时会按问题实时检索。</p>"}
+        </div>
+      ` : "<p class=\"hint-text\">这门课程尚未绑定自有资料，当前内容基于学习画像和系统知识生成。</p>"}
+    </article>
     ${plan.data?.diagnosticResult ? `
       <article class="result-card full">
         <h3>诊断错因</h3>
@@ -1269,6 +1818,13 @@ function renderKnowledge() {
       </div>
     </article>
   `;
+  els.knowledgePanel.querySelector("[data-manage-sources]")?.addEventListener("click", () => {
+    state.selectedSourceIds = [...(plan.data?.input?.knowledgeSourceIds || [])];
+    saveState();
+    renderSourceLibrary();
+    setView("home");
+    document.querySelector("#courseSourceTitle")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
   drawRadar("masteryRadar", mastery);
 }
 
@@ -2950,6 +3506,7 @@ async function requestGeneratedPlan(payload) {
 async function requestGeneratedPlanStream(payload) {
   const response = await fetch(`${API_BASE}/api/generate-stream`, {
     method: "POST",
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
@@ -3181,12 +3738,19 @@ async function askTutor() {
       body: JSON.stringify({
         question,
         context,
+        planId: state.databaseReady ? plan?.id : null,
+        sourceIds: plan?.data?.input?.knowledgeSourceIds || [],
         mode: els.tutorMode.value,
         hintLevel: Number(els.hintLevel.value || 1),
         history: state.tutorHistory || []
       })
     });
-    els.coachAnswer.innerHTML = renderMarkdown(data.answer);
+    els.coachAnswer.innerHTML = `${renderMarkdown(data.answer)}${data.citations?.length ? `
+      <section class="tutor-citations">
+        <strong>本次回答检索的课程资料</strong>
+        ${data.citations.map(renderCitationCard).join("")}
+      </section>
+    ` : ""}`;
     state.tutorHistory = [
       ...(state.tutorHistory || []),
       { role: "student", content: question, at: new Date().toISOString() },
@@ -3331,7 +3895,10 @@ function serializeState() {
     projectProgress: state.projectProgress || {},
     projectSubmissions: state.projectSubmissions || {},
     mistakeFilters: state.mistakeFilters || { concept: "all", type: "all", reason: "all" },
-    lastQuizOptions: state.lastQuizOptions || null
+    lastQuizOptions: state.lastQuizOptions || null,
+    profileInterview: state.profileInterview || null,
+    knowledgeSources: state.knowledgeSources || [],
+    selectedSourceIds: state.selectedSourceIds || []
   };
 }
 
@@ -3353,6 +3920,9 @@ function loadState() {
       projectSubmissions: saved?.projectSubmissions || {},
       mistakeFilters: saved?.mistakeFilters || { concept: "all", type: "all", reason: "all" },
       lastQuizOptions: saved?.lastQuizOptions || null,
+      profileInterview: saved?.profileInterview || null,
+      knowledgeSources: saved?.knowledgeSources || [],
+      selectedSourceIds: saved?.selectedSourceIds || [],
       databaseReady: false
     };
   } catch {
@@ -3371,6 +3941,9 @@ function loadState() {
       projectSubmissions: {},
       mistakeFilters: { concept: "all", type: "all", reason: "all" },
       lastQuizOptions: null,
+      profileInterview: null,
+      knowledgeSources: [],
+      selectedSourceIds: [],
       databaseReady: false
     };
   }
