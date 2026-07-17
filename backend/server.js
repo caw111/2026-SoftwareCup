@@ -14,6 +14,8 @@ import {
   generateDailyLearningMaterials,
   generateLearningReportWithLlm,
   generateLearningPlan,
+  evaluateDiagnosticPretestWithLlm,
+  generateDiagnosticPretestWithLlm,
   normalizeInput,
   runLocalAgents,
   streamLearningPlan,
@@ -48,7 +50,6 @@ import {
 import { requireUserSession } from "./src/services/session-service.js";
 import { getStorageStatus, readWorkspaceState, writeWorkspaceState, storagePublicConfig } from "./src/storage.js";
 import { clean, ensureArray } from "./src/utils.js";
-import { evaluateDiagnosticPretest } from "./src/adaptive-learning.js";
 import {
   advanceProfileInterviewWithLlm,
   createProfileInterviewSession
@@ -388,8 +389,23 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/diagnostic/evaluate") {
       const body = await readJson(req);
-      const result = evaluateDiagnosticPretest(body.plan || {}, body.answers || {});
+      const plan = body.plan || {};
+      const groundedPlan = plan?.input?.knowledgeSourceIds?.length
+        ? { ...plan, input: await groundedInput(req, res, plan.input) }
+        : plan;
+      const result = await evaluateDiagnosticPretestWithLlm(groundedPlan, body.answers || {});
       sendJson(res, 200, result);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/diagnostic/generate") {
+      const body = await readJson(req);
+      const plan = body.plan || {};
+      const groundedPlan = plan?.input?.knowledgeSourceIds?.length
+        ? { ...plan, input: await groundedInput(req, res, plan.input) }
+        : plan;
+      const diagnosticPretest = await generateDiagnosticPretestWithLlm(groundedPlan);
+      sendJson(res, 200, { diagnosticPretest });
       return;
     }
 

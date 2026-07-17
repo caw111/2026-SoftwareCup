@@ -2034,7 +2034,10 @@ function renderDiagnostic() {
         <strong>${escapeHtml(diagnostic.title)}</strong>
         <p>${escapeHtml(diagnostic.objective || "")}</p>
       </div>
-      ${result ? `<span class="score-badge">${result.percent}%</span>` : "<span class=\"score-badge muted\">待测</span>"}
+      <div class="heading-actions">
+        <button class="ghost-button" type="button" id="regenerateDiagnosticButton">重新生成课前测</button>
+        ${result ? `<span class="score-badge">${result.percent}%</span>` : "<span class=\"score-badge muted\">待测</span>"}
+      </div>
     </section>
     <div class="diagnostic-list">
       ${diagnostic.items.map((item, index) => renderDiagnosticItem(item, index, result)).join("")}
@@ -2042,6 +2045,7 @@ function renderDiagnostic() {
     <button id="submitDiagnosticButton" class="primary-button" type="button">提交诊断并更新画像</button>
   `;
   els.diagnosticPanel.querySelector("#submitDiagnosticButton").addEventListener("click", evaluateDiagnostic);
+  els.diagnosticPanel.querySelector("#regenerateDiagnosticButton").addEventListener("click", regenerateDiagnosticPretest);
 }
 
 function renderDiagnosticItem(item, index, result) {
@@ -2141,6 +2145,49 @@ async function evaluateDiagnostic() {
   } finally {
     button.disabled = false;
     button.textContent = "提交诊断并更新画像";
+  }
+}
+
+async function regenerateDiagnosticPretest() {
+  const plan = getCurrentPlan();
+  if (!plan?.data) return;
+  const button = els.diagnosticPanel.querySelector("#regenerateDiagnosticButton");
+  const originalText = button?.textContent || "重新生成课前测";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "LLM 生成中";
+  }
+  els.diagnosticMode.textContent = "正在生成 LLM 课前测";
+  try {
+    const data = await request("/api/diagnostic/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ plan: plan.data })
+    });
+    plan.data.diagnosticPretest = data.diagnosticPretest;
+    plan.data.diagnosticResult = null;
+    plan.data.remediationPlan = null;
+    state.diagnosticStartedAt = {
+      ...(state.diagnosticStartedAt || {}),
+      [plan.id]: Date.now()
+    };
+    recordBehavior("diagnostic-generated", { planId: plan.id, detail: "LLM 课前测" });
+    saveState();
+    if (state.databaseReady) {
+      await request(`/api/plans/${encodeURIComponent(plan.id)}/content`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data: plan.data, masteryEvidence: plan.masteryEvidence || [] })
+      });
+    }
+    renderDiagnostic();
+    renderRemediation();
+  } catch (error) {
+    els.diagnosticMode.textContent = `生成失败：${error.message}`;
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
   }
 }
 
@@ -3863,6 +3910,7 @@ function examScoreText(exam) {
 function behaviorLabel(type) {
   return {
     "plan-generated": "生成方案",
+    "diagnostic-generated": "生成课前测",
     "diagnostic-submitted": "提交诊断",
     "quiz-generated": "生成练习",
     "quiz-submitted": "提交练习",

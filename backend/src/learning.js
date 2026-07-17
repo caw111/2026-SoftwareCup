@@ -11,6 +11,7 @@ import { bootstrapJudgeRuntime, friendlyJudgeError, getJudgeRuntimeStatus } from
 import {
   buildAdaptiveState,
   buildDiagnosticPretest,
+  evaluateDiagnosticPretest,
   buildGovernanceReport,
   buildKnowledgeGraph,
   buildRemediationPlan
@@ -198,6 +199,53 @@ export function validateLearningReportMarkdown(markdown, context) {
   if (!/(下一步|行动计划)/.test(content)) issues.push("缺少可执行的下一步计划");
   if (!/(证据局限|数据局限|暂无证据)/.test(content)) issues.push("缺少证据局限说明");
   return issues;
+}
+
+export async function evaluateDiagnosticPretestWithLlm(plan, answers = {}) {
+  const localResult = evaluateDiagnosticPretest(plan, answers);
+  if (!MODEL_CONFIG.apiKey) return localResult;
+
+  try {
+    const remediationPlan = await callLargeModelForRemediationPlan(
+      plan?.input || {},
+      {
+        learnerProfile: plan?.learnerProfile || {},
+        knowledgeGraph: plan?.knowledgeGraph || {},
+        remediationPlan: localResult.remediationPlan
+      },
+      localResult
+    );
+    return {
+      ...localResult,
+      remediationPlan
+    };
+  } catch (error) {
+    return {
+      ...localResult,
+      remediationPlan: {
+        ...localResult.remediationPlan,
+        source: "local-fallback",
+        warning: `LLM 补救方案生成失败，已使用本地兜底方案：${error instanceof Error ? error.message : String(error)}`
+      }
+    };
+  }
+}
+
+export async function generateDiagnosticPretestWithLlm(plan) {
+  if (!MODEL_CONFIG.apiKey) {
+    const error = new Error("未配置大模型，无法重新生成 LLM 课前测");
+    error.statusCode = 503;
+    throw error;
+  }
+  const input = plan?.input || {};
+  const learnerProfile = plan?.learnerProfile || buildLearnerProfile(input);
+  const knowledgeGraph = plan?.knowledgeGraph || buildKnowledgeGraph(input, learnerProfile);
+  const diagnosticPretest = plan?.diagnosticPretest || buildDiagnosticPretest(input, learnerProfile, knowledgeGraph);
+  return callLargeModelForDiagnosticPretest(input, {
+    learnerProfile,
+    knowledgeGraph,
+    diagnosticPretest
+  });
 }
 
 export async function streamLearningPlan(res, input) {
@@ -1733,6 +1781,223 @@ function buildDetailedDailyMaterials(input, focus, day, concept) {
   ];
 }
 
+export function normalizeModelDiagnosticPretest(value, fallback = {}, input = {}) {
+  const diagnostic = value?.diagnosticPretest || value || {};
+  const fallbackItems = ensureArray(fallback?.items, []);
+  const items = ensureArray(diagnostic.items, [])
+    .map((item, index) => normalizeModelDiagnosticItem(item, fallbackItems[index], index))
+    .filter(Boolean)
+    .slice(0, 10);
+  if (items.length < 4) throw new Error("LLM 课前测题目不足，至少需要 4 道有效选择题");
+
+  return {
+    ...fallback,
+    title: clean(diagnostic.title || `${input.topic || fallback?.title || "课程"} 课前诊断`, 120),
+    objective: clean(diagnostic.objective || "由 LLM 根据学习画像和知识图谱生成诊断题，定位薄弱知识点和错因。", 300),
+    scoring: clean(diagnostic.scoring || "每题记录知识点、难度、区分度、耗时、错因标签和掌握概率。", 300),
+    expectedMinutes: Math.max(5, Math.min(30, Number.parseInt(diagnostic.expectedMinutes || Math.ceil(items.length * 1.5), 10) || 12)),
+    source: "llm",
+    generatedBy: "LLM 诊断前测智能体",
+    generatedAt: new Date().toISOString(),
+    items
+  };
+}
+
+function normalizeModelDiagnosticItem(item, fallback = {}, index = 0) {
+  if (!item || typeof item !== "object") return null;
+  const question = clean(item.question, 500);
+  const options = ensureArray(item.options, [])
+    .map((option) => clean(option, 220))
+    .filter(Boolean)
+    .slice(0, 4);
+  const answerIndex = Number(item.answerIndex);
+  const explanation = clean(item.explanation, 600);
+  if (!question || options.length !== 4 || !Number.isInteger(answerIndex) || answerIndex < 0 || answerIndex >= options.length || !explanation) {
+    return null;
+  }
+  const conceptId = clean(item.conceptId || fallback.conceptId || `llm-concept-${index + 1}`, 100);
+  const conceptTitle = clean(item.conceptTitle || fallback.conceptTitle || item.dimension || "诊断知识点", 120);
+  return {
+    ...fallback,
+    id: clean(item.id || `${conceptId}-llm-diagnostic-${index + 1}`, 160),
+    type: "choice",
+    conceptId,
+    conceptTitle,
+    dimension: clean(item.dimension || fallback.dimension || "综合能力", 80),
+    difficulty: clampRange(Number(item.difficulty ?? fallback.difficulty ?? 2), 1, 5),
+    discrimination: roundTo(clampRange(Number(item.discrimination ?? fallback.discrimination ?? 0.76), 0.55, 0.95), 2),
+    guess: roundTo(clampRange(Number(item.guess ?? fallback.guess ?? 0.25), 0.1, 0.4), 2),
+    timeLimitSec: clampRange(Number(item.timeLimitSec ?? fallback.timeLimitSec ?? 90), 45, 180),
+    question,
+    options,
+    answerIndex,
+    explanation,
+    misconceptionTags: ensureArray(item.misconceptionTags || item.tags, fallback.misconceptionTags || [])
+      .map((tag) => clean(tag, 80))
+      .filter(Boolean)
+      .slice(0, 5),
+    standard: clean(item.standard || fallback.standard || `能解释并应用「${conceptTitle}」。`, 260),
+    source: "llm-diagnostic",
+    score: clampRange(Number(item.score ?? fallback.score ?? 20), 5, 40)
+  };
+}
+
+export function normalizeModelRemediationPlan(value, fallback = {}, input = {}) {
+  const plan = value?.remediationPlan || value || {};
+  const weakConcepts = ensureArray(plan.weakConcepts, fallback?.weakConcepts || [])
+    .map(normalizeWeakConcept)
+    .filter(Boolean)
+    .slice(0, 5);
+  const microLessons = ensureArray(plan.microLessons, [])
+    .map(normalizeMicroLesson)
+    .filter(Boolean)
+    .slice(0, 5);
+  const workedExamples = ensureArray(plan.workedExamples, [])
+    .map(normalizeWorkedExample)
+    .filter(Boolean)
+    .slice(0, 4);
+  const variantItems = ensureArray(plan.variantItems, [])
+    .map((item, index) => normalizeVariantItem(item, index))
+    .filter(Boolean)
+    .slice(0, 6);
+  const retestItems = ensureArray(plan.retestItems, [])
+    .map((item, index) => normalizeRetestItem(item, index))
+    .filter(Boolean)
+    .slice(0, 5);
+  const sequence = ensureArray(plan.sequence, [])
+    .map(normalizeRemediationStep)
+    .filter(Boolean)
+    .slice(0, 6);
+  const hintLadder = ensureArray(plan.hintLadder, [])
+    .map((hint) => clean(hint, 220))
+    .filter(Boolean)
+    .slice(0, 6);
+  const coachPrompts = ensureArray(plan.coachPrompts, [])
+    .map((prompt) => clean(prompt, 240))
+    .filter(Boolean)
+    .slice(0, 5);
+
+  if (!microLessons.length || !variantItems.length || retestItems.length < 2 || sequence.length < 4) {
+    throw new Error("LLM 补救方案缺少微讲义、变式题、复测题或可执行步骤");
+  }
+
+  return {
+    ...fallback,
+    generatedAt: new Date().toISOString(),
+    source: "llm",
+    generatedBy: "LLM 个性化补救智能体",
+    target: clean(plan.target || weakConcepts[0]?.title || fallback?.target || input.topic || "当前主题", 120),
+    reason: clean(plan.reason || fallback?.reason || "LLM 根据学习画像、诊断证据和知识图谱生成补救方案。", 500),
+    weakConcepts,
+    microLessons,
+    workedExamples,
+    variantItems,
+    retestItems,
+    hintLadder: hintLadder.length >= 3 ? hintLadder : ensureArray(fallback?.hintLadder, []),
+    sequence,
+    coachPrompts: coachPrompts.length ? coachPrompts : ensureArray(fallback?.coachPrompts, [])
+  };
+}
+
+function normalizeWeakConcept(item) {
+  if (!item || typeof item !== "object") return null;
+  const title = clean(item.title || item.conceptTitle, 120);
+  if (!title) return null;
+  return {
+    conceptId: clean(item.conceptId || item.id || "", 100),
+    title,
+    dimension: clean(item.dimension || "综合能力", 80),
+    masteryScore: clampRange(Number(item.masteryScore ?? item.score ?? 55), 0, 100),
+    confidence: roundTo(clampRange(Number(item.confidence ?? 0.45), 0, 1), 2),
+    reason: clean(item.reason || item.evidence || "", 300),
+    misconceptions: ensureArray(item.misconceptions, []).map((misconception) => clean(misconception, 100)).filter(Boolean).slice(0, 4)
+  };
+}
+
+function normalizeMicroLesson(item) {
+  if (!item || typeof item !== "object") return null;
+  const title = clean(item.title, 140);
+  const content = clean(item.content, 1200);
+  if (!title || content.length < 40) return null;
+  return {
+    conceptId: clean(item.conceptId || "", 100),
+    title,
+    content,
+    misconceptionFix: ensureArray(item.misconceptionFix, [])
+      .map((fix) => clean(fix, 220))
+      .filter(Boolean)
+      .slice(0, 4)
+  };
+}
+
+function normalizeWorkedExample(item) {
+  if (!item || typeof item !== "object") return null;
+  const title = clean(item.title, 140);
+  const prompt = clean(item.prompt, 500);
+  const scaffold = ensureArray(item.scaffold, [])
+    .map((step) => clean(step, 180))
+    .filter(Boolean)
+    .slice(0, 6);
+  if (!title || !prompt || !scaffold.length) return null;
+  return { title, prompt, scaffold };
+}
+
+function normalizeVariantItem(item, index) {
+  if (!item || typeof item !== "object") return null;
+  const prompt = clean(item.prompt, 700);
+  const expected = clean(item.expected || item.answer || "", 500);
+  if (!prompt || !expected) return null;
+  return {
+    id: clean(item.id || `llm-variant-${index + 1}`, 120),
+    type: clean(item.type || "short", 40),
+    title: clean(item.title || `变式题 ${index + 1}`, 120),
+    prompt,
+    expected
+  };
+}
+
+function normalizeRetestItem(item, index) {
+  if (!item || typeof item !== "object") return null;
+  const prompt = clean(item.prompt || item.question, 700);
+  const options = ensureArray(item.options, [])
+    .map((option) => clean(option, 220))
+    .filter(Boolean)
+    .slice(0, 4);
+  const answerIndex = Number(item.answerIndex);
+  if (!prompt) return null;
+  const normalized = {
+    id: clean(item.id || `llm-retest-${index + 1}`, 120),
+    type: clean(item.type || (options.length ? "choice" : "short"), 40),
+    prompt,
+    expectedScore: clampRange(Number(item.expectedScore ?? 80), 50, 100)
+  };
+  if (options.length) {
+    if (options.length !== 4 || !Number.isInteger(answerIndex) || answerIndex < 0 || answerIndex >= options.length) return null;
+    return { ...normalized, type: "choice", options, answerIndex };
+  }
+  return normalized;
+}
+
+function normalizeRemediationStep(item) {
+  if (!item || typeof item !== "object") return null;
+  const step = clean(item.step, 100);
+  const action = clean(item.action, 500);
+  const expectedEvidence = clean(item.expectedEvidence || item.evidence || "", 300);
+  if (!step || !action || !expectedEvidence) return null;
+  return { step, action, expectedEvidence };
+}
+
+function clampRange(value, min, max) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return min;
+  return Math.max(min, Math.min(max, numeric));
+}
+
+function roundTo(value, digits = 2) {
+  const factor = 10 ** digits;
+  return Math.round(Number(value || 0) * factor) / factor;
+}
+
 function normalizeLearnerProfile(profile, fallback) {
   if (!profile) return fallback;
   return {
@@ -1792,7 +2057,15 @@ async function callLargeModelForPlan(input, localPlan) {
     profileSummary: localPlan.learnerProfile.summary,
     mastery: localPlan.learnerProfile.mastery,
     weak: localPlan.learnerProfile.weakestDimensions,
-    requiredDays: durationToDays(input.duration)
+    requiredDays: durationToDays(input.duration),
+    concepts: ensureArray(localPlan.knowledgeGraph?.concepts, []).slice(0, 12).map((concept) => ({
+      id: concept.id,
+      title: concept.title,
+      dimension: concept.dimension,
+      difficulty: concept.difficulty,
+      standard: concept.standard,
+      misconceptions: ensureArray(concept.misconceptions, []).slice(0, 3)
+    }))
   };
   const corePrompt = `你是一个中文多智能体学习系统。请基于学生输入生成个性化学习方案的核心结构。
 只返回 JSON，不要 Markdown，也不要生成 dailyPlan。字段必须包含：
@@ -1845,10 +2118,24 @@ function normalizeResourcePackage(resourcePackage, fallback) {
   const dailyRequests = mapWithConcurrency(dailyBatches, 3, (batch) => (
     captureModelRequest(() => callLargeModelForDailyOutlineBatch(input, planSeed, batch))
   ));
-  const [coreResult, dailyResults] = await Promise.all([coreRequest, dailyRequests]);
+  const diagnosticRequest = captureModelRequest(() => callLargeModelForDiagnosticPretest(input, localPlan));
+  const remediationRequest = captureModelRequest(() => callLargeModelForRemediationPlan(input, localPlan));
+  const [coreResult, dailyResults, diagnosticResult, remediationResult] = await Promise.all([
+    coreRequest,
+    dailyRequests,
+    diagnosticRequest,
+    remediationRequest
+  ]);
   const generatedDays = dailyResults
     .filter((result) => result.ok)
     .flatMap((result) => ensureArray(result.value?.dailyPlan, []));
+
+  if (!diagnosticResult.ok) {
+    throw diagnosticResult.error || new Error("LLM 课前测生成失败");
+  }
+  if (!remediationResult.ok) {
+    throw remediationResult.error || new Error("LLM 个性化补救生成失败");
+  }
 
   if (!coreResult.ok && !generatedDays.length) {
     const firstBatchError = dailyResults.find((result) => !result.ok)?.error;
@@ -1857,10 +2144,111 @@ function normalizeResourcePackage(resourcePackage, fallback) {
 
   const generated = {
     ...(coreResult.ok ? coreResult.value : {}),
-    ...(generatedDays.length ? { dailyPlan: generatedDays } : {})
+    ...(generatedDays.length ? { dailyPlan: generatedDays } : {}),
+    ...(diagnosticResult.ok ? { diagnosticPretest: diagnosticResult.value } : {}),
+    ...(remediationResult.ok ? { remediationPlan: remediationResult.value } : {})
   };
   assertModelUsesGrounding(generated, input);
   return generated;
+}
+
+async function callLargeModelForDiagnosticPretest(input, localPlan) {
+  const prompt = `请为学习者生成真正个性化的课前诊断前测。
+只返回 JSON，不要 Markdown。格式：
+{"diagnosticPretest":{"title":"","objective":"","scoring":"","expectedMinutes":12,"items":[{"id":"","type":"choice","conceptId":"","conceptTitle":"","dimension":"","difficulty":2,"discrimination":0.78,"guess":0.25,"timeLimitSec":90,"question":"","options":["","","",""],"answerIndex":0,"explanation":"","misconceptionTags":[""],"standard":"","source":"llm-diagnostic","score":20}]}}
+
+要求：
+1. items 生成 8-10 道选择题，每题 4 个选项，answerIndex 必须合法。
+2. 题目必须围绕学习画像中的薄弱维度、知识图谱节点、学习目标和当前基础生成，不要套用“哪个最能证明掌握”之类通用模板。
+3. 每题必须绑定 conceptId、conceptTitle、dimension、difficulty、standard，并写清 misconceptionTags。
+4. 干扰项要对应真实错因，不能只是明显错误或无意义选项。
+5. explanation 要解释为什么正确选项成立，以及至少一个干扰项为什么错误。
+6. 如果提供了课程资料，至少一道题干、选项或解析必须使用有效 [S1] 引用。
+
+学生输入：${JSON.stringify(input)}
+课程资料规则：${knowledgeGroundingRule(input)}
+学习画像：${JSON.stringify(localPlan.learnerProfile)}
+知识图谱候选：${JSON.stringify(ensureArray(localPlan.knowledgeGraph?.concepts, []).slice(0, 14).map((concept) => ({
+    id: concept.id,
+    title: concept.title,
+    dimension: concept.dimension,
+    difficulty: concept.difficulty,
+    standard: concept.standard,
+    misconceptions: concept.misconceptions
+  })))}
+本地前测仅作字段形状参考，不能照抄题干：${JSON.stringify({
+    title: localPlan.diagnosticPretest?.title,
+    itemCount: ensureArray(localPlan.diagnosticPretest?.items, []).length,
+    fields: Object.keys(ensureArray(localPlan.diagnosticPretest?.items, [])[0] || {})
+  })}`;
+
+  const content = await requestChatCompletion([
+    { role: "system", content: "你是诊断测评命题专家，只输出可解析 JSON。题目必须个性化、可评分、可定位错因。" },
+    { role: "user", content: prompt }
+  ], { temperature: 0.32, maxTokens: 3200 });
+  const parsed = parseJsonFromModel(content);
+  assertModelUsesGrounding(parsed, input);
+  return normalizeModelDiagnosticPretest(parsed, localPlan.diagnosticPretest, input);
+}
+
+async function callLargeModelForRemediationPlan(input, localPlan, diagnosticResult = null) {
+  const prompt = `请为学习者生成真正个性化的补救学习方案。
+只返回 JSON，不要 Markdown。格式：
+{"remediationPlan":{"target":"","reason":"","weakConcepts":[{"conceptId":"","title":"","dimension":"","masteryScore":55,"confidence":0.52,"reason":"","misconceptions":[""]}],"microLessons":[{"conceptId":"","title":"","content":"","misconceptionFix":[""]}],"workedExamples":[{"title":"","prompt":"","scaffold":[""]}],"variantItems":[{"id":"","type":"short","title":"","prompt":"","expected":""}],"retestItems":[{"id":"","type":"choice","prompt":"","options":["","","",""],"answerIndex":0,"expectedScore":80}],"hintLadder":[""],"sequence":[{"step":"","action":"","expectedEvidence":""}],"coachPrompts":[""]}}
+
+要求：
+1. 必须基于学习画像、知识图谱和诊断结果生成，不要套用固定“错因-微讲义-变式题-复测”模板句式。
+2. weakConcepts 选择 3-5 个最值得补救的知识点，reason 要引用掌握度、错因或画像证据。
+3. microLessons 必须是可直接学习的短讲义，说明概念边界、常见误区和一个具体例子。
+4. workedExamples 必须是半成品例题，scaffold 给出需要学生补全的关键步骤。
+5. variantItems 必须换情境考查同一知识点，不要复述诊断题。
+6. retestItems 至少 2 道，选择题必须有 4 个选项和合法 answerIndex。
+7. sequence 至少 4 步，每步都可执行、可检查。
+8. coachPrompts 要能直接填入学习助手输入框。
+9. 如果提供了课程资料，至少一处补救内容必须使用有效 [S1] 引用。
+
+学生输入：${JSON.stringify(input)}
+课程资料规则：${knowledgeGroundingRule(input)}
+学习画像：${JSON.stringify(localPlan.learnerProfile)}
+知识图谱：${JSON.stringify(ensureArray(localPlan.knowledgeGraph?.concepts, []).slice(0, 14).map((concept) => ({
+    id: concept.id,
+    title: concept.title,
+    dimension: concept.dimension,
+    difficulty: concept.difficulty,
+    standard: concept.standard,
+    misconceptions: concept.misconceptions,
+    masteryScore: concept.masteryScore,
+    confidence: concept.confidence,
+    evidence: concept.evidence
+  })))}
+诊断结果：${JSON.stringify(diagnosticResult ? {
+    score: diagnosticResult.score,
+    maxScore: diagnosticResult.maxScore,
+    percent: diagnosticResult.percent,
+    conceptMastery: ensureArray(diagnosticResult.conceptMastery, []).slice(0, 10),
+    mistakeProfile: diagnosticResult.mistakeProfile,
+    results: ensureArray(diagnosticResult.results, []).slice(0, 10).map((item) => ({
+      conceptId: item.conceptId,
+      conceptTitle: item.conceptTitle,
+      dimension: item.dimension,
+      correct: item.correct,
+      score: item.score,
+      maxScore: item.maxScore,
+      misconceptionTags: item.misconceptionTags
+    }))
+  } : null)}
+本地补救仅作字段形状参考，不能照抄内容：${JSON.stringify({
+    target: localPlan.remediationPlan?.target,
+    fields: Object.keys(localPlan.remediationPlan || {})
+  })}`;
+
+  const content = await requestChatCompletion([
+    { role: "system", content: "你是个性化补救学习设计专家，只输出可解析 JSON。方案必须证据导向、具体、可复测。" },
+    { role: "user", content: prompt }
+  ], { temperature: 0.34, maxTokens: 3600 });
+  const parsed = parseJsonFromModel(content);
+  assertModelUsesGrounding(parsed, input);
+  return normalizeModelRemediationPlan(parsed, localPlan.remediationPlan, input);
 }
 
 async function callLargeModelForDailyOutlineBatch(input, planSeed, batch) {
