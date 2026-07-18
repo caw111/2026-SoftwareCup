@@ -1,6 +1,10 @@
 import { getDatabasePool } from "../db/pool.js";
 
 export async function listLearningEventRecords(userId, options = {}) {
+  const requestedLimit = Number(options.limit || 5000);
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.max(1, Math.min(10000, Math.trunc(requestedLimit)))
+    : 5000;
   const params = [userId];
   const clauses = ["user_id = ?"];
   if (options.planId) {
@@ -20,8 +24,8 @@ export async function listLearningEventRecords(userId, options = {}) {
        FROM learning_activity_events
       WHERE ${clauses.join(" AND ")}
       ORDER BY occurred_at ASC, created_at ASC
-      LIMIT ?`,
-    [...params, Number(options.limit || 5000)]
+      LIMIT ${limit}`,
+    params
   );
   return rows.map(publicEvent);
 }

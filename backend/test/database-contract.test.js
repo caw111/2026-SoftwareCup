@@ -34,7 +34,7 @@ test("migration runner only includes canonical sql migration files", () => {
       "004_create_quizzes.sql",
       "005_create_legacy_imports.sql",
       "006_create_learning_evidence.sql",
-      "010_create_course_sources.sql",
+    "011_create_course_sources.sql",
       "012_create_path_replanning.sql",
       "013_create_learning_graph_activity.sql"
     ]
