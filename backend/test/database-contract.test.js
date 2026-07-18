@@ -13,6 +13,24 @@ import {
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 
+test("portable SQLite includes the main branch business tables", () => {
+  const sql = fs.readFileSync(path.join(ROOT, "database", "sqlite-schema.sql"), "utf8");
+  for (const table of [
+    "course_sources",
+    "course_source_chunks",
+    "plan_sources",
+    "learning_activity_events",
+    "path_revisions",
+    "knowledge_graph_versions",
+    "knowledge_graph_layouts",
+    "review_schedule_items",
+    "badge_catalog",
+    "user_badges"
+  ]) {
+    assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
+  }
+});
+
 test("migration checksum ignores platform line endings", () => {
   assert.equal(
     migrationChecksum("CREATE TABLE a (id INT);\nCREATE TABLE b (id INT);\n"),
@@ -34,7 +52,8 @@ test("migration runner only includes canonical sql migration files", () => {
       "004_create_quizzes.sql",
       "005_create_legacy_imports.sql",
       "006_create_learning_evidence.sql",
-    "011_create_course_sources.sql",
+      "010_create_app_states.sql",
+      "011_create_course_sources.sql",
       "012_create_path_replanning.sql",
       "013_create_learning_graph_activity.sql"
     ]
@@ -68,8 +87,8 @@ test("数据库迁移包含全部核心业务表", () => {
     "knowledge_graph_layouts",
     "review_schedule_items",
     "badge_catalog",
-    "user_badges",
-    "legacy_imports"
+    "legacy_imports",
+    "app_states"
   ]) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
   }
@@ -77,6 +96,13 @@ test("数据库迁移包含全部核心业务表", () => {
     fs.readFileSync(path.join(ROOT, "backend", "src", "storage.js"), "utf8"),
     /CREATE TABLE/i
   );
+});
+
+test("便携 SQLite 任务表覆盖主分支任务字段", () => {
+  const sql = fs.readFileSync(path.join(ROOT, "database", "sqlite-schema.sql"), "utf8");
+  for (const column of ["task_uid", "concept_id", "revision_id", "status", "locked"]) {
+    assert.match(sql, new RegExp(`\\b${column}\\b`));
+  }
 });
 
 test("SQL 迁移拆分器按语句执行", () => {

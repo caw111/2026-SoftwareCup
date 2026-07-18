@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 
-import { getDatabasePool, withTransaction } from "../db/pool.js";
+import { databaseDialect, getDatabasePool, withTransaction } from "../db/pool.js";
 import {
   applyRevisionToPlanData,
   dailyPlanShapeSignature,
@@ -18,7 +18,7 @@ export async function createLearningEventRecord(userId, planId, event) {
     ? new Date()
     : new Date(event.occurredAt);
   await getDatabasePool().execute(
-    `INSERT IGNORE INTO learning_activity_events
+    `${insertIgnorePrefix()} INTO learning_activity_events
        (id, user_id, plan_id, event_type, event_key, payload_json, occurred_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [id, userId, planId, eventType, eventKey, JSON.stringify(payload), occurredAt]
@@ -260,18 +260,7 @@ async function syncPlanTasks(connection, planId, dailyPlan, revisionId) {
   const tasks = extractPlanTasksFromDailyPlan(dailyPlan, revisionId);
   for (const task of tasks) {
     await connection.execute(
-      `INSERT INTO plan_tasks
-         (plan_id, task_uid, task_key, day_number, task_index, content,
-          concept_id, revision_id, status, locked, completed, completed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', FALSE, FALSE, NULL)
-       ON DUPLICATE KEY UPDATE
-         day_number = VALUES(day_number),
-         task_index = VALUES(task_index),
-         content = VALUES(content),
-         concept_id = VALUES(concept_id),
-         revision_id = VALUES(revision_id),
-         status = 'active',
-         task_uid = COALESCE(task_uid, VALUES(task_uid))`,
+      planTaskUpsertSql(),
       [
         planId,
         crypto.randomUUID(),
@@ -305,7 +294,7 @@ async function syncPlanTasks(connection, planId, dailyPlan, revisionId) {
 
 async function insertSystemEvent(connection, userId, planId, event) {
   await connection.execute(
-    `INSERT IGNORE INTO learning_activity_events
+    `${insertIgnorePrefix()} INTO learning_activity_events
        (id, user_id, plan_id, event_type, event_key, payload_json, occurred_at)
      VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))`,
     [
@@ -317,6 +306,38 @@ async function insertSystemEvent(connection, userId, planId, event) {
       JSON.stringify(event.payload || {})
     ]
   );
+}
+
+function insertIgnorePrefix() {
+  return databaseDialect() === "sqlite" ? "INSERT OR IGNORE" : "INSERT IGNORE";
+}
+
+function planTaskUpsertSql() {
+  if (databaseDialect() === "sqlite") {
+    return `INSERT INTO plan_tasks
+       (plan_id, task_uid, task_key, day_number, task_index, content,
+        concept_id, revision_id, status, locked, completed, completed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', FALSE, FALSE, NULL)
+     ON CONFLICT(plan_id, task_key) DO UPDATE SET
+       day_number = excluded.day_number,
+       task_index = excluded.task_index,
+       content = excluded.content,
+       concept_id = excluded.concept_id,
+       revision_id = excluded.revision_id,
+       status = 'active'`;
+  }
+  return `INSERT INTO plan_tasks
+     (plan_id, task_uid, task_key, day_number, task_index, content,
+      concept_id, revision_id, status, locked, completed, completed_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', FALSE, FALSE, NULL)
+   ON DUPLICATE KEY UPDATE
+     day_number = VALUES(day_number),
+     task_index = VALUES(task_index),
+     content = VALUES(content),
+     concept_id = VALUES(concept_id),
+     revision_id = VALUES(revision_id),
+     status = 'active',
+     task_uid = COALESCE(task_uid, VALUES(task_uid))`;
 }
 
 function assertDailyPlanMatches(currentDailyPlan, expectedDailyPlan) {

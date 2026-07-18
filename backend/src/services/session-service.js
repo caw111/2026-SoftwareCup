@@ -3,10 +3,14 @@ import crypto from "node:crypto";
 import { SESSION_CONFIG } from "../config.js";
 import {
   createAnonymousUserSession,
+  ensureLocalUserSession,
   findUserBySessionTokenHash
 } from "../repositories/user-repository.js";
 
 export async function requireUserSession(req, res) {
+  if (process.env.LOCAL_SINGLE_USER === "true") {
+    return ensureLocalUserSession();
+  }
   const cookies = parseCookies(req.headers.cookie || "");
   const existingToken = cookies[SESSION_CONFIG.cookieName];
   if (existingToken) {

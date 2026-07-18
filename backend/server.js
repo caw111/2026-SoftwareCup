@@ -73,6 +73,7 @@ import {
   uploadSourceForUser
 } from "./src/services/source-service.js";
 import { migrateDatabase } from "../scripts/migrate.js";
+import { getAppStateForUser, saveAppStateForUser } from "./src/services/app-state-service.js";
 
 const server = http.createServer(async (req, res) => {
   setCors(req, res);
@@ -174,9 +175,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/storage/status") {
-      const status = isDatabaseConfigured()
-        ? await checkDatabaseConnection()
-        : await getStorageStatus();
+      const status = await getStorageStatus();
       sendJson(res, status.ok ? 200 : 503, status);
       return;
     }
@@ -198,6 +197,18 @@ const server = http.createServer(async (req, res) => {
         if (claimed) workspace = await getWorkspaceForUser(session.userId);
       }
       sendJson(res, 200, workspace);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/app-state") {
+      const session = await databaseSession(req, res);
+      sendJson(res, 200, await getAppStateForUser(session.userId));
+      return;
+    }
+
+    if (req.method === "PUT" && url.pathname === "/api/app-state") {
+      const session = await databaseSession(req, res);
+      sendJson(res, 200, await saveAppStateForUser(session.userId, await readJson(req)));
       return;
     }
 

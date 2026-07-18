@@ -1,14 +1,17 @@
 import fs from "node:fs";
 
 import { DATA_DIR, WORKSPACE_STATE_FILE, STORAGE_KEY } from "./config.js";
-import { getDatabasePool, isDatabaseConfigured } from "./db/pool.js";
+import {
+  checkDatabaseConnection,
+  databaseDialect,
+  getDatabasePool,
+  isMysqlConfigured
+} from "./db/pool.js";
 
-// Compatibility reader for one release. New application code uses normalized
-// repositories and never writes workspace_states.
+// Compatibility reader for importing data created by older releases.
 export async function readWorkspaceState() {
   const legacyDatabaseState = await readLegacyDatabaseState();
   if (legacyDatabaseState) return normalizeWorkspaceState(legacyDatabaseState);
-
   try {
     if (!fs.existsSync(WORKSPACE_STATE_FILE)) return emptyWorkspaceState();
     return normalizeWorkspaceState(JSON.parse(fs.readFileSync(WORKSPACE_STATE_FILE, "utf8")));
@@ -17,17 +20,11 @@ export async function readWorkspaceState() {
   }
 }
 
-// Kept only for old frontends. It writes a local migration source and cannot
-// silently claim a successful database write.
 export async function writeWorkspaceState(body) {
   const state = normalizeWorkspaceState(body);
   fs.mkdirSync(DATA_DIR, { recursive: true });
   const savedAt = new Date().toISOString();
-  fs.writeFileSync(
-    WORKSPACE_STATE_FILE,
-    JSON.stringify({ ...state, savedAt }, null, 2),
-    "utf8"
-  );
+  fs.writeFileSync(WORKSPACE_STATE_FILE, JSON.stringify({ ...state, savedAt }, null, 2), "utf8");
   return {
     ok: true,
     deprecated: true,
@@ -38,23 +35,25 @@ export async function writeWorkspaceState(body) {
 }
 
 export async function getStorageStatus() {
+  const status = await checkDatabaseConnection();
   return {
-    ok: true,
-    mode: "legacy-file",
-    message: "MySQL 未配置，当前仅保留浏览器和本地文件兼容模式",
-    file: WORKSPACE_STATE_FILE
+    ...status,
+    mode: databaseDialect() === "mysql" ? "mysql-relational" : "sqlite-relational",
+    message: databaseDialect() === "mysql"
+      ? "当前使用 MySQL 关系数据库"
+      : "当前使用内置 SQLite 单机数据库"
   };
 }
 
 export function storagePublicConfig() {
   return {
-    mode: isDatabaseConfigured() ? "mysql-relational" : "legacy-file",
-    mysqlConfigured: isDatabaseConfigured()
+    mode: databaseDialect() === "mysql" ? "mysql-relational" : "sqlite-relational",
+    mysqlConfigured: isMysqlConfigured()
   };
 }
 
 async function readLegacyDatabaseState() {
-  if (!isDatabaseConfigured()) return null;
+  if (!isMysqlConfigured()) return null;
   try {
     const pool = getDatabasePool();
     const [tableRows] = await pool.execute(
@@ -79,13 +78,7 @@ async function readLegacyDatabaseState() {
 }
 
 function emptyWorkspaceState() {
-  return {
-    plans: [],
-    currentPlanId: null,
-    quiz: [],
-    quizResults: {},
-    agents: []
-  };
+  return { plans: [], currentPlanId: null, quiz: [], quizResults: {}, agents: [] };
 }
 
 function normalizeWorkspaceState(value) {
@@ -93,9 +86,7 @@ function normalizeWorkspaceState(value) {
     plans: Array.isArray(value?.plans) ? value.plans : [],
     currentPlanId: typeof value?.currentPlanId === "string" ? value.currentPlanId : null,
     quiz: Array.isArray(value?.quiz) ? value.quiz : [],
-    quizResults: value?.quizResults && typeof value.quizResults === "object"
-      ? value.quizResults
-      : {},
+    quizResults: value?.quizResults && typeof value.quizResults === "object" ? value.quizResults : {},
     agents: Array.isArray(value?.agents) ? value.agents : []
   };
 }
