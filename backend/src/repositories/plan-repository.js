@@ -1,3 +1,5 @@
+import crypto from "node:crypto";
+
 import { getDatabasePool, withTransaction } from "../db/pool.js";
 
 export async function createPlanRecord(userId, plan) {
@@ -24,14 +26,18 @@ export async function createPlanRecord(userId, plan) {
     for (const task of extractTasks(plan)) {
       await connection.execute(
         `INSERT INTO plan_tasks
-           (plan_id, task_key, day_number, task_index, content, completed, completed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+           (plan_id, task_uid, task_key, day_number, task_index, content,
+            concept_id, revision_id, status, locked, completed, completed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', FALSE, ?, ?)`,
         [
           plan.id,
+          task.taskUid,
           task.taskKey,
           task.dayNumber,
           task.taskIndex,
           task.content,
+          task.conceptId,
+          task.revisionId,
           task.completed,
           task.completed ? new Date() : null
         ]
@@ -40,7 +46,31 @@ export async function createPlanRecord(userId, plan) {
 
     await upsertConceptMastery(connection, userId, plan.id, plan.data?.adaptiveState?.concepts || []);
     await insertContentReview(connection, userId, plan.id, plan.data?.governanceReport);
-    await insertInsightReport(connection, userId, plan.id, plan.data?.personalInsights);
+    await insertInsightReport(connection, userId, plan.id, plan.data?.learningReport || plan.data?.personalInsights);
+
+    const sourceIds = [...new Set(Array.isArray(plan.data?.input?.knowledgeSourceIds)
+      ? plan.data.input.knowledgeSourceIds.map(String).filter(Boolean)
+      : [])].slice(0, 30);
+    if (sourceIds.length) {
+      const [sourceRows] = await connection.execute(
+        `SELECT id FROM course_sources
+          WHERE user_id = ? AND status = 'ready' AND deleted_at IS NULL
+            AND id IN (${sourceIds.map(() => "?").join(",")})`,
+        [userId, ...sourceIds]
+      );
+      const owned = new Set(sourceRows.map((row) => row.id));
+      if (owned.size !== sourceIds.length) {
+        const error = new Error("部分课程资料不存在、尚未解析完成或无权访问");
+        error.statusCode = 400;
+        throw error;
+      }
+      for (const sourceId of sourceIds) {
+        await connection.execute(
+          "INSERT INTO plan_sources (plan_id, source_id) VALUES (?, ?)",
+          [plan.id, sourceId]
+        );
+      }
+    }
 
     await connection.execute(
       `INSERT INTO user_workspaces (user_id, active_plan_id)
@@ -88,13 +118,13 @@ export async function getWorkspaceRecord(userId) {
   const [taskRows] = await pool.execute(
     `SELECT plan_id, task_key, completed
        FROM plan_tasks
-      WHERE plan_id IN (${placeholders})
+       WHERE plan_id IN (${placeholders}) AND status = 'active'
       ORDER BY day_number, task_index`,
     planIds
   );
   const [historyRows] = await pool.execute(
     `SELECT s.plan_id, q.client_question_id, q.question_type, q.dimension,
-            q.question_json, a.is_correct, a.score, a.max_score,
+            q.question_json, a.answer_json, a.is_correct, a.score, a.max_score,
             a.result_json, a.created_at
        FROM quiz_attempts a
        JOIN quiz_questions q ON q.id = a.question_id
@@ -103,7 +133,6 @@ export async function getWorkspaceRecord(userId) {
       ORDER BY a.created_at`,
     [userId, ...planIds]
   );
-
   const progressByPlan = new Map();
   for (const row of taskRows) {
     if (!progressByPlan.has(row.plan_id)) progressByPlan.set(row.plan_id, {});
@@ -116,12 +145,18 @@ export async function getWorkspaceRecord(userId) {
   for (const row of historyRows) {
     if (!historyByPlan.has(row.plan_id)) historyByPlan.set(row.plan_id, []);
     const question = parseJson(row.question_json, {});
+    const answer = parseJson(row.answer_json, null);
     const result = parseJson(row.result_json, {});
     historyByPlan.get(row.plan_id).push({
       questionId: row.client_question_id,
       type: row.question_type,
       dimension: row.dimension,
       question: question.question || "",
+      options: Array.isArray(question.options) ? question.options : [],
+      explanation: question.explanation || "",
+      answerIndex: question.answerIndex,
+      selectedIndex: question.type === "choice" ? Number(answer) : null,
+      answer,
       correct: Boolean(row.is_correct),
       score: Number(row.score),
       maxScore: Number(row.max_score),
@@ -129,20 +164,19 @@ export async function getWorkspaceRecord(userId) {
       at: toIso(row.created_at)
     });
   }
-
   const plans = planRows.map((row) => ({
-    id: row.id,
-    title: row.title,
-    createdAt: toIso(row.created_at),
-    category: row.category,
-    data: parseJson(row.content_json, {}),
-    progress: progressByPlan.get(row.id) || {},
-    notes: row.notes || "",
-    masteryEvidence: parseJson(row.mastery_evidence_json, []),
-    quizHistory: historyByPlan.get(row.id) || [],
-    quizRound: Number(row.quiz_round || 0),
-    version: Number(row.version || 1)
-  }));
+      id: row.id,
+      title: row.title,
+      createdAt: toIso(row.created_at),
+      category: row.category,
+      data: parseJson(row.content_json, {}),
+      progress: progressByPlan.get(row.id) || {},
+      notes: row.notes || "",
+      masteryEvidence: parseJson(row.mastery_evidence_json, []),
+      quizHistory: historyByPlan.get(row.id) || [],
+      quizRound: Number(row.quiz_round || 0),
+      version: Number(row.version || 1)
+    }));
   const requestedActiveId = workspaceRows[0]?.active_plan_id;
   const currentPlanId = plans.some((plan) => plan.id === requestedActiveId)
     ? requestedActiveId
@@ -210,7 +244,7 @@ export async function updatePlanContentRecord(userId, planId, payload) {
 
     await upsertConceptMastery(connection, userId, planId, payload.data?.adaptiveState?.concepts || []);
     await insertContentReview(connection, userId, planId, payload.data?.governanceReport);
-    await insertInsightReport(connection, userId, planId, payload.data?.personalInsights);
+    await insertInsightReport(connection, userId, planId, payload.data?.learningReport || payload.data?.personalInsights);
     return true;
   });
 }
@@ -223,6 +257,7 @@ export async function updateTaskProgressRecord(userId, planId, taskKey, complete
             t.completed_at = IF(?, CURRENT_TIMESTAMP(3), NULL)
       WHERE t.plan_id = ?
         AND t.task_key = ?
+        AND t.status = 'active'
         AND p.user_id = ?
         AND p.deleted_at IS NULL`,
     [completed, completed, planId, taskKey, userId]
@@ -235,7 +270,7 @@ export async function resetPlanProgressRecord(userId, planId) {
     `UPDATE plan_tasks t
        JOIN learning_plans p ON p.id = t.plan_id
         SET t.completed = FALSE, t.completed_at = NULL
-      WHERE t.plan_id = ? AND p.user_id = ? AND p.deleted_at IS NULL`,
+      WHERE t.plan_id = ? AND t.status = 'active' AND p.user_id = ? AND p.deleted_at IS NULL`,
     [planId, userId]
   );
   return result.affectedRows;
@@ -300,12 +335,15 @@ function extractTasks(plan) {
   const tasks = [];
   for (const day of plan.data?.dailyPlan || []) {
     (day.tasks || []).forEach((content, taskIndex) => {
-      const taskKey = `day-${day.day}-task-${taskIndex}`;
+      const taskKey = day.taskKeys?.[taskIndex] || `day-${day.day}-task-${taskIndex}`;
       tasks.push({
+        taskUid: crypto.randomUUID(),
         taskKey,
         dayNumber: Number(day.day),
         taskIndex,
         content: String(content),
+        conceptId: day.conceptIds?.[taskIndex] || day.conceptId || null,
+        revisionId: day.revisionId || null,
         completed: Boolean(plan.progress?.[taskKey])
       });
     });

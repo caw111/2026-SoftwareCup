@@ -29,5 +29,5 @@ export async function evaluateStoredQuestionForUser(userId, questionId, answer) 
   }
   const result = await evaluateAnswer({ question: stored.question, answer });
   await createQuizAttemptRecord(userId, questionId, answer, result);
-  return result;
+  return { ...result, planId: stored.plan_id };
 }

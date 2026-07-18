@@ -1,0 +1,206 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import {
+  distributeQuizChoiceAnswers,
+  durationToDays,
+  normalizeDailyPlan,
+  normalizeInput,
+  parseDetailedDailyLessonMarkdown,
+  prepareNewCoursePlan,
+  redistributeChoiceAnswer,
+  runLocalAgents,
+  validateDetailedDailyLesson,
+  validateLearningReportMarkdown
+} from "../src/learning.js";
+
+test("durationToDays converts the configured learning period to calendar days", () => {
+  assert.equal(durationToDays("3 天"), 3);
+  assert.equal(durationToDays("1 周"), 7);
+  assert.equal(durationToDays("2 周"), 14);
+  assert.equal(durationToDays("1 个月"), 30);
+  assert.equal(durationToDays("3 个月"), 90);
+});
+
+test("local daily plan covers the full period and includes learning materials", () => {
+  const input = normalizeInput({ topic: "机器学习", duration: "2 周" });
+  const plan = runLocalAgents(input);
+
+  assert.equal(plan.dailyPlan.length, 14);
+  assert.ok(plan.dailyPlan.every((day) => day.tasks.length === 3));
+  assert.ok(plan.dailyPlan.every((day) => day.materials.length === 3));
+  assert.ok(plan.dailyPlan.every((day) => day.materials[0].sections.length >= 5));
+  assert.ok(plan.dailyPlan.every((day) => day.materials[1].sections.some((section) => section.steps?.length >= 4)));
+  assert.ok(plan.dailyPlan.every((day) => day.materials[2].questions.length >= 3));
+});
+
+test("generic courses use semantic concept names instead of numbered placeholders", () => {
+  const input = normalizeInput({ topic: "项目管理", duration: "3 天" });
+  const plan = runLocalAgents(input);
+  const visibleText = JSON.stringify({ concepts: plan.knowledgeGraph.concepts, dailyPlan: plan.dailyPlan });
+
+  assert.doesNotMatch(visibleText, /知识点\s*\d+/);
+  assert.match(plan.dailyPlan[0].title, /基本术语与问题边界/);
+});
+
+test("new course payloads omit daily materials without mutating the local fallback", () => {
+  const localPlan = runLocalAgents(normalizeInput({ topic: "项目管理", duration: "3 天" }));
+  const coursePlan = prepareNewCoursePlan(localPlan);
+
+  assert.ok(localPlan.dailyPlan.every((day) => day.materials.length === 3));
+  assert.ok(coursePlan.dailyPlan.every((day) => day.materials.length === 0));
+  assert.ok(coursePlan.dailyPlan.every((day) => day.materialsGeneratedAt === null));
+  assert.equal(coursePlan.personalInsights, null);
+  assert.equal(coursePlan.learningReport, null);
+});
+
+test("learning reports must be detailed, evidence-oriented, and preserve current progress", () => {
+  const context = { progress: { percent: 42, done: 5, total: 12 } };
+  const detail = "本节判断直接来自任务完成记录、错题和测验等证据，并说明对应影响与检查方法。".repeat(16);
+  const report = `# 当前课程学习报告
+
+## 当前学习快照
+当前学习进度为 42%，以下结论均基于已有证据。${detail}
+
+## 进度与执行分析
+${detail}
+
+## 知识掌握与薄弱点
+${detail}
+
+## 错题与错因证据
+${detail}
+
+## 学习资料使用情况
+${detail}
+
+## 学习策略评估
+${detail}
+
+## 下一步行动计划
+优先完成薄弱知识点复习，并以重新测验达到既定标准作为验收条件。${detail}
+
+## 证据局限
+当前没有提供的维度标记为暂无证据，不据此推断学习表现。${detail}`;
+
+  assert.deepEqual(validateLearningReportMarkdown(report, context), []);
+  assert.match(
+    validateLearningReportMarkdown(report.replace("42%", "41%"), context).join(" "),
+    /未保留当前学习进度/
+  );
+});
+
+test("model-generated daily materials are preserved during plan normalization", () => {
+  const fallback = [{
+    day: 1,
+    title: "本地标题",
+    tasks: ["本地任务"],
+    materials: [{ title: "本地讲义", content: "本地内容" }]
+  }];
+  const generated = [{
+    day: 1,
+    title: "模型标题",
+    tasks: ["模型任务 1", "模型任务 2", "模型任务 3"],
+    materials: [{ title: "模型讲义", content: "模型生成的针对性内容" }]
+  }];
+
+  const [day] = normalizeDailyPlan(generated, fallback);
+
+  assert.equal(day.title, "模型标题");
+  assert.deepEqual(day.materials, generated[0].materials);
+});
+
+test("daily plan normalization only falls back when model materials are missing", () => {
+  const fallback = [{
+    day: 1,
+    tasks: ["本地任务"],
+    materials: [{ title: "本地讲义" }]
+  }];
+
+  const [day] = normalizeDailyPlan([{ day: 1, tasks: [] }], fallback);
+
+  assert.deepEqual(day.tasks, fallback[0].tasks);
+  assert.deepEqual(day.materials, fallback[0].materials);
+});
+
+test("partial model batches are matched by day number instead of array position", () => {
+  const fallback = Array.from({ length: 3 }, (_, index) => ({
+    day: index + 1,
+    title: `本地第 ${index + 1} 天`,
+    tasks: ["本地任务"],
+    materials: [{ title: "本地讲义" }]
+  }));
+  const generated = [{
+    day: 3,
+    title: "模型第 3 天",
+    tasks: ["模型任务"],
+    materials: [{ title: "模型讲义" }]
+  }];
+
+  const normalized = normalizeDailyPlan(generated, fallback);
+
+  assert.equal(normalized[0].title, "本地第 1 天");
+  assert.equal(normalized[2].title, "模型第 3 天");
+});
+
+test("detailed model lessons must cover every declared knowledge point", () => {
+  const knowledgePoints = ["事件循环", "await 让出控制权"];
+  const lecture = `# 完整讲义\n\n## 学习目标\n${"目标说明。".repeat(60)}\n\n## 事件循环\n${"定义、原理、边界和示例。".repeat(45)}\n\n## await 让出控制权\n${"语法、步骤、反例和排查。".repeat(45)}\n\n## 知识总结\n${"联系与迁移。".repeat(30)}`;
+  const practice = `# 案例与练习\n\n## 覆盖的知识点\n- ${knowledgePoints.join("\n- ")}\n\n## 基础案例\n${"背景、分析、实现与检查。".repeat(35)}\n\n## 综合练习\n${"题目与迁移任务。".repeat(35)}\n\n## 参考答案\n${"完整步骤、解析和错因说明。".repeat(35)}`;
+  const day = {
+    day: 1,
+    knowledgePoints,
+    tasks: ["任务 1", "任务 2", "任务 3"],
+    materials: [
+      { type: "完整讲义", content: lecture },
+      { type: "案例与练习", content: practice }
+    ]
+  };
+
+  assert.deepEqual(validateDetailedDailyLesson(day, 1), []);
+  assert.match(
+    validateDetailedDailyLesson({ ...day, materials: [{ type: "完整讲义", content: lecture.replace(knowledgePoints[1], "") }, day.materials[1]] }, 1).join(" "),
+    /讲义未逐项覆盖/
+  );
+});
+
+test("streamed Markdown lessons are split into lecture and practice materials", () => {
+  const markdown = `# 第 1 天完整讲义：异步编程\n\n## 知识点：事件循环\n讲义内容\n\n## 知识点：await\n讲义内容\n\n<!-- CASES_AND_PRACTICE -->\n\n# 第 1 天案例与练习\n\n## 覆盖的知识点\n- 事件循环\n- await`;
+  const day = parseDetailedDailyLessonMarkdown(markdown, {
+    day: 1,
+    title: "异步编程",
+    tasks: ["任务 1", "任务 2", "任务 3"]
+  });
+
+  assert.deepEqual(day.knowledgePoints, ["事件循环", "await"]);
+  assert.equal(day.materials[0].type, "完整讲义");
+  assert.equal(day.materials[1].type, "案例与练习");
+  assert.doesNotMatch(day.materials[0].content, /CASES_AND_PRACTICE/);
+});
+
+test("choice answers can be distributed without changing the correct option", () => {
+  const question = {
+    type: "choice",
+    options: ["正确", "干扰 1", "干扰 2", "干扰 3"],
+    answerIndex: 0
+  };
+
+  for (const target of [0, 1, 2, 3]) {
+    const distributed = redistributeChoiceAnswer(question, target);
+    assert.equal(distributed.answerIndex, target);
+    assert.equal(distributed.options[target], "正确");
+  }
+});
+
+test("a quiz distributes its first four choice answers across A through D", () => {
+  const quiz = Array.from({ length: 4 }, (_, index) => ({
+    id: `choice-${index}`,
+    type: "choice",
+    options: ["正确", "干扰 1", "干扰 2", "干扰 3"],
+    answerIndex: 0
+  }));
+  const distributed = distributeQuizChoiceAnswers(quiz, "test-round");
+
+  assert.deepEqual(new Set(distributed.map((item) => item.answerIndex)), new Set([0, 1, 2, 3]));
+  assert.ok(distributed.every((item) => item.options[item.answerIndex] === "正确"));
+});

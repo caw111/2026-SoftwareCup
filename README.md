@@ -1,54 +1,116 @@
-# 基于大模型的个性化资源生成与学习多智能体系统
+# LearnMate AI 学习陪练
 
-本项目是 2026 软件杯参赛原型，面向“基于大模型的个性化资源生成与学习多智能体系统开发”。系统采用前后端分离结构，支持本地规则演示，也支持接入 OpenAI 兼容的大模型接口进行真实生成。
+面向 2026 软件杯赛题的“基于大模型的个性化资源生成与学习多智能体系统”。项目围绕学习画像、课程生成、资料问答、掌握度评估、路径重规划、学习日历和在线测评构建一套可运行的个性化学习闭环。
 
-## 功能亮点
+系统支持两种运行方式：
 
-- 动态学习者画像：根据学习目标、基础、偏好和薄弱点生成个性化画像。
-- 知识点掌握雷达图：从先修基础、概念理解、方法迁移、实践应用、表达复盘、学习自驱六个维度展示掌握度。
-- 多智能体资源生成闭环：展示诊断、规划、生成、评估、修正、反馈的协作流程。
-- 个性化资源包：生成学情诊断、补救微讲义、分层练习、答案解析、错因提醒和后续路径。
-- 外接大模型：支持 OpenAI 官方接口和 OpenAI 兼容接口。
+- 未配置大模型时，使用本地规则和题库完成演示。
+- 配置 OpenAI 兼容接口后，课程生成、画像访谈、诊断、补救、报告、问答和图谱治理会接入真实 LLM。
+
+## 核心功能
+
+- 对话式学习画像：通过自然语言访谈提取学习主题、背景、时间、偏好和薄弱点，并形成带置信度的六维画像。
+- 个性化课程生成：根据画像、目标、周期、学习资料和模型输出生成每日学习路径、任务、资料和练习。
+- 课程资料库 RAG：支持上传课程资料、语义检索、全文问答、引用校验和课程绑定。
+- 掌握度视图：基于真实概念、任务、测评和先修关系生成可交互图谱，支持布局保存和 LLM 治理增强。
+- 诊断与补救：生成课前诊断、评分、错因分析、补救路径和针对性微讲义。
+- 路径重规划：当诊断或测评暴露风险时，生成可审核、可应用、可回滚的学习路径修订。
+- 自适应测验与代码评测：支持题量、题型、难度配置，代码题可走 Docker/Podman 沙箱判题并自动降级到本地 runner。
+- 学习日历：基于真实学习事件统计热力图、徽章、连续天数和每日活动摘要。
+- 学习报告与陪练问答：汇总进度、掌握度、错题、笔记、考试和综合应用证据，生成复盘报告；导师问答支持资料引用。
+- 多智能体过程展示：展示诊断、规划、资源生成、评估、反馈和治理等协作节点。
+
+## 技术栈
+
+- 前端：原生 HTML、CSS、JavaScript，单页应用。
+- 后端：Node.js 原生 HTTP 服务，ES Modules。
+- 数据库：MySQL 8，版本化 SQL 迁移。
+- LLM：OpenAI Chat Completions 兼容接口。
+- RAG：服务端解析课程资料，检索并构建引用白名单。
+- 判题：Docker/Podman 沙箱优先，本地多语言 runner 兜底。
+- 测试：`node --test`。
+
+## 目录结构
+
+```text
+backend/
+  server.js                  后端 API 入口
+  src/
+    services/                业务服务层
+    repositories/            MySQL 访问层
+    db/                      连接池与事务
+    learning.js              课程、资料、报告生成核心逻辑
+    adaptive-learning.js     自适应学习与题库
+    learning-graph.js        掌握度图谱构建与治理
+    learning-activity.js     日历、热力图、徽章和连续天数统计
+    rag.js                   资料解析、检索和引用上下文
+    judge.js                 在线判题运行时
+  test/                      后端单元与集成测试
+
+frontend/
+  index.html                 单页应用结构
+  app.js                     前端交互与 API 调用
+  styles.css                 页面样式
+  *.test.js                  前端结构与行为回归测试
+
+database/
+  migrations/                MySQL 版本化迁移
+
+scripts/
+  dev.js                     同时启动前后端
+  migrate.js                 数据库迁移与状态检查
+```
+
+## 环境要求
+
+- Node.js 18 或更高版本。
+- MySQL 8，可选但推荐。未配置 MySQL 时可进行本地演示。
+- Docker、Podman 或远程 Docker Engine，可选，用于代码题沙箱评测。
+- OpenAI 兼容大模型接口，可选，用于真实 LLM 能力。
 
 ## 快速启动
 
-需要本机已安装 Node.js。首次运行先安装依赖：
+安装依赖：
 
 ```bash
 npm install
 ```
 
-如果只需要本地规则演示，可以直接启动：
+启动前后端：
 
 ```bash
 npm run dev
 ```
 
-如果 PowerShell 禁止执行 npm 脚本，可以使用：
+PowerShell 如果禁止执行 npm 脚本，可以使用：
 
 ```bash
 cmd /c npm run dev
 ```
 
-启动后访问：
+默认访问地址：
 
 - 前端：<http://127.0.0.1:5173>
 - 后端健康检查：<http://127.0.0.1:3000/api/health>
 - 大模型连通性测试：<http://127.0.0.1:3000/api/llm-test>
-- 用户数据存储状态：<http://127.0.0.1:3000/api/storage/status>
-- 判题运行时状态：<http://127.0.0.1:3000/api/judge/status>
+- 存储状态：<http://127.0.0.1:3000/api/storage/status>
+- 判题状态：<http://127.0.0.1:3000/api/judge/status>
 
-## MySQL 用户数据存储
+## 推荐完整开发环境
 
-系统使用 MySQL 8 保存用户、学习方案、每日任务、练习轮次和测评结果。核心业务数据采用关系表，结构可能变化的大模型生成结果使用 JSON 快照。数据库结构由 `database/migrations/` 中的版本化 SQL 管理，不在业务代码中动态建表。
-
-本地开发可以先启动项目自带的 MySQL：
+启动项目自带 MySQL：
 
 ```bash
 docker compose up -d mysql
 ```
 
-在不会提交到 Git 的 `.env.local` 中配置：
+复制环境变量模板：
+
+```bash
+copy .env.example .env.local
+```
+
+写入本地数据库配置：
 
 ```env
 MYSQL_HOST=127.0.0.1
@@ -59,12 +121,6 @@ MYSQL_DATABASE=softwarecup
 MYSQL_CONNECTION_LIMIT=6
 ```
 
-也可以只配置连接串：
-
-```env
-MYSQL_URL=mysql://softwarecup:softwarecup-dev@127.0.0.1:3306/softwarecup
-```
-
 执行迁移并启动：
 
 ```bash
@@ -72,51 +128,40 @@ npm run db:migrate
 npm run dev
 ```
 
-后端启动时也会检查并补齐尚未执行的迁移。浏览器通过匿名 HttpOnly 会话隔离用户数据；已有浏览器本地工作台会在该用户数据库为空时自动导入一次。未配置 MySQL 时仍可进行本地演示，但不会声称数据已写入数据库。
+后端启动时也会检查迁移状态并补齐尚未执行的迁移。匿名用户通过 HttpOnly Session Cookie 隔离数据；已有浏览器本地工作台会在数据库为空时自动导入一次。
 
-应用程序不要直接使用 MySQL `root` 账号。推荐单独创建只拥有 `softwarecup` 数据库权限的业务账号，并把真实密码写入已被 Git 忽略的 `.env.local`。
+## 大模型配置
 
-可以随时检查迁移状态：
+在 `.env.local` 或 `.env` 中配置：
 
-```bash
-npm run db:status
+```env
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=gpt-4.1-mini
+OPENAI_API_KEY=sk-your-api-key
+OPENAI_TIMEOUT_MS=180000
+RAG_FULL_CONTEXT_MAX_CHARS=900000
 ```
 
-迁移命令是幂等的，已经成功执行的迁移不会重复执行。不要修改已经执行过的迁移文件；表结构变化应新增更高编号的 SQL 文件。
+也可以使用兼容 OpenAI Chat Completions 的第三方模型服务，只要把 `OPENAI_BASE_URL` 和 `OPENAI_MODEL` 换成对应服务的配置即可。
 
-## 测试与验收
+配置完成后重启服务，并在页面右上角点击“测试大模型”。连接成功后，画像访谈、课程生成、诊断补救、路径重规划、学习报告、资料问答和掌握度治理会优先使用真实 LLM；失败时会给出可见降级状态。
 
-配置 MySQL 后执行：
+## 数据库与迁移
+
+项目使用 MySQL 8 保存用户会话、学习方案、任务进度、测评题、答题记录、资料库、路径修订、掌握度图谱、学习活动等核心状态。结构稳定的数据使用关系表；LLM 生成的课程、题目、图谱等复杂载荷使用 JSON 快照保存。
+
+常用命令：
 
 ```bash
 npm run db:migrate
-npm test
+npm run db:status
 ```
 
-自动化测试覆盖：
+迁移文件位于 `database/migrations/`。已经执行过的迁移文件不要修改；表结构变化应新增更高编号的 SQL 文件。`schema_migrations` 会记录迁移文件名和 SHA-256 校验值。
 
-- 数据库迁移结构和迁移文件校验。
-- 方案创建、读取及用户数据隔离。
-- 每日任务进度和学习笔记持久化。
-- 测评题保存、答案提交、评分结果和历史记录。
-- 标准答案、关键词及隐藏测试用例不会发送给浏览器。
+## 在线判题
 
-完整回归还应检查：
-
-```text
-GET  /api/health          后端、MySQL 和模型配置
-GET  /api/llm-test        外部大模型连通性
-GET  /api/storage/status  MySQL 存储状态
-GET  /api/judge/status    Docker 或 local-runner 判题状态
-```
-
-本项目已验证以下完整链路：前端资源加载、同步/流式方案生成、方案落库、任务打卡、笔记保存、动态出题、普通题和代码题提交、评分结果回读、学习陪练以及方案删除。测试使用的临时用户和数据会在测试结束后清理。
-
-## Docker 在线评测
-
-代码题使用项目内置服务端多语言判题镜像 `softwarecup-code-judge:latest`。后端启动后会自动检查容器运行时并构建判题镜像；用户和客户侧不需要手动构建镜像。
-
-服务端需要具备一种容器运行时，可以是 Linux Docker Engine、远程 Docker Engine，或兼容 Docker CLI 的 Podman。默认配置如下：
+代码题优先使用服务端沙箱运行。默认配置：
 
 ```env
 CONTAINER_CLI=docker
@@ -125,56 +170,81 @@ JUDGE_TIMEOUT_MS=10000
 JUDGE_AUTO_BOOTSTRAP=true
 ```
 
-如果判题容器运行在独立 Linux 服务器上，可以配置远程 Docker Engine：
+如果使用远程 Docker Engine：
 
 ```env
 JUDGE_DOCKER_HOST=tcp://judge-server:2375
 ```
 
-如果服务端使用 Podman：
+如果使用 Podman：
 
 ```env
 CONTAINER_CLI=podman
 ```
 
-判题容器运行时会禁用网络，限制内存、CPU、进程数，并以非 root 用户执行 Python、C++、Java、JavaScript 测试。出题智能体会根据学习主题选择编程语言，例如 C++ 数据结构、Java 后端、JavaScript 前端算法、Python 机器学习。若服务端容器运行时不可用，系统会自动切换到服务端本地多语言 runner，保证用户仍然可以提交代码并获得评分；不会把底层 npipe/daemon 错误暴露给学生。
+后端会自动检查容器运行时并构建判题镜像。沙箱不可用时会降级到服务端本地 runner，确保学生仍然能提交代码并得到评分。
 
-## 外接大模型配置
+## 常用脚本
 
-复制配置模板：
+| 命令 | 说明 |
+|---|---|
+| `npm run dev` | 同时启动后端和前端 |
+| `npm run backend` | 只启动后端 API |
+| `npm run frontend` | 只启动前端静态服务 |
+| `npm run db:migrate` | 执行 MySQL 迁移 |
+| `npm run db:status` | 查看迁移状态 |
+| `npm test` | 运行全部自动化测试 |
+
+## API 概览
+
+| 接口 | 说明 |
+|---|---|
+| `GET /api/health` | 后端、数据库、模型配置健康检查 |
+| `GET /api/llm-test` | 大模型连通性测试 |
+| `GET /api/workspace` | 当前用户工作区 |
+| `POST /api/plans` | 创建学习方案 |
+| `PUT /api/plans/:planId/tasks/:taskKey` | 更新每日任务进度 |
+| `PUT /api/plans/:planId/notes` | 保存学习笔记 |
+| `POST /api/quiz` | 生成测验 |
+| `POST /api/quiz-questions/:id/attempts` | 提交题目作答 |
+| `POST /api/tutor` | 学习陪练问答 |
+| `POST /api/sources` | 上传课程资料 |
+| `POST /api/sources/search` | 检索课程资料 |
+| `POST /api/sources/ask` | 基于资料全文问答 |
+| `GET /api/plans/:planId/knowledge-graph` | 获取掌握度图谱 |
+| `PATCH /api/plans/:planId/knowledge-graph` | 保存图谱布局 |
+| `POST /api/plans/:planId/knowledge-graph/refine` | 使用 LLM 治理图谱 |
+| `GET /api/activity/summary` | 学习日历、热力图、徽章和连续天数摘要 |
+| `POST /api/learning-report` | 生成学习报告 |
+| `GET /api/judge/status` | 判题运行时状态 |
+
+## 测试
+
+运行：
 
 ```bash
-copy .env.example .env
+npm test
 ```
 
-编辑 `.env`，填入真实密钥：
+当前测试覆盖：
 
-```env
-OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_MODEL=gpt-4.1-mini
-OPENAI_API_KEY=sk-your-api-key
-OPENAI_TIMEOUT_MS=180000
-```
+- 数据库迁移、校验和与迁移拆分。
+- MySQL 持久化、用户隔离、课程、任务、测评和资料库。
+- LLM 参数、流式响应、失败降级和诊断补救归一化。
+- 对话式画像、画像 LLM、课程资料 RAG 和引用校验。
+- 路径重规划、掌握度图谱、学习日历、热力图、徽章和连续天数。
+- 前端导航、笔记、课程资料库、画像入口和掌握度/学习日历结构。
+- 代码判题错误处理和浏览器安全字段过滤。
 
-也可以接入兼容 OpenAI Chat Completions 格式的服务，例如将 `OPENAI_BASE_URL` 改成对应厂商的 `/v1` 地址，并把 `OPENAI_MODEL` 改成该服务支持的模型名。
+## 故障排查
 
-配置完成后重启服务：
+- 页面提示“后端未连接”：确认 `npm run dev` 正在运行，且后端端口为 `3000`。
+- MySQL 连接失败：先执行 `docker compose up -d mysql`，再检查 `.env.local` 中的账号、密码和数据库名。
+- 迁移失败：不要修改已经执行过的迁移文件；新增迁移时使用新的编号。
+- 大模型不可用：检查 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL`，并访问 `/api/llm-test`。
+- Windows 刷新时出现黑色控制台窗口：后端已对 PowerShell 兜底请求设置隐藏窗口；重启 `npm run dev` 后生效。
+- 判题不可用：访问 `/api/judge/status` 查看 Docker/Podman 状态；不可用时系统会自动降级到本地 runner。
 
-```bash
-npm run dev
-```
+## 当前规模
 
-在页面右上角点击“测试大模型”。如果连接成功，状态栏会显示模型名和模型返回内容；点击“生成个性化学习资源”时，返回结果中的“大模型优化建议”会来自真实外部模型。
-
-练习题生成也会优先调用大模型，并把每日打卡进度、已完成任务、历史错题、Docker 判题状态传入出题提示词；大模型失败时才回退到本地专业题库。
-
-## 目录结构
-
-```text
-backend/   后端 API、Service、Repository 和数据库连接层
-database/  MySQL 版本化迁移与数据库说明
-frontend/  前端页面
-scripts/   启动和数据库迁移脚本
-docker-compose.yml
-package.json
-```
+按主要源码统计，项目约 74 个源码文件、2.1 万行代码，主要由 Node.js 后端、原生前端、SQL 迁移和少量 Python 工具组成。

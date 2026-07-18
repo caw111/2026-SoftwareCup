@@ -1,4 +1,6 @@
 import importlib.util
+import contextlib
+import io
 import json
 import math
 import os
@@ -44,25 +46,39 @@ def run_python(code, tests, workdir):
 
     spec = importlib.util.spec_from_file_location("solution", solution_path)
     solution = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(solution)
+    # Student programs may print while being imported. Keep that output away
+    # from stdout because stdout is reserved for the runner's JSON protocol.
+    import_output = io.StringIO()
+    with contextlib.redirect_stdout(import_output), contextlib.redirect_stderr(import_output):
+        spec.loader.exec_module(solution)
 
     has_alarm = hasattr(signal, "SIGALRM")
     if has_alarm:
         signal.signal(signal.SIGALRM, timeout_handler)
     results = []
     for index, test in enumerate(tests, 1):
+        case_output = io.StringIO()
         try:
             fn = getattr(solution, test.get("function", "solve"))
             if has_alarm:
                 signal.alarm(2)
-            actual = fn(*test.get("args", []))
+            with contextlib.redirect_stdout(case_output), contextlib.redirect_stderr(case_output):
+                actual = fn(*test.get("args", []))
             if has_alarm:
                 signal.alarm(0)
-            results.append(make_result(index, actual, test.get("expected"), test.get("args", [])))
+            result = make_result(index, actual, test.get("expected"), test.get("args", []))
+            captured = case_output.getvalue().strip()
+            if captured:
+                result["stdout"] = captured[:4000]
+            results.append(result)
         except Exception as exc:
             if has_alarm:
                 signal.alarm(0)
-            results.append(make_error_result(index, test, str(exc)))
+            result = make_error_result(index, test, str(exc))
+            captured = case_output.getvalue().strip()
+            if captured:
+                result["stdout"] = captured[:4000]
+            results.append(result)
     return results
 
 

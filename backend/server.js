@@ -11,7 +11,11 @@ import { setCors, sendJson, readJson } from "./src/http.js";
 import { friendlyJudgeError, getJudgeStatus, bootstrapJudgeRuntime } from "./src/judge.js";
 import {
   generateAdaptiveQuiz,
+  generateDailyLearningMaterials,
+  generateLearningReportWithLlm,
   generateLearningPlan,
+  evaluateDiagnosticPretestWithLlm,
+  generateDiagnosticPretestWithLlm,
   normalizeInput,
   runLocalAgents,
   streamLearningPlan,
@@ -34,10 +38,40 @@ import {
   evaluateStoredQuestionForUser,
   saveGeneratedQuizForUser
 } from "./src/services/quiz-service.js";
+import {
+  applyPathRevisionForUser,
+  evaluatePathReplanningForUser,
+  getPathRevisionForUser,
+  listPathRevisionsForUser,
+  recordLearningEventForUser,
+  rejectPathRevisionForUser,
+  undoPathRevisionForUser
+} from "./src/services/path-replanning-service.js";
+import { getLearningActivitySummaryForUser } from "./src/services/learning-activity-service.js";
+import {
+  getKnowledgeGraphForUser,
+  refineKnowledgeGraphForUser,
+  saveKnowledgeGraphLayoutForUser
+} from "./src/services/learning-graph-service.js";
 import { requireUserSession } from "./src/services/session-service.js";
 import { getStorageStatus, readWorkspaceState, writeWorkspaceState, storagePublicConfig } from "./src/storage.js";
 import { clean, ensureArray } from "./src/utils.js";
-import { evaluateDiagnosticPretest } from "./src/adaptive-learning.js";
+import {
+  advanceProfileInterviewWithLlm,
+  createProfileInterviewSession
+} from "./src/services/profile-interview-service.js";
+import {
+  answerGroundedQuestion,
+  answerSourceQuestionForUser
+} from "./src/services/rag-answer-service.js";
+import {
+  deleteSourceForUser,
+  listSourcesForUser,
+  loadFullSourceContextForUser,
+  replacePlanSourcesForUser,
+  searchSourcesForUser,
+  uploadSourceForUser
+} from "./src/services/source-service.js";
 import { migrateDatabase } from "../scripts/migrate.js";
 
 const server = http.createServer(async (req, res) => {
@@ -73,6 +107,69 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/agents") {
       sendJson(res, 200, { agents });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/profile/interview") {
+      sendJson(res, 200, createProfileInterviewSession());
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/profile/interview") {
+      const body = await readJson(req);
+      sendJson(res, 200, await advanceProfileInterviewWithLlm({
+        message: body.message,
+        draft: body.draft,
+        messages: body.messages
+      }));
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/sources") {
+      const session = await databaseSession(req, res);
+      const sources = await listSourcesForUser(session.userId, url.searchParams.get("planId"));
+      sendJson(res, 200, { sources });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/sources") {
+      const session = await databaseSession(req, res);
+      const result = await uploadSourceForUser(
+        session.userId,
+        await readJson(req, { maxBytes: 17 * 1024 * 1024 })
+      );
+      sendJson(res, result.deduplicated ? 200 : 201, result);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/sources/search") {
+      const session = await databaseSession(req, res);
+      sendJson(res, 200, await searchSourcesForUser(session.userId, await readJson(req)));
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/sources/ask") {
+      const session = await databaseSession(req, res);
+      sendJson(res, 200, await answerSourceQuestionForUser(session.userId, await readJson(req)));
+      return;
+    }
+
+    const sourceMatch = url.pathname.match(/^\/api\/sources\/([^/]+)$/);
+    if (req.method === "DELETE" && sourceMatch) {
+      const session = await databaseSession(req, res);
+      sendJson(res, 200, await deleteSourceForUser(session.userId, decodePart(sourceMatch[1])));
+      return;
+    }
+
+    const planSourcesMatch = url.pathname.match(/^\/api\/plans\/([^/]+)\/sources$/);
+    if (req.method === "PUT" && planSourcesMatch) {
+      const session = await databaseSession(req, res);
+      const body = await readJson(req);
+      sendJson(res, 200, await replacePlanSourcesForUser(
+        session.userId,
+        decodePart(planSourcesMatch[1]),
+        body.sourceIds
+      ));
       return;
     }
 
@@ -161,16 +258,20 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "PATCH" && taskMatch) {
       const session = await databaseSession(req, res);
       const body = await readJson(req);
-      sendJson(
-        res,
-        200,
-        await updateTaskProgressForUser(
-          session.userId,
-          decodePart(taskMatch[1]),
-          decodePart(taskMatch[2]),
-          body.completed
-        )
+      const planId = decodePart(taskMatch[1]);
+      const taskKey = decodePart(taskMatch[2]);
+      const result = await updateTaskProgressForUser(
+        session.userId,
+        planId,
+        taskKey,
+        body.completed
       );
+      await recordLearningEventForUser(session.userId, planId, {
+        type: body.completed ? "task_completed" : "task_reopened",
+        eventKey: `task-progress:${taskKey}:${Boolean(body.completed)}`,
+        payload: { taskKey, completed: Boolean(body.completed) }
+      });
+      sendJson(res, 200, result);
       return;
     }
 
@@ -182,6 +283,96 @@ const server = http.createServer(async (req, res) => {
         200,
         await resetPlanProgressForUser(session.userId, decodePart(progressMatch[1]))
       );
+      return;
+    }
+
+    const pathRevisionsMatch = url.pathname.match(/^\/api\/plans\/([^/]+)\/path-revisions$/);
+    if (req.method === "GET" && pathRevisionsMatch) {
+      const session = await databaseSession(req, res);
+      sendJson(res, 200, await listPathRevisionsForUser(
+        session.userId,
+        decodePart(pathRevisionsMatch[1])
+      ));
+      return;
+    }
+
+    const replanMatch = url.pathname.match(/^\/api\/plans\/([^/]+)\/replanning\/evaluate$/);
+    if (req.method === "POST" && replanMatch) {
+      const session = await databaseSession(req, res);
+      const body = await readJson(req);
+      sendJson(res, 200, await evaluatePathReplanningForUser(
+        session.userId,
+        decodePart(replanMatch[1]),
+        {
+          triggerType: body.triggerType || "manual",
+          payload: body.payload || {},
+          eventKey: body.eventKey,
+          force: Boolean(body.force)
+        }
+      ));
+      return;
+    }
+
+    const pathRevisionActionMatch = url.pathname.match(/^\/api\/plans\/([^/]+)\/path-revisions\/([^/]+)(?:\/(apply|reject|undo))?$/);
+    if (pathRevisionActionMatch) {
+      const session = await databaseSession(req, res);
+      const planId = decodePart(pathRevisionActionMatch[1]);
+      const revisionId = decodePart(pathRevisionActionMatch[2]);
+      const action = pathRevisionActionMatch[3] || "";
+      if (req.method === "GET" && !action) {
+        sendJson(res, 200, await getPathRevisionForUser(session.userId, planId, revisionId));
+        return;
+      }
+      if (req.method === "POST" && action === "apply") {
+        sendJson(res, 200, await applyPathRevisionForUser(session.userId, planId, revisionId));
+        return;
+      }
+      if (req.method === "POST" && action === "reject") {
+        sendJson(res, 200, await rejectPathRevisionForUser(session.userId, planId, revisionId));
+        return;
+      }
+      if (req.method === "POST" && action === "undo") {
+        sendJson(res, 200, await undoPathRevisionForUser(session.userId, planId, revisionId));
+        return;
+      }
+    }
+
+    const graphMatch = url.pathname.match(/^\/api\/plans\/([^/]+)\/knowledge-graph$/);
+    if (graphMatch) {
+      const session = await databaseSession(req, res);
+      const planId = decodePart(graphMatch[1]);
+      if (req.method === "GET") {
+        sendJson(res, 200, await getKnowledgeGraphForUser(session.userId, planId));
+        return;
+      }
+      if (req.method === "PATCH") {
+        sendJson(res, 200, await saveKnowledgeGraphLayoutForUser(
+          session.userId,
+          planId,
+          await readJson(req)
+        ));
+        return;
+      }
+    }
+
+    const graphRefineMatch = url.pathname.match(/^\/api\/plans\/([^/]+)\/knowledge-graph\/refine$/);
+    if (req.method === "POST" && graphRefineMatch) {
+      const session = await databaseSession(req, res);
+      sendJson(res, 200, await refineKnowledgeGraphForUser(
+        session.userId,
+        decodePart(graphRefineMatch[1])
+      ));
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/activity/summary") {
+      const session = await databaseSession(req, res);
+      sendJson(res, 200, await getLearningActivitySummaryForUser(session.userId, {
+        planId: url.searchParams.get("planId"),
+        timeZone: url.searchParams.get("tz"),
+        from: url.searchParams.get("from"),
+        to: url.searchParams.get("to")
+      }));
       return;
     }
 
@@ -200,22 +391,90 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/api/generate") {
-      const input = normalizeInput(await readJson(req));
+      const input = await groundedInput(req, res, await readJson(req));
       const result = await generateLearningPlan(input);
       sendJson(res, 200, result);
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/api/generate-stream") {
-      const input = normalizeInput(await readJson(req));
+      const input = await groundedInput(req, res, await readJson(req));
       await streamLearningPlan(res, input);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/daily-materials") {
+      const body = await readJson(req);
+      const input = await groundedInput(req, res, body.input || {}, [
+        body.day?.title,
+        body.day?.focus,
+        ...ensureArray(body.day?.tasks, [])
+      ].filter(Boolean).join(" "));
+      if (!body.day || typeof body.day !== "object") {
+        const error = new Error("缺少当日学习路径数据");
+        error.statusCode = 400;
+        throw error;
+      }
+      const day = await generateDailyLearningMaterials(input, body.day, body.totalDays);
+      if (body.planId && isDatabaseConfigured()) {
+        const session = await databaseSession(req, res);
+        await recordLearningEventForUser(session.userId, body.planId, {
+          type: "daily_materials_generated",
+          eventKey: `daily-materials:${body.day.day}:${day.materialsGeneratedAt || Date.now()}`,
+          payload: {
+            day: body.day.day,
+            title: body.day.title,
+            knowledgePoints: day.knowledgePoints || [],
+            materialCount: day.materials?.length || 0
+          }
+        });
+      }
+      sendJson(res, 200, { day });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/learning-report") {
+      const body = await readJson(req);
+      if (!body.context || typeof body.context !== "object") {
+        const error = new Error("缺少当前学习状态快照");
+        error.statusCode = 400;
+        throw error;
+      }
+      const report = await generateLearningReportWithLlm(body.context);
+      if (body.planId && isDatabaseConfigured()) {
+        const session = await databaseSession(req, res);
+        await recordLearningEventForUser(session.userId, body.planId, {
+          type: "learning_report_generated",
+          eventKey: `learning-report:${Date.now()}`,
+          payload: {
+            reportChars: String(report || "").length,
+            progress: body.context?.progress || null
+          }
+        });
+      }
+      sendJson(res, 200, { report });
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/api/diagnostic/evaluate") {
       const body = await readJson(req);
-      const result = evaluateDiagnosticPretest(body.plan || {}, body.answers || {});
+      const plan = body.plan || {};
+      const groundedPlan = plan?.input?.knowledgeSourceIds?.length
+        ? { ...plan, input: await groundedInput(req, res, plan.input) }
+        : plan;
+      const result = await evaluateDiagnosticPretestWithLlm(groundedPlan, body.answers || {});
       sendJson(res, 200, result);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/diagnostic/generate") {
+      const body = await readJson(req);
+      const plan = body.plan || {};
+      const groundedPlan = plan?.input?.knowledgeSourceIds?.length
+        ? { ...plan, input: await groundedInput(req, res, plan.input) }
+        : plan;
+      const diagnosticPretest = await generateDiagnosticPretestWithLlm(groundedPlan);
+      sendJson(res, 200, { diagnosticPretest });
       return;
     }
 
@@ -262,6 +521,25 @@ const server = http.createServer(async (req, res) => {
         decodePart(attemptMatch[1]),
         body.answer
       );
+      if (result.planId) {
+        await recordLearningEventForUser(session.userId, result.planId, {
+          type: "quiz_attempt_evaluated",
+          eventKey: `quiz-attempt:${attemptMatch[1]}:${Date.now()}`,
+          payload: {
+            questionId: decodePart(attemptMatch[1]),
+            correct: result.correct,
+            score: result.score,
+            maxScore: result.maxScore,
+            dimension: result.dimension
+          }
+        });
+        if (result.correct === false) {
+          await evaluatePathReplanningForUser(session.userId, result.planId, {
+            triggerType: "quiz_attempt_evaluated",
+            recordEvent: false
+          });
+        }
+      }
       sendJson(res, 201, result);
       return;
     }
@@ -276,14 +554,49 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/tutor") {
       const body = await readJson(req);
-      const result = await answerTutorQuestion({
-        question: clean(body.question, 1000),
-        context: clean(body.context, 5000),
-        mode: clean(body.mode, 30),
-        hintLevel: Number(body.hintLevel || 1),
-        history: ensureArray(body.history, []).slice(-8)
-      });
-      sendJson(res, 200, result);
+      let grounding = null;
+      let session = null;
+      if (ensureArray(body.sourceIds, []).length || body.planId) {
+        session = await databaseSession(req, res);
+        grounding = await loadFullSourceContextForUser(session.userId, {
+          sourceIds: body.sourceIds,
+          planId: body.planId
+        });
+      }
+      const question = clean(body.question, 1000);
+      const tutorMode = clean(body.mode, 30);
+      const hintLevel = Number(body.hintLevel || 1);
+      const history = ensureArray(body.history, []).slice(-8);
+      const result = grounding?.citations?.length
+        ? await answerGroundedQuestion({
+          question,
+          grounding,
+          context: clean(body.context, 5000),
+          history,
+          persona: "tutor",
+          tutorMode,
+          hintLevel
+        })
+        : await answerTutorQuestion({
+          question,
+          context: clean(body.context, 5000),
+          mode: tutorMode,
+          hintLevel,
+          history
+        });
+      if (session && body.planId) {
+        await recordLearningEventForUser(session.userId, body.planId, {
+          type: "tutor_question_asked",
+          eventKey: `tutor-question:${Date.now()}`,
+          payload: {
+            mode: tutorMode,
+            hintLevel,
+            grounded: Boolean(grounding?.citations?.length),
+            questionChars: question.length
+          }
+        });
+      }
+      sendJson(res, 200, { ...result, citations: result.citations || [] });
       return;
     }
 
@@ -292,7 +605,8 @@ const server = http.createServer(async (req, res) => {
     const status = Number(error?.statusCode) || 500;
     sendJson(res, status, {
       message: status >= 500 ? "服务端处理失败" : error.message,
-      detail: error instanceof Error ? error.message : String(error)
+      detail: error instanceof Error ? error.message : String(error),
+      ...(error?.source ? { source: error.source } : {})
     });
   }
 });
@@ -304,6 +618,31 @@ async function databaseSession(req, res) {
     throw error;
   }
   return requireUserSession(req, res);
+}
+
+async function groundedInput(req, res, value, queryOverride = "") {
+  const input = normalizeInput(value || {});
+  if (!input.knowledgeSourceIds.length) return input;
+  const session = await databaseSession(req, res);
+  const grounding = await loadFullSourceContextForUser(session.userId, {
+    sourceIds: input.knowledgeSourceIds
+  });
+  const sources = (await listSourcesForUser(session.userId))
+    .filter((source) => input.knowledgeSourceIds.includes(source.id));
+  return {
+    ...input,
+    knowledgeSources: sources.map(({ checksum, metadata, ...source }) => source),
+    knowledgeGrounding: {
+      context: grounding.context,
+      citations: grounding.citations,
+      instruction: grounding.instruction,
+      mode: grounding.mode,
+      sourceCount: grounding.sourceCount,
+      loadedChunks: grounding.loadedChunks,
+      fullContextChars: grounding.fullContextChars,
+      searchedChunks: 0
+    }
+  };
 }
 
 function decodePart(value) {

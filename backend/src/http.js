@@ -16,16 +16,18 @@ export function sendJson(res, status, data) {
   res.end(JSON.stringify(data, null, 2));
 }
 
-export function readJson(req) {
+export function readJson(req, { maxBytes = 5 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
     let data = "";
     let rejected = false;
     req.on("data", (chunk) => {
       if (rejected) return;
       data += chunk;
-      if (data.length > 5 * 1024 * 1024) {
+      if (Buffer.byteLength(data, "utf8") > maxBytes) {
         rejected = true;
-        reject(new Error("请求体过大"));
+        const error = new Error("请求体过大");
+        error.statusCode = 413;
+        reject(error);
       }
     });
     req.on("end", () => {

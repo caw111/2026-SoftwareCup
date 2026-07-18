@@ -95,15 +95,18 @@ export async function testLargeModelConnection() {
 }
 
 export async function requestChatCompletion(messages, options = {}) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), MODEL_CONFIG.timeoutMs);
+  const timeoutMs = options.timeoutMs === 0
+    ? 0
+    : Number(options.timeoutMs || MODEL_CONFIG.timeoutMs);
+  const controller = timeoutMs > 0 ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
   const url = buildModelUrl();
   const requestBody = buildModelRequestBody(messages, options);
 
   try {
     const response = await fetch(url, {
       method: "POST",
-      signal: controller.signal,
+      signal: controller?.signal,
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${MODEL_CONFIG.apiKey}`
@@ -116,17 +119,25 @@ export async function requestChatCompletion(messages, options = {}) {
       throw new Error(`大模型接口返回 ${response.status}：${detail.slice(0, 500)}`);
     }
 
+    if (options.stream) {
+      const streamContent = await response.text();
+      return extractStreamingModelText(streamContent) || "大模型未返回有效内容。";
+    }
+
     const data = await response.json();
     return extractModelText(data) || "大模型未返回有效内容。";
   } catch (error) {
-    if (error?.name === "AbortError") throw new Error(`大模型接口请求超时：${MODEL_CONFIG.timeoutMs}ms`);
+    if (error?.name === "AbortError") throw new Error(`大模型接口请求超时：${timeoutMs}ms`);
     if (process.platform === "win32" && isNetworkResetError(error)) {
-      const data = await requestModelWithPowerShell(url, requestBody);
+      const data = await requestModelWithPowerShell(url, requestBody, timeoutMs, Boolean(options.stream));
+      if (options.stream && typeof data?.streamContent === "string") {
+        return extractStreamingModelText(data.streamContent) || "大模型未返回有效内容。";
+      }
       return extractModelText(data) || "大模型未返回有效内容。";
     }
     throw error;
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -134,7 +145,7 @@ function isNetworkResetError(error) {
   return error?.message === "fetch failed" || error?.cause?.code === "ECONNRESET";
 }
 
-function requestModelWithPowerShell(url, requestBody) {
+function requestModelWithPowerShell(url, requestBody, timeoutMs, stream) {
   return new Promise((resolve, reject) => {
     const script = `
 $ErrorActionPreference = 'Stop'
@@ -145,16 +156,33 @@ $headers = @{
   Authorization = "Bearer $env:LLM_API_KEY"
   Accept = "application/json"
 }
-$response = Invoke-RestMethod -Uri $env:LLM_API_URL -Method Post -Headers $headers -Body $payload -ContentType "application/json; charset=utf-8" -TimeoutSec $env:LLM_TIMEOUT_SECONDS
-$response | ConvertTo-Json -Depth 40 -Compress
+$requestParameters = @{
+  Uri = $env:LLM_API_URL
+  Method = 'Post'
+  Headers = $headers
+  Body = $payload
+  ContentType = 'application/json; charset=utf-8'
+}
+if ([int]$env:LLM_TIMEOUT_SECONDS -gt 0) {
+  $requestParameters.TimeoutSec = [int]$env:LLM_TIMEOUT_SECONDS
+}
+if ($env:LLM_STREAM -eq 'true') {
+  $response = Invoke-WebRequest @requestParameters
+  @{ streamContent = $response.Content } | ConvertTo-Json -Depth 5 -Compress
+} else {
+  $response = Invoke-RestMethod @requestParameters
+  $response | ConvertTo-Json -Depth 40 -Compress
+}
 `;
     const child = spawn("powershell.exe", ["-NoProfile", "-Command", script], {
       stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
       env: {
         ...process.env,
         LLM_API_KEY: MODEL_CONFIG.apiKey,
         LLM_API_URL: url,
-        LLM_TIMEOUT_SECONDS: String(Math.ceil(MODEL_CONFIG.timeoutMs / 1000))
+        LLM_TIMEOUT_SECONDS: timeoutMs > 0 ? String(Math.ceil(timeoutMs / 1000)) : "0",
+        LLM_STREAM: stream ? "true" : "false"
       }
     });
 
@@ -188,6 +216,47 @@ function extractModelText(data) {
   return responseText || data.choices?.[0]?.message?.content;
 }
 
+function extractStreamingModelText(content) {
+  const raw = String(content || "").trim();
+  if (!raw) return "";
+  if (raw.startsWith("{")) {
+    try {
+      return extractModelText(JSON.parse(raw)) || "";
+    } catch {
+      // Continue with SSE parsing when an individual data event starts with JSON.
+    }
+  }
+
+  let deltaText = "";
+  let completedText = "";
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) continue;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === "[DONE]") continue;
+    try {
+      const event = JSON.parse(payload);
+      if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
+        deltaText += event.delta;
+        continue;
+      }
+      const chatDelta = event.choices?.[0]?.delta?.content;
+      if (typeof chatDelta === "string") {
+        deltaText += chatDelta;
+        continue;
+      }
+      if (event.type === "content_block_delta" && typeof event.delta?.text === "string") {
+        deltaText += event.delta.text;
+        continue;
+      }
+      const finalText = extractModelText(event.response || event);
+      if (finalText) completedText = finalText;
+    } catch {
+      // Ignore non-JSON SSE control lines from compatible providers.
+    }
+  }
+  return deltaText || completedText;
+}
+
 function buildModelUrl() {
   const endpoint = MODEL_CONFIG.wireApi === "responses" ? "/responses" : "/chat/completions";
   const baseUrl = MODEL_CONFIG.baseUrl.endsWith("/v1") ? MODEL_CONFIG.baseUrl : `${MODEL_CONFIG.baseUrl}/v1`;
@@ -203,7 +272,8 @@ function buildModelRequestBody(messages, options) {
       instructions: system || undefined,
       input,
       temperature: options.temperature ?? 0.7,
-      max_output_tokens: options.maxTokens
+      max_output_tokens: options.maxTokens,
+      stream: options.stream || undefined
     });
   }
 
@@ -211,7 +281,8 @@ function buildModelRequestBody(messages, options) {
     model: MODEL_CONFIG.model,
     messages,
     temperature: options.temperature ?? 0.7,
-    max_tokens: options.maxTokens
+    max_tokens: options.maxTokens,
+    stream: options.stream || undefined
   });
 }
 
