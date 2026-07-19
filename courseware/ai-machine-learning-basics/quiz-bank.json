@@ -1,0 +1,68 @@
+{
+  "courseId": "ai-machine-learning-basics",
+  "questions": [
+    {
+      "id": "ml-q-001",
+      "type": "choice",
+      "concept": "问题定义",
+      "difficulty": 1,
+      "question": "下面哪一个描述最适合作为监督学习任务？",
+      "options": [
+        "让系统自动变聪明",
+        "根据历史天气和是否下雨记录预测明天是否下雨",
+        "收集尽可能多的数据但暂不定义目标",
+        "把所有字段都交给模型自行决定标签"
+      ],
+      "answerIndex": 1,
+      "explanation": "监督学习需要明确输入样本和标签。天气预测例子同时具备历史输入和是否下雨的目标标签。"
+    },
+    {
+      "id": "ml-q-002",
+      "type": "choice",
+      "concept": "数据泄露",
+      "difficulty": 2,
+      "question": "房价预测中，哪个字段最可能造成标签泄露？",
+      "options": ["房屋面积", "房龄", "成交后税费", "距离地铁距离"],
+      "answerIndex": 2,
+      "explanation": "成交后税费通常在交易完成后才知道，预测前不可获得，容易泄露成交价格信息。"
+    },
+    {
+      "id": "ml-q-003",
+      "type": "short",
+      "concept": "训练验证测试划分",
+      "difficulty": 2,
+      "question": "为什么不能反复根据测试集分数调整模型？",
+      "referenceAnswer": "测试集应模拟未知数据。反复用测试集调参会让模型间接适配测试集，导致最终评估过于乐观。",
+      "keywords": ["未知数据", "调参", "过于乐观", "泛化"]
+    },
+    {
+      "id": "ml-q-004",
+      "type": "choice",
+      "concept": "分类指标",
+      "difficulty": 2,
+      "question": "正负样本极不均衡时，只看 Accuracy 的主要风险是什么？",
+      "options": [
+        "Accuracy 无法用于任何分类任务",
+        "模型可能只预测多数类也得到很高分",
+        "Accuracy 会自动惩罚漏报",
+        "Accuracy 只适用于回归任务"
+      ],
+      "answerIndex": 1,
+      "explanation": "类别极不均衡时，多数类预测器可能得到高 Accuracy，但对少数类完全无识别能力。"
+    },
+    {
+      "id": "ml-q-005",
+      "type": "code",
+      "concept": "评估指标",
+      "difficulty": 3,
+      "language": "python",
+      "prompt": "实现函数 mean_absolute_error(y_true, y_pred)，返回两组数字的平均绝对误差。",
+      "starter": "def mean_absolute_error(y_true, y_pred):\n    pass\n",
+      "tests": [
+        { "input": [[3, 5, 7], [2, 5, 10]], "expected": 1.3333333333 },
+        { "input": [[1, 1], [1, 1]], "expected": 0 }
+      ],
+      "explanation": "MAE 是所有绝对误差的平均值。"
+    }
+  ]
+}

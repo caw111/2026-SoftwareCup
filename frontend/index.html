@@ -261,6 +261,8 @@
               <div class="course-nav-section">
                 <span class="course-nav-label">核心学习</span>
                 <button class="nav-link active" type="button" data-view="daily">学习路径</button>
+                <button class="nav-link" type="button" data-view="resources">学习资源</button>
+                <button class="nav-link" type="button" data-view="mindmap">思维导图</button>
                 <button class="nav-link" type="button" data-view="calendar">学习日历</button>
                 <button class="nav-link" type="button" data-view="path-revisions">路径变更</button>
                 <button class="nav-link" type="button" data-view="notes">我的笔记</button>
@@ -276,6 +278,7 @@
                 <button class="nav-link" type="button" data-view="practice">随堂测验</button>
                 <button class="nav-link" type="button" data-view="mistakes">错题复习</button>
                 <button class="nav-link" type="button" data-view="exam">综合考试</button>
+                <button class="nav-link" type="button" data-view="project">项目任务</button>
               </div>
               <div class="course-nav-section">
                 <span class="course-nav-label">成果与系统</span>
@@ -317,6 +320,32 @@
               </div>
               <div id="dailyPanel" class="empty-state">
                 <p>生成或选择课程后，这里会出现可打卡的章节任务。</p>
+              </div>
+            </section>
+
+            <section class="course-mode" data-mode="resources">
+              <div class="section-heading">
+                <div>
+                  <h2>学习资源</h2>
+                  <p>集中查看讲义、题库、在线拓展阅读、项目任务和资源覆盖矩阵。</p>
+                </div>
+                <span id="resourceMode">等待资源</span>
+              </div>
+              <div id="resourcePanel" class="empty-state">
+                <p>生成课程后，这里会出现可核验、可下载、可用于演示的资源包。</p>
+              </div>
+            </section>
+
+            <section class="course-mode" data-mode="mindmap">
+              <div class="section-heading">
+                <div>
+                  <h2>思维导图</h2>
+                  <p>从知识图谱和学习路径生成可展开、可导出的大纲式思维导图。</p>
+                </div>
+                <span id="mindMapMode">等待导图</span>
+              </div>
+              <div id="mindMapPanel" class="empty-state">
+                <p>生成课程后，这里会展示知识点层级、薄弱节点和关联任务。</p>
               </div>
             </section>
 
@@ -436,6 +465,19 @@
               </div>
               <div id="examPanel" class="empty-state">
                 <p>选择课程后可以生成一次模拟考试。</p>
+              </div>
+            </section>
+
+            <section class="course-mode" data-mode="project">
+              <div class="section-heading">
+                <div>
+                  <h2>项目任务</h2>
+                  <p>围绕当前课程目标生成可提交的代码实操或综合应用项目。</p>
+                </div>
+                <span id="projectMode">等待项目</span>
+              </div>
+              <div id="projectPanel" class="empty-state">
+                <p>生成课程后，这里会出现任务书、起始代码、测试要求和评分 Rubric。</p>
               </div>
             </section>
 

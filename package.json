@@ -8,12 +8,14 @@
     "backend": "node backend/server.js",
     "frontend": "node frontend/server.js",
     "new-frontend": "node new_frontend/server.js",
+    "seed:course": "node scripts/seed-course-sources.js",
     "db:migrate": "node scripts/migrate.js",
     "db:status": "node scripts/migrate.js --status",
     "test": "node --test"
   },
   "dependencies": {
     "dompurify": "^3.4.12",
+    "iconv-lite": "^0.7.3",
     "marked": "^18.0.6",
     "mysql2": "^3.22.6"
   }

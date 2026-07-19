@@ -9,6 +9,7 @@ import {
 } from "./src/db/pool.js";
 import { setCors, sendJson, readJson } from "./src/http.js";
 import { friendlyJudgeError, getJudgeStatus, bootstrapJudgeRuntime } from "./src/judge.js";
+import { repairLegacyMojibake } from "./src/encoding-repair.js";
 import {
   generateAdaptiveQuiz,
   generateDailyLearningMaterials,
@@ -102,6 +103,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/llm-test") {
       const result = await testLargeModelConnection();
       sendJson(res, result.ok ? 200 : 503, result);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/encoding/repair") {
+      sendJson(res, 200, repairLegacyMojibake(await readJson(req, { maxBytes: 12 * 1024 * 1024 })));
       return;
     }
 

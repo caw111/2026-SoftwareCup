@@ -5,7 +5,7 @@
 系统支持两种运行方式：
 
 - 未配置大模型时，使用本地规则和题库完成演示。
-- 配置 OpenAI 兼容接口后，课程生成、画像访谈、诊断、补救、报告、问答和图谱治理会接入真实 LLM。
+- 配置 OpenAI 兼容接口或讯飞星火大模型后，课程生成、画像访谈、诊断、补救、报告、问答和图谱治理会接入真实 LLM。
 
 ## 核心功能
 
@@ -25,7 +25,7 @@
 - 前端：原生 HTML、CSS、JavaScript，单页应用。
 - 后端：Node.js 原生 HTTP 服务，ES Modules。
 - 数据库：MySQL 8，版本化 SQL 迁移。
-- LLM：OpenAI Chat Completions 兼容接口。
+- LLM：OpenAI Chat Completions 兼容接口，内置讯飞星火 provider 配置。
 - RAG：服务端解析课程资料，检索并构建引用白名单。
 - 判题：Docker/Podman 沙箱优先，本地多语言 runner 兜底。
 - 测试：`node --test`。
@@ -66,7 +66,7 @@ scripts/
 - Node.js 18 或更高版本。
 - MySQL 8，可选但推荐。未配置 MySQL 时可进行本地演示。
 - Docker、Podman 或远程 Docker Engine，可选，用于代码题沙箱评测。
-- OpenAI 兼容大模型接口，可选，用于真实 LLM 能力。
+- OpenAI 兼容大模型接口或讯飞星火 APIPassword，可选，用于真实 LLM 能力。
 
 ## 快速启动
 
@@ -142,7 +142,28 @@ OPENAI_TIMEOUT_MS=180000
 RAG_FULL_CONTEXT_MAX_CHARS=900000
 ```
 
-也可以使用兼容 OpenAI Chat Completions 的第三方模型服务，只要把 `OPENAI_BASE_URL` 和 `OPENAI_MODEL` 换成对应服务的配置即可。
+赛题推荐优先使用讯飞相关能力时，可直接使用内置 provider：
+
+```env
+LLM_PROVIDER=iflytek
+IFLYTEK_API_PASSWORD=your-spark-api-password
+IFLYTEK_MODEL=4.0Ultra
+OPENAI_TIMEOUT_MS=180000
+RAG_FULL_CONTEXT_MAX_CHARS=900000
+```
+
+讯飞星火 provider 默认使用 OpenAI 兼容地址 `https://spark-api-open.xf-yun.com/v1`，请求路径为 `/chat/completions`。如果学校或团队账号分配了专用网关，也可以用通用变量覆盖：
+
+```env
+LLM_PROVIDER=iflytek
+LLM_API_KEY=your-api-password
+LLM_BASE_URL=https://spark-api-open.xf-yun.com/v1
+LLM_MODEL=4.0Ultra
+LLM_WIRE_API=chat
+LLM_TIMEOUT_MS=180000
+```
+
+也可以使用其他兼容 OpenAI Chat Completions 的第三方模型服务，只要把 `OPENAI_BASE_URL` 和 `OPENAI_MODEL`，或通用的 `LLM_BASE_URL`、`LLM_MODEL` 换成对应服务的配置即可。
 
 配置完成后重启服务，并在页面右上角点击“测试大模型”。连接成功后，画像访谈、课程生成、诊断补救、路径重规划、学习报告、资料问答和掌握度治理会优先使用真实 LLM；失败时会给出可见降级状态。
 
@@ -241,7 +262,7 @@ npm test
 - 页面提示“后端未连接”：确认 `npm run dev` 正在运行，且后端端口为 `3000`。
 - MySQL 连接失败：先执行 `docker compose up -d mysql`，再检查 `.env.local` 中的账号、密码和数据库名。
 - 迁移失败：不要修改已经执行过的迁移文件；新增迁移时使用新的编号。
-- 大模型不可用：检查 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL`，并访问 `/api/llm-test`。
+- 大模型不可用：检查 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL`，或讯飞配置 `LLM_PROVIDER=iflytek`、`IFLYTEK_API_PASSWORD`、`IFLYTEK_MODEL`，并访问 `/api/llm-test`。
 - Windows 刷新时出现黑色控制台窗口：后端已对 PowerShell 兜底请求设置隐藏窗口；重启 `npm run dev` 后生效。
 - 判题不可用：访问 `/api/judge/status` 查看 Docker/Podman 状态；不可用时系统会自动降级到本地 runner。
 

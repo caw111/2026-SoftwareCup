@@ -1,0 +1,29 @@
+{
+  "courseId": "ai-machine-learning-basics",
+  "readings": [
+    {
+      "id": "reading-001",
+      "title": "Scikit-learn User Guide: Supervised Learning",
+      "type": "official-doc",
+      "url": "https://scikit-learn.org/stable/supervised_learning.html",
+      "recommendedFor": ["线性模型", "训练验证划分", "指标解释"],
+      "reason": "官方文档包含监督学习算法、模型选择和评估方法，适合作为课程后续查证资料。"
+    },
+    {
+      "id": "reading-002",
+      "title": "Google Machine Learning Crash Course: Framing",
+      "type": "open-course",
+      "url": "https://developers.google.com/machine-learning/crash-course/framing/ml-terminology",
+      "recommendedFor": ["问题定义", "特征标签"],
+      "reason": "该材料用案例解释特征、标签和样本，适合初学者补齐术语。"
+    },
+    {
+      "id": "reading-003",
+      "title": "Responsible evaluation checklist",
+      "type": "course-note",
+      "url": "local://chapter-05-evaluation-generalization",
+      "recommendedFor": ["数据泄露", "泛化评估", "错误分析"],
+      "reason": "与本课程第 5 章配套，强调测试集边界和业务指标解释。"
+    }
+  ]
+}

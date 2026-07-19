@@ -22,9 +22,8 @@ test("重置学习进度必须先通过确认弹窗", () => {
   assert.match(app, /confirmResetProgressDialog\.addEventListener\("cancel"/);
 });
 
-test("测验入口统一收纳在课程侧栏的实践评测分组", () => {
-  assert.match(html, /class="course-nav-label">实践评测<\/span>[\s\S]*?data-view="practice">随堂测验<\/button>[\s\S]*?data-view="mistakes">错题复习<\/button>[\s\S]*?data-view="exam">综合考试<\/button>/);
-  assert.doesNotMatch(html, /data-view="project">项目任务<\/button>/);
+test("测验和项目入口统一收纳在课程侧栏的实践评测分组", () => {
+  assert.match(html, /class="course-nav-label">实践评测<\/span>[\s\S]*?data-view="practice">随堂测验<\/button>[\s\S]*?data-view="mistakes">错题复习<\/button>[\s\S]*?data-view="exam">综合考试<\/button>[\s\S]*?data-view="project">项目任务<\/button>/);
   assert.doesNotMatch(html, /class="assessment-subnav"/);
   assert.doesNotMatch(html, /id="regenerateQuizButton"/);
   assert.doesNotMatch(app, /regenerateQuizButton/);

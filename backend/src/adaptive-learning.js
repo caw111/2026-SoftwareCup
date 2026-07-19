@@ -526,9 +526,20 @@ export function buildRemediationPlan(input, knowledgeGraph, learnerProfile, diag
   };
 }
 
-export function buildGovernanceReport({ input, learnerProfile, path, resources, assessment, dailyPlan, knowledgeGraph }) {
+export function buildGovernanceReport({ input, learnerProfile, path, resources, assessment, dailyPlan, knowledgeGraph, resourceStudio, peerReview }) {
   const concepts = ensureArray(knowledgeGraph?.concepts, []);
   const diagnosticLikeItems = ensureArray(assessment?.quiz, []);
+  const reviewBoard = peerReview || buildGovernancePeerReview({
+    input,
+    learnerProfile,
+    resources,
+    assessment,
+    dailyPlan,
+    knowledgeGraph,
+    resourceStudio
+  });
+  const resourceMatrix = ensureArray(resourceStudio?.resourceStudio?.matrix, []);
+  const readyResourceTypes = resourceMatrix.filter((item) => item.ready).length;
   const checks = [
     {
       id: "fine-grained-concepts",
@@ -577,6 +588,20 @@ export function buildGovernanceReport({ input, learnerProfile, path, resources, 
       label: "答题端隐藏标准答案",
       passed: true,
       detail: "正式练习题通过 publicQuestion 输出，隐藏标准答案、关键词和测试用例。"
+    },
+    {
+      id: "resource-type-coverage",
+      label: "赛题资源类型覆盖",
+      passed: readyResourceTypes >= 5 || (!resourceMatrix.length && ensureArray(resources, []).length >= 4 && diagnosticLikeItems.length >= 4),
+      detail: resourceMatrix.length
+        ? `资源工作台已就绪 ${readyResourceTypes}/${resourceMatrix.length} 类资源，覆盖讲义、导图、题库、在线阅读和项目任务。`
+        : "当前调用未提供资源工作台矩阵，已按基础资源和测评闭环做兼容性校验。"
+    },
+    {
+      id: "peer-review-closed-loop",
+      label: "多智能体同行复核闭环",
+      passed: reviewBoard.summary.blockingIssues === 0,
+      detail: `${reviewBoard.summary.approvedArtifacts}/${reviewBoard.summary.artifactCount} 个产物通过复核，阻塞问题 ${reviewBoard.summary.blockingIssues} 个。`
     }
   ];
   const score = Math.round((checks.filter((item) => item.passed).length / checks.length) * 100);
@@ -587,10 +612,12 @@ export function buildGovernanceReport({ input, learnerProfile, path, resources, 
     score,
     summary: `${input.topic || "当前主题"} 资源包通过 ${checks.filter((item) => item.passed).length}/${checks.length} 项质量检查。`,
     checks,
+    peerReview: reviewBoard,
     consistencyChecks: [
       "选择题 answerIndex 已校验合法范围。",
       "前端题目不会暴露标准答案、关键词或隐藏测试。",
-      "诊断题保留知识点、难度、区分度和错因标签。"
+      "诊断题保留知识点、难度、区分度和错因标签。",
+      `同行复核覆盖 ${reviewBoard.summary.artifactCount} 个关键产物，所有阻塞项必须在发布前关闭。`
     ],
     requiredFixes: checks.filter((item) => !item.passed).map((item) => item.label),
     moderationPolicy: [
@@ -599,6 +626,131 @@ export function buildGovernanceReport({ input, learnerProfile, path, resources, 
       "代码题评测使用服务端沙箱或本地 runner，避免浏览器端执行学生代码。",
       "个人工作台可查看质量风险，必要时触发资源生成智能体重写。"
     ]
+  };
+}
+
+export function buildGovernancePeerReview({ input, learnerProfile, resources, assessment, dailyPlan, knowledgeGraph, resourceStudio }) {
+  const concepts = ensureArray(knowledgeGraph?.concepts, []);
+  const basicResources = ensureArray(resources, []);
+  const quiz = ensureArray(assessment?.quiz, []);
+  const matrix = ensureArray(resourceStudio?.resourceStudio?.matrix, []);
+  const projectTasks = ensureArray(resourceStudio?.projectTasks, []);
+  const readings = ensureArray(resourceStudio?.readingRecommendations, []);
+  const mindMap = resourceStudio?.mindMap;
+  const readyResourceTypes = matrix.filter((item) => item.ready).length;
+
+  const artifacts = [
+    reviewArtifact({
+      artifactId: "learner-profile-v1",
+      title: "学习画像",
+      owner: "学习画像智能体",
+      reviewer: "知识诊断智能体",
+      checks: [
+        { label: "薄弱维度明确", passed: ensureArray(learnerProfile?.weakestDimensions, []).length >= 2, severity: "blocker", evidence: "至少需要两个优先补救维度。"},
+        { label: "掌握度有证据来源", passed: ensureArray(learnerProfile?.mastery, []).every((item) => item.evidence && item.source), severity: "blocker", evidence: "画像分数需标注估计、诊断、练习或复测来源。"}
+      ]
+    }),
+    reviewArtifact({
+      artifactId: "knowledge-graph-v1",
+      title: "知识图谱",
+      owner: "知识图谱智能体",
+      reviewer: "诊断前测智能体",
+      checks: [
+        { label: "细粒度节点充足", passed: concepts.length >= 12, severity: "blocker", evidence: `当前 ${concepts.length} 个知识点。`},
+        { label: "先修关系可追踪", passed: concepts.some((concept) => ensureArray(concept.prerequisites, []).length) || ensureArray(knowledgeGraph?.edges, []).length > 0, severity: "warning", evidence: "至少需要一组先修依赖或图谱边。"}
+      ]
+    }),
+    reviewArtifact({
+      artifactId: "resource-package-v1",
+      title: "学习资源包",
+      owner: "资源生成智能体",
+      reviewer: "内容治理智能体",
+      checks: [
+        { label: "基础资源绑定知识点", passed: basicResources.every((item) => item.conceptId || ensureArray(item.sourceConcepts, []).length), severity: "blocker", evidence: `基础资源 ${basicResources.length} 条。`},
+        { label: "资源类型达到赛题要求", passed: readyResourceTypes >= 5 || (!matrix.length && basicResources.length >= 4), severity: "blocker", evidence: matrix.length ? `${readyResourceTypes}/${matrix.length} 类资源就绪。` : "未提供资源矩阵，按基础资源兼容校验。"}
+      ]
+    }),
+    reviewArtifact({
+      artifactId: "resource-studio-v1",
+      title: "资源工作台",
+      owner: "资源装配智能体",
+      reviewer: "学习陪练智能体",
+      checks: [
+        { label: "思维导图可导出", passed: Boolean(mindMap?.root?.children?.length && ensureArray(mindMap?.exportFormats, []).includes("svg")), severity: "warning", evidence: "导图应来自知识图谱并支持 SVG 导出。"},
+        { label: "拓展阅读来自在线成熟资料", passed: readings.length >= 3 && readings.every((item) => item.url || item.doi), severity: "blocker", evidence: `在线拓展阅读 ${readings.length} 条，必须带 URL 或 DOI。`}
+      ]
+    }),
+    reviewArtifact({
+      artifactId: "project-task-v1",
+      title: "项目任务",
+      owner: "资源装配智能体",
+      reviewer: "测评评分智能体",
+      checks: [
+        { label: "任务包含起始代码", passed: projectTasks.some((task) => ensureArray(task.starterFiles, []).length), severity: "blocker", evidence: `项目任务 ${projectTasks.length} 个。`},
+        { label: "任务包含验收测试", passed: projectTasks.some((task) => ensureArray(task.tests, []).some((item) => item.command)), severity: "blocker", evidence: "项目必须有可执行或可核验的测试说明。"},
+        { label: "Rubric 分值完整", passed: projectTasks.some((task) => ensureArray(task.rubric, []).reduce((sum, item) => sum + Number(item.weight || 0), 0) >= 90), severity: "warning", evidence: "Rubric 总权重应接近 100%。"}
+      ]
+    }),
+    reviewArtifact({
+      artifactId: "assessment-v1",
+      title: "测评题库",
+      owner: "测评评分智能体",
+      reviewer: "内容治理智能体",
+      checks: [
+        { label: "题量满足初始诊断", passed: quiz.length >= 4, severity: "blocker", evidence: `当前 ${quiz.length} 道题。`},
+        { label: "选择题答案合法", passed: quiz.every((item) => item.type !== "choice" || item.options?.[item.answerIndex] !== undefined), severity: "blocker", evidence: "answerIndex 必须落在 options 内。"}
+      ]
+    }),
+    reviewArtifact({
+      artifactId: "daily-plan-v1",
+      title: "学习路径",
+      owner: "路径规划智能体",
+      reviewer: "个人洞察智能体",
+      checks: [
+        { label: "每日任务可执行", passed: ensureArray(dailyPlan, []).every((day) => ensureArray(day.tasks, []).length >= 3), severity: "blocker", evidence: `学习日 ${ensureArray(dailyPlan, []).length} 天。`},
+        { label: "路径覆盖阶段目标", passed: ensureArray(dailyPlan, []).length >= 7 || /周|month|月/i.test(String(input?.duration || "")), severity: "warning", evidence: "路径长度应匹配学习周期。"}
+      ]
+    })
+  ];
+
+  const blockingIssues = artifacts.reduce((sum, artifact) => sum + artifact.checks.filter((check) => !check.passed && check.severity === "blocker").length, 0);
+  const warningIssues = artifacts.reduce((sum, artifact) => sum + artifact.checks.filter((check) => !check.passed && check.severity !== "blocker").length, 0);
+  const approvedArtifacts = artifacts.filter((artifact) => artifact.status === "approved").length;
+  return {
+    generatedAt: new Date().toISOString(),
+    policy: [
+      "关键产物必须由不同智能体复核，阻塞项关闭前不得标记为通过。",
+      "资源、测评、项目和在线拓展阅读都必须能追溯到画像、知识图谱或真实 URL/DOI。",
+      "警告项允许进入演示，但必须展示修正建议和负责智能体。"
+    ],
+    summary: {
+      topic: input?.topic || "当前课程",
+      artifactCount: artifacts.length,
+      approvedArtifacts,
+      blockingIssues,
+      warningIssues,
+      resourceTypesReady: readyResourceTypes || Math.min(5, basicResources.length + (quiz.length ? 1 : 0)),
+      resourceTypesTotal: matrix.length || 5
+    },
+    rounds: [
+      { round: 1, reviewer: "内容治理智能体", scope: "资源、题目、答案泄露、知识点绑定", decision: blockingIssues ? "退回阻塞项" : "通过发布门禁" },
+      { round: 2, reviewer: "个人洞察智能体", scope: "薄弱点、补救路径、每日任务可执行性", decision: warningIssues ? "带警告通过并记录改进项" : "通过学习闭环复核" }
+    ],
+    artifacts
+  };
+}
+
+function reviewArtifact({ artifactId, title, owner, reviewer, checks }) {
+  const failed = checks.filter((check) => !check.passed);
+  const hasBlocker = failed.some((check) => check.severity === "blocker");
+  return {
+    artifactId,
+    title,
+    owner,
+    reviewer,
+    status: hasBlocker ? "needs-revision" : "approved",
+    checks,
+    requiredFixes: failed.map((check) => `${check.label}：${check.evidence}`)
   };
 }
 

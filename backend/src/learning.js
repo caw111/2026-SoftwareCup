@@ -7,12 +7,14 @@ import { clean, clamp, ensureArray, normalizeCodeLanguage } from "./utils.js";
 import { requestChatCompletion, parseJsonFromModel } from "./llm.js";
 
 import { bootstrapJudgeRuntime, friendlyJudgeError, getJudgeRuntimeStatus } from "./judge.js";
+import { enrichInputWithOnlineReadings } from "./online-reading.js";
 
 import {
   buildAdaptiveState,
   buildDiagnosticPretest,
   evaluateDiagnosticPretest,
   buildGovernanceReport,
+  buildGovernancePeerReview,
   buildKnowledgeGraph,
   buildRemediationPlan
 } from "./adaptive-learning.js";
@@ -32,7 +34,37 @@ export function normalizeInput(body) {
     knowledgeSourceIds: [...new Set(ensureArray(body.knowledgeSourceIds, [])
       .map((value) => String(value || "").trim())
       .filter((value) => /^[a-f0-9-]{8,64}$/i.test(value)))]
-      .slice(0, 30)
+      .slice(0, 30),
+    onlineReadingRecommendations: ensureArray(body.onlineReadingRecommendations, [])
+      .map(normalizeOnlineReadingInput)
+      .filter((item) => item.title && (item.url || item.doi))
+      .slice(0, 12),
+    onlineReadingStatus: body.onlineReadingStatus && typeof body.onlineReadingStatus === "object"
+      ? body.onlineReadingStatus
+      : null
+  };
+}
+
+function normalizeOnlineReadingInput(item) {
+  return {
+    id: clean(item?.id, 80),
+    type: clean(item?.type, 80) || "online-literature",
+    source: clean(item?.source, 80) || "online-scholarship",
+    title: clean(item?.title, 500),
+    authors: ensureArray(item?.authors, []).map((author) => clean(author, 120)).filter(Boolean).slice(0, 8),
+    year: Number(item?.year || 0) || null,
+    venue: clean(item?.venue, 180),
+    publisher: clean(item?.publisher, 180),
+    doi: clean(item?.doi, 180),
+    url: clean(item?.url, 1000),
+    locator: clean(item?.locator, 500),
+    provider: clean(item?.provider, 80),
+    citationCount: Number(item?.citationCount || 0),
+    abstract: clean(item?.abstract, 1000),
+    citationId: clean(item?.citationId, 300),
+    reason: clean(item?.reason, 500),
+    recommendedFor: ensureArray(item?.recommendedFor, []).map((value) => clean(value, 100)).filter(Boolean).slice(0, 4),
+    fetchedAt: clean(item?.fetchedAt, 80)
   };
 }
 
@@ -47,36 +79,37 @@ export function durationToDays(duration) {
 }
 
 export async function generateLearningPlan(input) {
-  const localPlan = runLocalAgents(input);
+  const enrichedInput = await enrichInputWithOnlineReadings(input);
+  const localPlan = runLocalAgents(enrichedInput);
 
   if (!MODEL_CONFIG.apiKey) {
     return {
       mode: "local",
-      input,
+      input: enrichedInput,
       agents,
-      rag: buildRagGenerationMetadata(input, null, false),
+      rag: buildRagGenerationMetadata(enrichedInput, null, false),
       ...prepareNewCoursePlan(localPlan)
     };
   }
 
   try {
-    const llmPlan = await callLargeModelForPlan(input, localPlan);
+    const llmPlan = await callLargeModelForPlan(enrichedInput, localPlan);
     return {
       mode: "llm-core",
-      input,
+      input: enrichedInput,
       agents,
       ...prepareNewCoursePlan(mergeLearningPlan(localPlan, llmPlan)),
       llmGenerated: true,
-      rag: buildRagGenerationMetadata(input, llmPlan, true)
+      rag: buildRagGenerationMetadata(enrichedInput, llmPlan, true)
     };
   } catch (error) {
     return {
       mode: "local-fallback",
-      input,
+      input: enrichedInput,
       agents,
       warning: "大模型结构化生成失败，已返回本地可用学习方案。",
       detail: error instanceof Error ? error.message : String(error),
-      rag: buildRagGenerationMetadata(input, null, false),
+      rag: buildRagGenerationMetadata(enrichedInput, null, false),
       ...prepareNewCoursePlan(localPlan)
     };
   }
@@ -261,16 +294,31 @@ export async function streamLearningPlan(res, input) {
 
   try {
     emit({ type: "session-start", message: "多智能体协作生成已启动" });
-    const localPlan = await runLocalAgentsWithEvents(input, emit);
+    emit({
+      type: "agent-start",
+      agentId: "online-reading-agent",
+      agent: "在线拓展阅读检索智能体",
+      action: "从在线成熟资料源检索文献和公开资料元数据",
+      input: "学习主题、目标和薄弱点"
+    });
+    const onlineStart = Date.now();
+    const enrichedInput = await enrichInputWithOnlineReadings(input);
+    emit({
+      type: "agent-done",
+      agentId: "online-reading-agent",
+      output: `检索到 ${enrichedInput.onlineReadingRecommendations?.length || 0} 条带 URL/DOI 的在线资料`,
+      durationMs: Date.now() - onlineStart
+    });
+    const localPlan = await runLocalAgentsWithEvents(enrichedInput, emit);
 
     if (!MODEL_CONFIG.apiKey) {
       emit({
         type: "final",
         result: {
           mode: "local",
-          input,
+          input: enrichedInput,
           agents,
-          rag: buildRagGenerationMetadata(input, null, false),
+          rag: buildRagGenerationMetadata(enrichedInput, null, false),
           ...prepareNewCoursePlan(localPlan)
         }
       });
@@ -288,7 +336,7 @@ export async function streamLearningPlan(res, input) {
     const llmStart = Date.now();
 
     try {
-      const llmPlan = await callLargeModelForPlan(input, localPlan);
+      const llmPlan = await callLargeModelForPlan(enrichedInput, localPlan);
       const merged = prepareNewCoursePlan(mergeLearningPlan(localPlan, llmPlan));
       emit({
         type: "agent-done",
@@ -300,11 +348,11 @@ export async function streamLearningPlan(res, input) {
         type: "final",
         result: {
           mode: "llm-core",
-          input,
+          input: enrichedInput,
           agents,
           ...merged,
           llmGenerated: true,
-          rag: buildRagGenerationMetadata(input, llmPlan, true)
+          rag: buildRagGenerationMetadata(enrichedInput, llmPlan, true)
         }
       });
     } catch (error) {
@@ -319,11 +367,11 @@ export async function streamLearningPlan(res, input) {
         type: "final",
         result: {
           mode: "local-fallback",
-          input,
+          input: enrichedInput,
           agents,
           warning: "大模型结构化生成失败，已返回本地可用学习方案。",
           detail: error instanceof Error ? error.message : String(error),
-          rag: buildRagGenerationMetadata(input, null, false),
+          rag: buildRagGenerationMetadata(enrichedInput, null, false),
           ...prepareNewCoursePlan(localPlan)
         }
       });
@@ -344,7 +392,8 @@ export function runLocalAgents(input) {
   const dailyPlan = buildDailyPlan(input, learnerProfile, knowledgeGraph);
   const assessment = buildAssessment(input, learnerProfile, dailyPlan);
   const resources = buildResources(input, learnerProfile, assessment, knowledgeGraph);
-  const generationLoop = buildGenerationLoop(input, learnerProfile, path, resources, assessment);
+  const resourceStudio = buildResourceStudio(input, learnerProfile, knowledgeGraph, dailyPlan, assessment, resources);
+  const generationLoop = buildGenerationLoop(input, learnerProfile, path, resources, assessment, resourceStudio, dailyPlan, knowledgeGraph);
   const remediationPlan = buildRemediationPlan(input, knowledgeGraph, learnerProfile);
   const governanceReport = buildGovernanceReport({
     input,
@@ -353,9 +402,11 @@ export function runLocalAgents(input) {
     resources,
     assessment,
     dailyPlan,
-    knowledgeGraph
+    knowledgeGraph,
+    resourceStudio,
+    peerReview: generationLoop.peerReview
   });
-  const resourcePackage = buildResourcePackage(input, learnerProfile, path, resources, assessment, generationLoop);
+  const resourcePackage = buildResourcePackage(input, learnerProfile, path, resources, assessment, generationLoop, resourceStudio);
   const tutorCards = buildTutorCards(input, learnerProfile);
   const profile = {
     summary: learnerProfile.summary,
@@ -372,6 +423,7 @@ export function runLocalAgents(input) {
     path,
     resources,
     assessment,
+    ...resourceStudio,
     generationLoop,
     remediationPlan,
     governanceReport,
@@ -457,10 +509,18 @@ async function runLocalAgentsWithEvents(input, emit) {
   const resources = await runStage({
     agentId: "resource-agent",
     agent: "资源生成智能体",
-    action: "生成讲义、例题、练习和复盘模板",
+    action: "生成讲义、例题、练习和项目任务素材",
     input: "路径、任务、测评规则",
-    outputOf: (items) => `生成 ${items.length} 类学习资源`
+    outputOf: (items) => `生成 ${items.length} 类基础学习资源`
   }, () => buildResources(input, learnerProfile, assessment, knowledgeGraph));
+
+  const resourceStudio = await runStage({
+    agentId: "resource-studio-agent",
+    agent: "资源装配智能体",
+    action: "把知识图谱和在线成熟资料装配为导图、项目和拓展阅读清单",
+    input: "知识图谱、每日路径、在线资料元数据和测评规则",
+    outputOf: (studio) => `形成 ${studio.resourceStudio.resourceTypes.length} 类可交付资源`
+  }, () => buildResourceStudio(input, learnerProfile, knowledgeGraph, dailyPlan, assessment, resources));
 
   const generationLoop = await runStage({
     agentId: "quality-agent",
@@ -468,7 +528,7 @@ async function runLocalAgentsWithEvents(input, emit) {
     action: "检查各智能体产物之间的数据依赖和质量闭环",
     input: "画像、路径、资源、测评题",
     outputOf: (loop) => `质量分 ${loop.qualityScore}，数据流 ${loop.flows.length} 条`
-  }, () => buildGenerationLoop(input, learnerProfile, path, resources, assessment));
+  }, () => buildGenerationLoop(input, learnerProfile, path, resources, assessment, resourceStudio, dailyPlan, knowledgeGraph));
 
   const remediationPlan = buildRemediationPlan(input, knowledgeGraph, learnerProfile);
 
@@ -485,7 +545,9 @@ async function runLocalAgentsWithEvents(input, emit) {
     resources,
     assessment,
     dailyPlan,
-    knowledgeGraph
+    knowledgeGraph,
+    resourceStudio,
+    peerReview: generationLoop.peerReview
   }));
 
   const resourcePackage = await runStage({
@@ -494,7 +556,7 @@ async function runLocalAgentsWithEvents(input, emit) {
     action: "把多智能体产物装配成可保存方案",
     input: "全部阶段产物",
     outputOf: (item) => item.title
-  }, () => buildResourcePackage(input, learnerProfile, path, resources, assessment, generationLoop));
+  }, () => buildResourcePackage(input, learnerProfile, path, resources, assessment, generationLoop, resourceStudio));
 
   const tutorCards = buildTutorCards(input, learnerProfile);
   const profile = {
@@ -511,6 +573,7 @@ async function runLocalAgentsWithEvents(input, emit) {
     adaptiveState,
     path,
     resources,
+    ...resourceStudio,
     assessment,
     generationLoop: {
       ...generationLoop,
@@ -668,6 +731,467 @@ function buildResources(input, learnerProfile, assessment, knowledgeGraph) {
     },
     ...grounded
   ];
+}
+
+function buildResourceStudio(input, learnerProfile, knowledgeGraph, dailyPlan, assessment, resources) {
+  const mindMap = buildMindMap(input, learnerProfile, knowledgeGraph, dailyPlan);
+  const projectTasks = buildProjectTasks(input, learnerProfile, knowledgeGraph, assessment);
+  const readingRecommendations = buildReadingRecommendations(input);
+  const resourceMatrix = buildResourceMatrix({
+    input,
+    resources,
+    mindMap,
+    projectTasks,
+    readingRecommendations
+  });
+  return {
+    mindMap,
+    projectTasks,
+    readingRecommendations,
+    resourceStudio: {
+      title: `${input.topic} 个性化资源工坊`,
+      generatedAt: new Date().toISOString(),
+      source: readingRecommendations.length ? "online-scholarship-grounded" : "online-reading-missing",
+      resourceTypes: resourceMatrix.map((item) => item.type),
+      coverageScore: resourceMatrix.every((item) => item.ready) ? 94 : 76,
+      matrix: resourceMatrix,
+      onlineReadingStatus: input.onlineReadingStatus || null,
+      audit: [
+        "所有资源均绑定学习画像、知识图谱或课程资料证据。",
+        "项目任务包含提交物、验收标准、起始代码、测试脚本、运行手册和评分 Rubric。",
+        "拓展阅读只展示联网检索到且带 URL/DOI 的成熟资料，不再使用本地模板或 LLM 编造条目。"
+      ]
+    }
+  };
+}
+
+function buildMindMap(input, learnerProfile, knowledgeGraph, dailyPlan) {
+  const concepts = ensureArray(knowledgeGraph?.concepts, []);
+  const dimensions = [...new Set(concepts.map((concept) => concept.dimension || "综合能力"))];
+  const children = dimensions.map((dimension) => {
+    const dimensionConcepts = concepts.filter((concept) => (concept.dimension || "综合能力") === dimension);
+    return {
+      id: `mind-${slugId(dimension)}`,
+      title: dimension,
+      type: "dimension",
+      summary: `${dimensionConcepts.length} 个知识节点，平均掌握度 ${averageConceptScore(dimensionConcepts)}。`,
+      children: dimensionConcepts.slice(0, 8).map((concept) => ({
+        id: `mind-${concept.id || slugId(concept.title)}`,
+        title: concept.title,
+        type: "concept",
+        conceptId: concept.id,
+        masteryScore: Number(concept.masteryScore || concept.score || 50),
+        evidence: concept.evidence || concept.standard || "来自学习画像和课程路径的初始证据。",
+        tasks: conceptTasksFromDailyPlan(dailyPlan, concept).slice(0, 3),
+        children: ensureArray(concept.misconceptions, []).slice(0, 3).map((misconception, index) => ({
+          id: `mind-${concept.id || slugId(concept.title)}-mis-${index + 1}`,
+          title: misconception,
+          type: "misconception",
+          summary: "常见误区，需要通过反例、变式题或项目证据纠正。"
+        }))
+      }))
+    };
+  });
+
+  return {
+    id: `mindmap-${slugId(input.topic)}`,
+    title: `${input.topic} 知识思维导图`,
+    source: "knowledge-graph",
+    editable: true,
+    exportFormats: ["svg", "outline", "print"],
+    coverage: {
+      conceptCount: concepts.length,
+      taskLinkedCount: concepts.filter((concept) => conceptTasksFromDailyPlan(dailyPlan, concept).length).length,
+      dimensions
+    },
+    root: {
+      id: "mind-root",
+      title: input.topic,
+      type: "root",
+      summary: learnerProfile.summary,
+      children
+    }
+  };
+}
+
+function buildProjectTasks(input, learnerProfile, knowledgeGraph, assessment) {
+  const concepts = ensureArray(knowledgeGraph?.concepts, []).slice(0, 8);
+  const mainConcept = concepts.find((concept) => /实践|应用|项目|流程/.test(concept.dimension || concept.title || ""))
+    || concepts[0]
+    || { id: "project-core", title: `${input.topic} 综合应用`, dimension: "实践应用" };
+  const topic = input.topic || "当前课程";
+  const safeTopic = slugId(topic);
+  const projectSlug = safeTopic || "learning-project";
+  const domain = inferProjectDomain(input);
+  const sampleRows = projectSampleRows(domain);
+  const rubric = [
+    { label: "问题定义与数据契约", weight: 15, standard: "README 明确业务问题、输入字段、标签、不可用字段、评价指标和验收门槛。" },
+    { label: "工程可复现", weight: 20, standard: "按 runbook 命令可从样例数据生成 artifacts/metrics.json，目录结构和依赖声明完整。" },
+    { label: "核心逻辑质量", weight: 20, standard: "训练、预测、评估函数解耦，包含异常输入、空数据和类型转换处理。" },
+    { label: "测试与质量门禁", weight: 20, standard: "至少包含指标函数单元测试、端到端烟测和提交前检查清单。" },
+    { label: "结果解释与误差分析", weight: 15, standard: "能解释指标含义、列出失败样本或边界情境，并给出下一轮改进。" },
+    { label: "学习闭环", weight: 10, standard: "把项目暴露出的错因回写到学习笔记、资源推荐和下一轮练习范围。" }
+  ];
+  return [
+    {
+      id: `project-${projectSlug}-production-baseline`,
+      title: `${topic} 可复现实操项目包`,
+      scenario: projectScenarioFor(input),
+      estimatedHours: 10,
+      difficulty: learnerProfile.weakestDimensions?.[0]?.score < 45 ? "分层入门" : "标准入门",
+      sourceConcepts: concepts.slice(0, 5).map((concept) => concept.id).filter(Boolean),
+      architecture: [
+        "README.md 定义问题、数据契约、运行方式和验收标准。",
+        "src/pipeline.py 放置数据读取、基线预测、指标计算和结果落盘逻辑。",
+        "tests/test_pipeline.py 覆盖核心指标、空数据和端到端烟测。",
+        "artifacts/ 只保存运行后生成的指标，不提交大型中间文件。"
+      ],
+      milestones: [
+        { title: "需求澄清", evidence: "提交 README 的 Problem、Metric、Data Contract 三节，确认输入、标签和验收指标。" },
+        { title: "数据契约", evidence: "用 sample_data.csv 和字段检查函数验证必填字段、数值范围和缺失处理。" },
+        { title: "可复现基线", evidence: "运行 python src/pipeline.py --data sample_data.csv --out artifacts/metrics.json，生成稳定指标。" },
+        { title: "测试门禁", evidence: "运行 python -m unittest discover -s tests，至少覆盖指标函数和端到端输出。" },
+        { title: "误差分析", evidence: "在 error_analysis.md 中列出 3 个失败样本或失败情境，说明可能错因。" },
+        { title: "复盘改进", evidence: "在 reflection.md 中写明下一轮特征、资源推荐或路径调整计划。" }
+      ],
+      deliverables: [
+        "README.md",
+        "requirements.txt",
+        "sample_data.csv",
+        "src/pipeline.py",
+        "tests/test_pipeline.py",
+        "artifacts/metrics.json",
+        "error_analysis.md",
+        "reflection.md"
+      ],
+      acceptanceCriteria: [
+        "一条命令能生成 metrics.json。",
+        "测试命令能在本地 Python 标准库环境下通过。",
+        "README 中的字段契约与 sample_data.csv 一致。",
+        "Rubric 权重合计 100%。"
+      ],
+      qualityGates: [
+        { name: "数据契约检查", command: "python src/pipeline.py --data sample_data.csv --out artifacts/metrics.json" },
+        { name: "单元测试", command: "python -m unittest discover -s tests" },
+        { name: "提交物检查", command: "确认 README、metrics.json、error_analysis.md、reflection.md 均已填写" }
+      ],
+      starterFiles: [
+        {
+          filename: "README.md",
+          language: "markdown",
+          content: [
+            `# ${topic} 可复现实操项目`,
+            "",
+            "## Problem",
+            projectScenarioFor(input),
+            "",
+            "## Metric",
+            "默认使用 MAE、RMSE 和样本量作为基线指标。若你的任务不是预测问题，请在本节替换为可量化验收指标。",
+            "",
+            "## Data Contract",
+            "| 字段 | 含义 | 要求 |",
+            "| --- | --- | --- |",
+            "| feature_a | 主要输入特征 | 数值，允许 0 |",
+            "| feature_b | 辅助输入特征 | 数值，允许 0 |",
+            "| target | 标签或目标值 | 数值，训练和验证必须存在 |",
+            "",
+            "## Runbook",
+            "```bash",
+            "python src/pipeline.py --data sample_data.csv --out artifacts/metrics.json",
+            "python -m unittest discover -s tests",
+            "```",
+            "",
+            "## Acceptance",
+            "- metrics.json 包含 mae、rmse、baseline、validation_samples。",
+            "- error_analysis.md 至少记录 3 个失败样本或边界情境。",
+            "- reflection.md 说明下一轮学习路径或资源推荐如何调整。"
+          ].join("\n")
+        },
+        {
+          filename: "requirements.txt",
+          language: "text",
+          content: "# 当前项目只使用 Python 标准库；如加入 pandas/sklearn，请在这里固定版本。\n"
+        },
+        {
+          filename: "src/__init__.py",
+          language: "python",
+          content: ""
+        },
+        {
+          filename: "sample_data.csv",
+          language: "csv",
+          content: [
+            "feature_a,feature_b,target",
+            ...sampleRows.map((row) => `${row.featureA},${row.featureB},${row.target}`)
+          ].join("\n")
+        },
+        {
+          filename: "src/pipeline.py",
+          language: "python",
+          content: [
+            "import argparse",
+            "import csv",
+            "import json",
+            "import math",
+            "import os",
+            "from statistics import mean",
+            "",
+            "REQUIRED_FIELDS = ('feature_a', 'feature_b', 'target')",
+            "",
+            "def load_rows(path):",
+            "    with open(path, newline='', encoding='utf-8') as handle:",
+            "        reader = csv.DictReader(handle)",
+            "        rows = []",
+            "        for index, row in enumerate(reader, start=2):",
+            "            missing = [field for field in REQUIRED_FIELDS if row.get(field) in (None, '')]",
+            "            if missing:",
+            "                raise ValueError(f'第 {index} 行缺少字段: {missing}')",
+            "            rows.append({field: float(row[field]) for field in REQUIRED_FIELDS})",
+            "    if len(rows) < 4:",
+            "        raise ValueError('至少需要 4 行样例数据用于训练和验证切分')",
+            "    return rows",
+            "",
+            "def split_train_valid(rows, valid_ratio=0.34):",
+            "    valid_size = max(1, round(len(rows) * valid_ratio))",
+            "    split_at = max(1, len(rows) - valid_size)",
+            "    return rows[:split_at], rows[split_at:]",
+            "",
+            "def mean_absolute_error(y_true, y_pred):",
+            "    if len(y_true) != len(y_pred):",
+            "        raise ValueError('y_true 与 y_pred 长度必须一致')",
+            "    errors = [abs(float(a) - float(b)) for a, b in zip(y_true, y_pred)]",
+            "    return sum(errors) / len(errors) if errors else 0.0",
+            "",
+            "def root_mean_squared_error(y_true, y_pred):",
+            "    if len(y_true) != len(y_pred):",
+            "        raise ValueError('y_true 与 y_pred 长度必须一致')",
+            "    errors = [(float(a) - float(b)) ** 2 for a, b in zip(y_true, y_pred)]",
+            "    return math.sqrt(sum(errors) / len(errors)) if errors else 0.0",
+            "",
+            "def baseline_predict(train_rows, count):",
+            "    train_y = [row['target'] for row in train_rows]",
+            "    value = mean([float(item) for item in train_y])",
+            "    return [value for _ in range(count)]",
+            "",
+            "def run_pipeline(data_path, output_path):",
+            "    rows = load_rows(data_path)",
+            "    train_rows, valid_rows = split_train_valid(rows)",
+            "    y_true = [row['target'] for row in valid_rows]",
+            "    predictions = baseline_predict(train_rows, len(valid_rows))",
+            "    metrics = {",
+            "        'baseline': 'mean_target',",
+            "        'training_samples': len(train_rows),",
+            "        'validation_samples': len(valid_rows),",
+            "        'mae': round(mean_absolute_error(y_true, predictions), 4),",
+            "        'rmse': round(root_mean_squared_error(y_true, predictions), 4)",
+            "    }",
+            "    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)",
+            "    with open(output_path, 'w', encoding='utf-8') as handle:",
+            "        json.dump(metrics, handle, ensure_ascii=False, indent=2)",
+            "    return metrics",
+            "",
+            "def main():",
+            "    parser = argparse.ArgumentParser()",
+            "    parser.add_argument('--data', default='sample_data.csv')",
+            "    parser.add_argument('--out', default='artifacts/metrics.json')",
+            "    args = parser.parse_args()",
+            "    metrics = run_pipeline(args.data, args.out)",
+            "    print(json.dumps(metrics, ensure_ascii=False))",
+            "",
+            "if __name__ == '__main__':",
+            "    main()"
+          ].join("\n")
+        },
+        {
+          filename: "tests/test_pipeline.py",
+          language: "python",
+          content: [
+            "import json",
+            "import os",
+            "import tempfile",
+            "import unittest",
+            "",
+            "from src.pipeline import mean_absolute_error, root_mean_squared_error, run_pipeline",
+            "",
+            "class PipelineTest(unittest.TestCase):",
+            "    def test_metrics(self):",
+            "        self.assertAlmostEqual(mean_absolute_error([1, 3], [2, 1]), 1.5)",
+            "        self.assertAlmostEqual(root_mean_squared_error([1, 3], [1, 1]), 1.4142, places=4)",
+            "",
+            "    def test_end_to_end_pipeline(self):",
+            "        with tempfile.TemporaryDirectory() as tmp:",
+            "            output = os.path.join(tmp, 'metrics.json')",
+            "            metrics = run_pipeline('sample_data.csv', output)",
+            "            self.assertTrue(os.path.exists(output))",
+            "            self.assertIn('mae', metrics)",
+            "            self.assertGreaterEqual(metrics['validation_samples'], 1)",
+            "            with open(output, encoding='utf-8') as handle:",
+            "                saved = json.load(handle)",
+            "            self.assertEqual(saved['baseline'], 'mean_target')",
+            "",
+            "if __name__ == '__main__':",
+            "    unittest.main()"
+          ].join("\n")
+        },
+        {
+          filename: "metrics.schema.json",
+          language: "json",
+          content: JSON.stringify({
+            required: ["mae", "rmse", "baseline", "training_samples", "validation_samples"],
+            properties: {
+              mae: "number",
+              rmse: "number",
+              baseline: "string",
+              training_samples: "number",
+              validation_samples: "number"
+            }
+          }, null, 2)
+        },
+        {
+          filename: "error_analysis.md",
+          language: "markdown",
+          content: [
+            "# Error Analysis",
+            "",
+            "| 样本/情境 | 现象 | 可能原因 | 下一步验证 |",
+            "| --- | --- | --- | --- |",
+            "| case-1 | 指标偏差较大 | 特征不足或标签噪声 | 增加字段或回查数据 |",
+            "| case-2 | 边界样本表现不稳 | 样本量太小 | 补充相似样本 |",
+            "| case-3 | 结果难解释 | 缺少过程记录 | 增加中间输出和图表 |"
+          ].join("\n")
+        },
+        {
+          filename: "reflection.md",
+          language: "markdown",
+          content: [
+            "# Reflection",
+            "",
+            "## 我验证了什么",
+            "- ",
+            "",
+            "## 暴露出的知识短板",
+            "- ",
+            "",
+            "## 下一轮学习路径调整",
+            "- "
+          ].join("\n")
+        }
+      ],
+      tests: [
+        { name: "端到端运行", command: "python src/pipeline.py --data sample_data.csv --out artifacts/metrics.json" },
+        { name: "单元测试", command: "python -m unittest discover -s tests" },
+        { name: "指标文件结构", command: "检查 artifacts/metrics.json 包含 mae、rmse、baseline、training_samples、validation_samples" },
+        { name: "README 可复现", command: "检查 README 包含 Problem、Metric、Data Contract、Runbook、Acceptance" },
+        { name: "错因复盘", command: "检查 error_analysis.md 至少包含 3 条样本级分析" }
+      ],
+      rubric,
+      coachingPrompts: [
+        `我准备做“${topic} 端到端入门项目”，请先检查我的问题定义卡。`,
+        `我已经跑出项目指标，请根据 ${mainConcept.title} 帮我分析误差。`
+      ]
+    }
+  ];
+}
+
+function buildReadingRecommendations(input) {
+  return ensureArray(input.onlineReadingRecommendations, [])
+    .filter((item) => item?.title && (item.url || item.doi))
+    .slice(0, 8)
+    .map((item, index) => ({
+      ...item,
+      id: item.id || `online-reading-${index + 1}`,
+      type: item.type || "online-literature",
+      source: item.source || "online-scholarship",
+      locator: item.locator || item.doi || item.url,
+      citationId: item.citationId || item.doi || item.url,
+      reason: item.reason || "来自联网检索的成熟资料元数据。",
+      recommendedFor: ensureArray(item.recommendedFor, [input.topic]).filter(Boolean)
+    }));
+}
+
+function buildResourceMatrix({ input, resources, mindMap, projectTasks, readingRecommendations }) {
+  return [
+    { type: "专业课程讲解文档", ready: resources.some((item) => /讲义/.test(item.type)), evidence: "每日资料和资源包提供完整讲义与例题。" },
+    { type: "知识点思维导图", ready: Boolean(mindMap?.root?.children?.length), evidence: `${mindMap.coverage.conceptCount} 个知识节点已进入导图。` },
+    { type: "不同类型练习题目", ready: resources.some((item) => /练习/.test(item.type)), evidence: "测验系统支持选择、简答和代码题。" },
+    {
+      type: "拓展阅读材料",
+      ready: readingRecommendations.length >= 3,
+      evidence: readingRecommendations.length
+        ? `${readingRecommendations.length} 条在线成熟资料带 URL/DOI 和来源元数据。`
+        : `未检索到可靠在线资料；检索状态：${input.onlineReadingStatus?.warning || "等待联网检索"}`
+    },
+    { type: "代码类实操案例", ready: projectTasks.some((task) => task.starterFiles?.length), evidence: `项目任务围绕“${input.goal}”提供起始代码和验收 Rubric。` }
+  ];
+}
+
+function conceptTasksFromDailyPlan(dailyPlan, concept) {
+  const title = concept?.title || "";
+  return ensureArray(dailyPlan, []).flatMap((day) => ensureArray(day.tasks, [])
+    .filter((task) => !title || String(task).includes(title) || String(day.title || "").includes(title))
+    .map((task) => ({ day: day.day, title: task })));
+}
+
+function averageConceptScore(concepts) {
+  if (!concepts.length) return "--";
+  return Math.round(concepts.reduce((sum, concept) => sum + Number(concept.masteryScore || concept.score || 50), 0) / concepts.length);
+}
+
+function projectScenarioFor(input) {
+  if (/机器学习|预测|数据/.test(input.topic || input.goal || "")) {
+    return "选择一个校园、学习或生活场景，构造表格数据预测任务，完成从字段审查到评估复盘的端到端基线。";
+  }
+  if (/编程|算法|代码|开发/.test(input.topic || input.goal || "")) {
+    return "围绕真实小工具需求实现一个可运行模块，提交核心代码、测试用例、复杂度或边界说明。";
+  }
+  return `围绕“${input.goal}”设计一个可交付的小项目，要求有问题定义、过程证据、验收标准和复盘报告。`;
+}
+
+function inferProjectDomain(input) {
+  const text = `${input.topic || ""} ${input.goal || ""}`;
+  if (/机器学习|预测|数据|模型/.test(text)) return "prediction";
+  if (/算法|数据结构|编程|代码/.test(text)) return "algorithm";
+  return "general";
+}
+
+function projectSampleRows(domain) {
+  if (domain === "algorithm") {
+    return [
+      { featureA: 12, featureB: 3, target: 15 },
+      { featureA: 8, featureB: 5, target: 13 },
+      { featureA: 20, featureB: 7, target: 27 },
+      { featureA: 11, featureB: 9, target: 20 },
+      { featureA: 15, featureB: 4, target: 19 },
+      { featureA: 7, featureB: 6, target: 13 }
+    ];
+  }
+  if (domain === "general") {
+    return [
+      { featureA: 1, featureB: 4, target: 6 },
+      { featureA: 2, featureB: 5, target: 8 },
+      { featureA: 3, featureB: 6, target: 10 },
+      { featureA: 4, featureB: 7, target: 12 },
+      { featureA: 5, featureB: 8, target: 14 },
+      { featureA: 6, featureB: 9, target: 16 }
+    ];
+  }
+  return [
+    { featureA: 312, featureB: 26, target: 390 },
+    { featureA: 468, featureB: 32, target: 520 },
+    { featureA: 220, featureB: 18, target: 260 },
+    { featureA: 610, featureB: 41, target: 690 },
+    { featureA: 350, featureB: 27, target: 410 },
+    { featureA: 515, featureB: 36, target: 580 }
+  ];
+}
+
+function slugId(value) {
+  return String(value || "item")
+    .normalize("NFKD")
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60)
+    || "item";
 }
 
 function buildAssessment(input, learnerProfile, dailyPlan) {
@@ -1435,12 +1959,29 @@ export function summarizeProgress(plan, progress = {}) {
   };
 }
 
-function buildGenerationLoop(input, learnerProfile, path, resources, assessment) {
+function buildGenerationLoop(input, learnerProfile, path, resources, assessment, resourceStudio = {}, dailyPlan = [], knowledgeGraph = null) {
   const weakest = learnerProfile.weakestDimensions.map((item) => item.dimension).join("、");
-  const qualityScore = clamp(72 + Math.round(resources.length * 2.5) + (assessment.quiz.length >= 4 ? 8 : 0) - 4);
+  const resourceTypeCount = resourceStudio.resourceStudio?.resourceTypes?.length || 0;
+  const peerReview = buildGovernancePeerReview({
+    input,
+    learnerProfile,
+    resources,
+    assessment,
+    dailyPlan,
+    knowledgeGraph,
+    resourceStudio
+  });
+  const qualityScore = clamp(
+    72
+    + Math.round(resources.length * 1.6)
+    + resourceTypeCount * 3
+    + (assessment.quiz.length >= 4 ? 8 : 0)
+    - peerReview.summary.blockingIssues * 8
+    - peerReview.summary.warningIssues * 2
+  );
   return {
     objective: `围绕“${input.topic}”生成可每日执行、可测评更新的个性化学习方案。`,
-    status: qualityScore >= 80 ? "已通过质量评审" : "已完成首轮修正",
+    status: qualityScore >= 80 && peerReview.summary.blockingIssues === 0 ? "已通过质量评审" : "已完成首轮修正",
     qualityScore,
     stages: [
       { id: "profile-agent", agent: "学习画像智能体", status: "done", action: "读取表单目标、基础、偏好和薄弱点", input: "用户学习需求", output: `初始画像：${weakest}` },
@@ -1448,7 +1989,8 @@ function buildGenerationLoop(input, learnerProfile, path, resources, assessment)
       { id: "diagnostic-pretest-agent", agent: "诊断前测智能体", status: "done", action: "生成首轮诊断题", input: "知识图谱与薄弱维度", output: "形成诊断前测和错因标签" },
       { id: "diagnosis-agent", agent: "知识诊断智能体", status: "done", action: "把薄弱点映射到知识维度", input: "画像与薄弱点文本", output: `优先补救：${learnerProfile.weakestDimensions[0].dimension}` },
       { id: "planner-agent", agent: "路径规划智能体", status: "done", action: "拆分阶段路径和每日任务", input: "诊断结果、周期、每日时间", output: `生成 ${path.length} 个阶段` },
-      { id: "resource-agent", agent: "资源生成智能体", status: "done", action: "生成讲义、例题、练习和解析", input: "路径约束与学习偏好", output: `生成 ${resources.length} 类资源` },
+      { id: "resource-agent", agent: "资源生成智能体", status: "done", action: "生成讲义、例题、练习和解析", input: "路径约束与学习偏好", output: `生成 ${resources.length} 类基础资源` },
+      { id: "resource-studio-agent", agent: "资源装配智能体", status: "done", action: "装配思维导图、项目任务和在线拓展阅读", input: "知识图谱、在线资料元数据和测评规则", output: `形成 ${resourceTypeCount || 5} 类赛题资源` },
       { id: "assessment-agent", agent: "测评评分智能体", status: "done", action: "生成选择题并定义评分规则", input: "资源草案与进度信号", output: `生成 ${assessment.quiz.length} 道选择题` },
       { id: "governance-agent", agent: "内容治理智能体", status: "done", action: "审查知识点绑定、证据来源和答案泄露风险", input: "资源、测评、图谱与每日任务", output: "形成质量治理报告" },
       { id: "insight-agent", agent: "个人洞察智能体", status: "done", action: "汇总薄弱知识点和下一步行动", input: "掌握度、错因、质量报告", output: "形成个人学习洞察" },
@@ -1462,6 +2004,8 @@ function buildGenerationLoop(input, learnerProfile, path, resources, assessment)
       { from: "知识诊断智能体", to: "路径规划智能体", payload: "薄弱维度和补救优先级" },
       { from: "路径规划智能体", to: "资源生成智能体", payload: "阶段路径、每日任务约束" },
       { from: "资源生成智能体", to: "测评评分智能体", payload: "讲义、例题、练习知识点" },
+      { from: "资源生成智能体", to: "资源装配智能体", payload: "基础讲义、概念图谱、项目目标和在线资料元数据" },
+      { from: "资源装配智能体", to: "内容治理智能体", payload: "导图、项目、在线拓展阅读和交付矩阵" },
       { from: "测评评分智能体", to: "内容治理智能体", payload: "题目、标准答案、解析和安全边界" },
       { from: "内容治理智能体", to: "个人洞察智能体", payload: "质量评分、风险项和需补强知识点" },
       { from: "测评评分智能体", to: "学习画像智能体", payload: "得分、错因、维度证据" },
@@ -1473,8 +2017,11 @@ function buildGenerationLoop(input, learnerProfile, path, resources, assessment)
       { id: "diagnostic-pretest-v1", owner: "诊断前测智能体", type: "assessment", version: 1, status: "accepted", reviewers: ["内容治理智能体"] },
       { id: "daily-plan-v1", owner: "路径规划智能体", type: "plan", version: 1, status: "accepted", reviewers: ["资源生成智能体"] },
       { id: "resource-pack-v1", owner: "资源生成智能体", type: "resources", version: 1, status: "needs-review", reviewers: ["内容治理智能体", "个人洞察智能体"] },
+      { id: "mind-map-v1", owner: "资源装配智能体", type: "mind-map", version: 1, status: "accepted", reviewers: ["内容治理智能体"] },
+      { id: "project-task-v1", owner: "资源装配智能体", type: "project-task", version: 1, status: "accepted", reviewers: ["测评评分智能体", "内容治理智能体"] },
       { id: "quality-report-v1", owner: "内容治理智能体", type: "governance", version: 1, status: "accepted", reviewers: ["个人洞察智能体"] }
     ],
+    peerReview,
     revisionCycles: [
       {
         round: 1,
@@ -1490,20 +2037,23 @@ function buildGenerationLoop(input, learnerProfile, path, resources, assessment)
       }
     ],
     review: {
-      passed: qualityScore >= 80,
+      passed: qualityScore >= 80 && peerReview.summary.blockingIssues === 0,
       checks: [
         { label: "画像可更新", passed: true, detail: "掌握度标注来源，前端会按打卡和测评重新计算。" },
         { label: "每日可执行", passed: true, detail: `任务按每天 ${input.dailyMinutes} 设计。` },
-        { label: "资源完整", passed: resources.length >= 4, detail: "覆盖讲义、例题、练习、解析和复盘。" },
-        { label: "测评闭环", passed: assessment.quiz.length >= 4, detail: "包含选择题、答案、解析和后续动作。" }
+        { label: "资源完整", passed: resources.length >= 4 && resourceTypeCount >= 5, detail: "覆盖讲义、导图、题库、在线拓展阅读和项目实操。" },
+        { label: "测评闭环", passed: assessment.quiz.length >= 4, detail: "包含选择题、答案、解析和后续动作。" },
+        { label: "同行复核闭环", passed: peerReview.summary.blockingIssues === 0, detail: `${peerReview.summary.approvedArtifacts}/${peerReview.summary.artifactCount} 个产物通过复核，警告 ${peerReview.summary.warningIssues} 个。` }
       ]
     }
   };
 }
 
-function buildResourcePackage(input, learnerProfile, path, resources, assessment, generationLoop) {
+function buildResourcePackage(input, learnerProfile, path, resources, assessment, generationLoop, resourceStudio = {}) {
   const mainWeakness = learnerProfile.weakestDimensions[0];
   const secondaryWeakness = learnerProfile.weakestDimensions[1];
+  const projectTask = resourceStudio.projectTasks?.[0];
+  const onlineReadings = ensureArray(resourceStudio.readingRecommendations, []);
   return {
     title: `${input.topic} 个性化学习资源包`,
     audience: `${input.level}学习者 / ${input.style}偏好 / 每天 ${input.dailyMinutes}`,
@@ -1541,9 +2091,45 @@ function buildResourcePackage(input, learnerProfile, path, resources, assessment
         type: "后续学习路径",
         title: "下一轮行动",
         items: path.map((item) => `${item.stage}：${item.outcome}`)
+      },
+      {
+        type: "知识点思维导图",
+        title: resourceStudio.mindMap?.title || `${input.topic} 思维导图`,
+        items: [
+          `覆盖 ${resourceStudio.mindMap?.coverage?.conceptCount || 0} 个知识节点。`,
+          `按 ${ensureArray(resourceStudio.mindMap?.coverage?.dimensions, []).join("、") || "课程维度"} 组织分支。`,
+          "支持复制大纲、下载 SVG 和打印复习。"
+        ]
+      },
+      {
+        type: "代码实操项目",
+        title: projectTask?.title || `${input.topic} 项目任务`,
+        items: [
+          projectTask?.scenario || `围绕“${input.goal}”完成一个可提交的小项目。`,
+          `提交物：${ensureArray(projectTask?.deliverables, []).join("、") || "README、代码、指标和复盘"}`,
+          `验收：${ensureArray(projectTask?.rubric, [])[0]?.standard || "代码可运行，报告能解释结果。"}`,
+          `质量门禁：${ensureArray(projectTask?.qualityGates, []).map((item) => item.command).join("；")}`
+        ]
+      },
+      {
+        type: "在线拓展阅读",
+        title: `${input.topic} 成熟资料清单`,
+        items: onlineReadings.length
+          ? onlineReadings.map((item) => `${item.title}${item.year ? `（${item.year}）` : ""}：${item.doi || item.url}`)
+          : ["当前未检索到带 URL/DOI 的成熟在线资料，系统不会用本地模板伪造。"]
       }
     ],
-    deliverables: ["学情诊断报告", "补救微讲义", "进度匹配选择题", "答案解析", "错因复盘表", "下一轮学习路径"],
+    deliverables: [
+      "学情诊断报告",
+      "补救微讲义",
+      "知识点思维导图",
+      "进度匹配题库",
+      "拓展阅读清单",
+      "代码实操项目任务书",
+      "答案解析",
+      "错因复盘表",
+      "下一轮学习路径"
+    ],
     usageGuide: [
       "每天先完成打卡任务，再做当前进度对应的测评题。",
       "不会的题先看提示，再看答案解析。",
@@ -1551,9 +2137,12 @@ function buildResourcePackage(input, learnerProfile, path, resources, assessment
     ],
     sourceTrace: [
       ...ensureArray(input.knowledgeSources, []).map((source) => `课程资料：${source.name}`),
-      ...resources.map((item) => `${item.type}：${item.title}`)
+      ...resources.map((item) => `${item.type}：${item.title}`),
+      ...onlineReadings.map((item) => `在线拓展阅读：${item.title} ${item.doi || item.url}`),
+      ...ensureArray(resourceStudio.projectTasks, []).map((item) => `项目任务：${item.title}`)
     ],
-    sourceCitations: ensureArray(input.knowledgeGrounding?.citations, [])
+    sourceCitations: ensureArray(input.knowledgeGrounding?.citations, []),
+    resourceMatrix: resourceStudio.resourceStudio?.matrix || []
   };
 }
 
@@ -1651,6 +2240,10 @@ function pickKnownPlanFields(plan) {
     "governanceReport",
     "personalInsights",
     "resourcePackage",
+    "mindMap",
+    "projectTasks",
+    "readingRecommendations",
+    "resourceStudio",
     "dailyPlan",
     "tutorCards"
   ];
@@ -1673,6 +2266,10 @@ function normalizePlanShape(plan, fallback) {
     governanceReport: plan.governanceReport || fallback.governanceReport,
     personalInsights: plan.personalInsights || fallback.personalInsights,
     resourcePackage: normalizeResourcePackage(plan.resourcePackage, fallback.resourcePackage),
+    mindMap: plan.mindMap || fallback.mindMap,
+    projectTasks: ensureArray(plan.projectTasks, fallback.projectTasks),
+    readingRecommendations: ensureArray(plan.readingRecommendations, fallback.readingRecommendations),
+    resourceStudio: normalizeResourceStudio(plan.resourceStudio, fallback.resourceStudio),
     dailyPlan: normalizeDailyPlan(plan.dailyPlan, fallback.dailyPlan),
     tutorCards: ensureArray(plan.tutorCards, fallback.tutorCards)
   };
@@ -2052,6 +2649,33 @@ function normalizeGenerationLoop(loop, fallback) {
   };
 }
 
+function normalizeResourcePackage(resourcePackage, fallback) {
+  if (!resourcePackage) return fallback;
+  const generatedTrace = Array.isArray(resourcePackage.sourceTrace) ? resourcePackage.sourceTrace : [];
+  const fallbackTrace = Array.isArray(fallback.sourceTrace) ? fallback.sourceTrace : [];
+  return {
+    ...fallback,
+    ...resourcePackage,
+    sections: ensureArray(resourcePackage.sections, fallback.sections),
+    deliverables: ensureArray(resourcePackage.deliverables, fallback.deliverables),
+    usageGuide: ensureArray(resourcePackage.usageGuide, fallback.usageGuide),
+    sourceTrace: [...new Set([...fallbackTrace, ...generatedTrace])],
+    sourceCitations: fallback.sourceCitations || [],
+    resourceMatrix: ensureArray(resourcePackage.resourceMatrix, fallback.resourceMatrix || [])
+  };
+}
+
+function normalizeResourceStudio(resourceStudio, fallback) {
+  if (!resourceStudio) return fallback;
+  return {
+    ...fallback,
+    ...resourceStudio,
+    resourceTypes: ensureArray(resourceStudio.resourceTypes, fallback?.resourceTypes || []),
+    matrix: ensureArray(resourceStudio.matrix, fallback?.matrix || []),
+    audit: ensureArray(resourceStudio.audit, fallback?.audit || [])
+  };
+}
+
 async function callLargeModelForPlan(input, localPlan) {
   const planSeed = {
     profileSummary: localPlan.learnerProfile.summary,
@@ -2076,21 +2700,6 @@ async function callLargeModelForPlan(input, localPlan) {
  "assessment":{"quiz":[{"id":"","type":"choice","dimension":"","question":"","options":[],"answerIndex":0,"explanation":"","score":25}],"rubric":[],"nextActions":[]},
  "resourcePackage":{"title":"","audience":"","packageScore":0,"sections":[{"type":"","title":"","items":[]}],"deliverables":[],"usageGuide":[],"sourceTrace":[]},
  "tutorCards":[{"title":"","prompt":""}]
-}
-
-function normalizeResourcePackage(resourcePackage, fallback) {
-  if (!resourcePackage) return fallback;
-  const generatedTrace = Array.isArray(resourcePackage.sourceTrace) ? resourcePackage.sourceTrace : [];
-  const fallbackTrace = Array.isArray(fallback.sourceTrace) ? fallback.sourceTrace : [];
-  return {
-    ...fallback,
-    ...resourcePackage,
-    sections: ensureArray(resourcePackage.sections, fallback.sections),
-    deliverables: ensureArray(resourcePackage.deliverables, fallback.deliverables),
-    usageGuide: ensureArray(resourcePackage.usageGuide, fallback.usageGuide),
-    sourceTrace: [...new Set([...fallbackTrace, ...generatedTrace])],
-    sourceCitations: fallback.sourceCitations || []
-  };
 }
 
 要求：

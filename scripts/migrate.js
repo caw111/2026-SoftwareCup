@@ -44,6 +44,15 @@ export async function migrateDatabase({ log = console.log } = {}) {
       const previous = applied.get(version);
       if (previous) {
         const checksumMatches = previous.checksum === checksum || previous.checksum === legacyChecksum;
+        const appliedWithSameChecksum = appliedRows.find((row) => (
+          row.checksum === checksum || row.checksum === legacyChecksum
+        ));
+        if (!checksumMatches && appliedWithSameChecksum) {
+          log(
+            `跳过已按历史编号执行的迁移 ${filename}，原记录为 ${appliedWithSameChecksum.filename}`
+          );
+          continue;
+        }
         if (previous.filename !== filename || !checksumMatches) {
           throw new Error(`迁移 ${version} 已执行，但文件名或校验值发生变化`);
         }

@@ -15,6 +15,8 @@ let deleteConfirmationResolver = null;
 let progressResetConfirmationResolver = null;
 const COURSE_MODES = [
   "daily",
+  "resources",
+  "mindmap",
   "calendar",
   "path-revisions",
   "notes",
@@ -24,6 +26,7 @@ const COURSE_MODES = [
   "practice",
   "mistakes",
   "exam",
+  "project",
   "report",
   "coach",
   "settings",
@@ -80,6 +83,10 @@ const els = {
   resultMode: document.querySelector("#resultMode"),
   dailyPanel: document.querySelector("#dailyPanel"),
   progressSummary: document.querySelector("#progressSummary"),
+  resourcePanel: document.querySelector("#resourcePanel"),
+  resourceMode: document.querySelector("#resourceMode"),
+  mindMapPanel: document.querySelector("#mindMapPanel"),
+  mindMapMode: document.querySelector("#mindMapMode"),
   pathRevisionPanel: document.querySelector("#pathRevisionPanel"),
   pathRevisionMode: document.querySelector("#pathRevisionMode"),
   notesPanel: document.querySelector("#notesPanel"),
@@ -138,6 +145,8 @@ const els = {
   reportMode: document.querySelector("#reportMode"),
   examPanel: document.querySelector("#examPanel"),
   examMode: document.querySelector("#examMode"),
+  projectPanel: document.querySelector("#projectPanel"),
+  projectMode: document.querySelector("#projectMode"),
   settingsPanel: document.querySelector("#settingsPanel"),
   settingsMode: document.querySelector("#settingsMode"),
   tutorMode: document.querySelector("#tutorMode"),
@@ -215,6 +224,7 @@ function boot() {
   loadAgents();
   loadDiskState();
   checkHealth();
+  repairLegacyEncodingCache();
   checkJudgeStatus();
   if (getCurrentPlan()) {
     els.coachMode.textContent = "已加载学习上下文";
@@ -898,9 +908,9 @@ function setView(view, options = {}) {
 }
 
 function courseModeGroup(view) {
-  if (view === "daily" || view === "calendar" || view === "path-revisions") return "path";
+  if (view === "daily" || view === "resources" || view === "mindmap" || view === "calendar" || view === "path-revisions") return "path";
   if (view === "knowledge" || view === "remediation") return "mastery";
-  if (["practice", "mistakes", "exam", "diagnostic"].includes(view)) return "assessment";
+  if (["practice", "mistakes", "exam", "project", "diagnostic"].includes(view)) return "assessment";
   if (view === "report") return "report";
   return view;
 }
@@ -926,7 +936,7 @@ async function testLargeModel() {
     const data = await request("/api/llm-test");
     els.serviceStatus.textContent = data.ok ? "大模型已连接" : "大模型未连接";
     els.modelStatus.textContent = data.ok
-      ? `${data.llm.model}：${data.sample || data.message}`
+      ? `${data.llm.displayName || data.llm.provider || "大模型"} · ${data.llm.model}：${data.sample || data.message}`
       : `${data.message}${data.detail ? ` ${data.detail}` : ""}`;
     els.statusDot.classList.toggle("ok", data.ok);
   } catch (error) {
@@ -941,7 +951,7 @@ async function testLargeModel() {
 
 function formatModelStatus(data) {
   if (!data.llmEnabled) return "本地规则模式，可离线演示";
-  return `大模型：${data.llm.model} / ${data.llm.wireApi} / ${data.llm.baseUrl}`;
+  return `大模型：${data.llm.displayName || data.llm.provider || "OpenAI 兼容接口"} / ${data.llm.model} / ${data.llm.wireApi} / ${data.llm.baseUrl}`;
 }
 
 async function loadAgents() {
@@ -1023,6 +1033,8 @@ function renderAll() {
   renderCourseChrome();
   renderSavedPlans();
   renderDailyPlan();
+  renderResourceStudio();
+  renderMindMap();
   renderLearningCalendar();
   renderPathRevisions();
   renderNotes();
@@ -1032,6 +1044,7 @@ function renderAll() {
   renderPractice();
   renderMistakes();
   renderExam();
+  renderProjectTasks();
   renderReport();
   renderSettings();
   renderGovernance();
@@ -1485,6 +1498,444 @@ function renderDailyPlan() {
   els.dailyPanel.querySelector("#openNotesButton").addEventListener("click", () => setView("notes"));
   els.dailyPanel.querySelector("#resetProgressButton").addEventListener("click", resetProgress);
   updateProgressSummary();
+}
+
+function renderResourceStudio() {
+  if (!els.resourcePanel || !els.resourceMode) return;
+  const plan = getCurrentPlan();
+  const resources = resourceArtifactsFor(plan);
+  if (!plan || !resources.ready) {
+    els.resourcePanel.className = "empty-state";
+    els.resourcePanel.innerHTML = "<p>生成或选择课程后，这里会出现讲义、导图、题库、在线拓展阅读和项目任务。</p>";
+    els.resourceMode.textContent = "等待资源";
+    return;
+  }
+
+  const matrix = resources.matrix;
+  els.resourceMode.textContent = `${matrix.filter((item) => item.ready).length}/${matrix.length} 类资源就绪`;
+  els.resourcePanel.className = "resource-studio-board";
+  els.resourcePanel.innerHTML = `
+    <section class="resource-studio-head">
+      <div>
+        <span class="mini-label">资源工坊</span>
+        <h3>${escapeHtml(resources.studio.title || `${plan.title} 学习资源`)}</h3>
+        <p>${escapeHtml(resources.studio.audit?.[0] || "资源已按照学习画像、知识图谱和课程资料证据组织。")}</p>
+      </div>
+      <span class="score-badge">${Number(resources.studio.coverageScore || 0)}</span>
+    </section>
+    <section class="resource-matrix">
+      ${matrix.map((item) => `
+        <article class="${item.ready ? "ready" : "pending"}">
+          <span>${item.ready ? "已就绪" : "待补齐"}</span>
+          <strong>${escapeHtml(item.type)}</strong>
+          <p>${escapeHtml(item.evidence || "")}</p>
+        </article>
+      `).join("")}
+    </section>
+    <section class="resource-section-grid">
+      <article class="result-card">
+        <h3>资源交付清单</h3>
+        <ul class="plain-list">
+          ${(resources.package.deliverables || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+        </ul>
+      </article>
+      <article class="result-card">
+        <h3>基础资源</h3>
+        <div class="compact-resource-list">
+          ${resources.basicResources.slice(0, 8).map((item) => `
+            <button type="button" data-open-resource-source="${escapeHtml(item.title || item.type || "")}">
+              <strong>${escapeHtml(item.type || "资源")}</strong>
+              <span>${escapeHtml(item.title || "")}</span>
+            </button>
+          `).join("")}
+        </div>
+      </article>
+      <article class="result-card full">
+        <div class="resource-card-head">
+          <h3>在线拓展阅读</h3>
+          <button class="ghost-button" type="button" data-copy-reading-list>复制阅读清单</button>
+        </div>
+        <div class="reading-recommendation-list">
+          ${resources.readings.length ? resources.readings.map(renderOnlineReadingCard).join("") : `
+            <article class="empty-resource-card">
+              <span>未就绪</span>
+              <strong>没有可展示的在线拓展阅读</strong>
+              <p>${escapeHtml(resources.studio.onlineReadingStatus?.warning || "当前没有检索到带 URL/DOI 的成熟在线资料。")}</p>
+            </article>
+          `}
+        </div>
+      </article>
+    </section>
+  `;
+  els.resourcePanel.querySelector("[data-copy-reading-list]")?.addEventListener("click", () => {
+    copyText(onlineReadingMarkdown(resources.readings));
+  });
+  els.resourcePanel.querySelectorAll("[data-open-resource-source]").forEach((button) => {
+    button.addEventListener("click", () => setView(button.dataset.openResourceSource?.includes("项目") ? "project" : "daily"));
+  });
+}
+
+function renderMindMap() {
+  if (!els.mindMapPanel || !els.mindMapMode) return;
+  const plan = getCurrentPlan();
+  const mindMap = plan?.data?.mindMap;
+  if (!plan || !mindMap?.root) {
+    els.mindMapPanel.className = "empty-state";
+    els.mindMapPanel.innerHTML = "<p>生成课程后，这里会展示知识点层级、薄弱节点和关联任务。</p>";
+    els.mindMapMode.textContent = "等待导图";
+    return;
+  }
+
+  const branches = mindMap.root.children || [];
+  const focus = state.resourceUi?.mindFocus || "all";
+  const visibleRoot = focus === "all"
+    ? mindMap.root
+    : { ...mindMap.root, children: branches.filter((branch) => branch.id === focus) };
+  const outline = mindMapOutline(visibleRoot);
+  els.mindMapMode.textContent = `${mindMap.coverage?.conceptCount || 0} 节点 · ${mindMap.coverage?.taskLinkedCount || 0} 个已绑定任务`;
+  els.mindMapPanel.className = "mindmap-board";
+  els.mindMapPanel.innerHTML = `
+    <section class="mindmap-toolbar">
+      <label>聚焦分支
+        <select id="mindMapFocus">
+          <option value="all">全部分支</option>
+          ${branches.map((branch) => `<option value="${escapeHtml(branch.id)}" ${focus === branch.id ? "selected" : ""}>${escapeHtml(branch.title)}</option>`).join("")}
+        </select>
+      </label>
+      <div class="heading-actions">
+        <button class="ghost-button" type="button" data-copy-mindmap>复制大纲</button>
+        <button class="ghost-button" type="button" data-download-mindmap>下载 SVG</button>
+        <button class="ghost-button" type="button" data-zoom-mindmap>放大导图</button>
+        <button class="ghost-button" type="button" data-print-mindmap>打印</button>
+      </div>
+    </section>
+    <section class="mindmap-workbench">
+      <div class="mindmap-canvas">
+        <button class="mindmap-zoom-close" type="button" data-close-mindmap-zoom>退出放大</button>
+        ${renderMindMapSvg(visibleRoot)}
+      </div>
+      <aside class="mindmap-outline">
+        <span class="mini-label">大纲</span>
+        ${renderMindMapBranch(visibleRoot, 0)}
+      </aside>
+    </section>
+  `;
+  els.mindMapPanel.querySelector("#mindMapFocus")?.addEventListener("change", (event) => {
+    state.resourceUi = { ...(state.resourceUi || {}), mindFocus: event.target.value };
+    saveState();
+    renderMindMap();
+  });
+  els.mindMapPanel.querySelector("[data-copy-mindmap]")?.addEventListener("click", () => copyText(outline));
+  els.mindMapPanel.querySelector("[data-download-mindmap]")?.addEventListener("click", () => {
+    downloadBlob(`${safeFilename(mindMap.title)}.svg`, renderMindMapSvg(visibleRoot, { standalone: true }), "image/svg+xml");
+  });
+  els.mindMapPanel.querySelector("[data-zoom-mindmap]")?.addEventListener("click", () => {
+    toggleMindMapZoom(els.mindMapPanel.querySelector(".mindmap-canvas"), true);
+  });
+  els.mindMapPanel.querySelector("[data-close-mindmap-zoom]")?.addEventListener("click", () => {
+    toggleMindMapZoom(els.mindMapPanel.querySelector(".mindmap-canvas"), false);
+  });
+  els.mindMapPanel.querySelector("[data-print-mindmap]")?.addEventListener("click", () => printGeneratedHtml(mindMap.title, `
+    <h1>${escapeHtml(mindMap.title)}</h1>
+    ${renderMindMapSvg(visibleRoot, { standalone: true })}
+    <pre>${escapeHtml(outline)}</pre>
+  `));
+}
+
+function toggleMindMapZoom(canvas, force) {
+  if (!canvas) return;
+  const shouldZoom = force ?? !canvas.classList.contains("zoomed");
+  canvas.classList.toggle("zoomed", shouldZoom);
+  document.body.classList.toggle("mindmap-zoom-active", shouldZoom);
+  if (shouldZoom) {
+    document.addEventListener("keydown", closeMindMapZoomOnEscape);
+    canvas.querySelector("[data-close-mindmap-zoom]")?.focus({ preventScroll: true });
+    return;
+  }
+  document.removeEventListener("keydown", closeMindMapZoomOnEscape);
+  els.mindMapPanel?.querySelector("[data-zoom-mindmap]")?.focus({ preventScroll: true });
+}
+
+function closeMindMapZoomOnEscape(event) {
+  if (event.key !== "Escape") return;
+  const canvas = document.querySelector(".mindmap-canvas.zoomed");
+  if (canvas) toggleMindMapZoom(canvas, false);
+}
+
+function renderProjectTasks() {
+  if (!els.projectPanel || !els.projectMode) return;
+  const plan = getCurrentPlan();
+  const tasks = plan?.data?.projectTasks || [];
+  if (!plan || !tasks.length) {
+    els.projectPanel.className = "empty-state";
+    els.projectPanel.innerHTML = "<p>生成课程后，这里会出现任务书、起始代码、测试要求和评分 Rubric。</p>";
+    els.projectMode.textContent = "等待项目";
+    return;
+  }
+
+  els.projectMode.textContent = `${tasks.length} 个实操项目`;
+  els.projectPanel.className = "project-board";
+  els.projectPanel.innerHTML = `
+    ${tasks.map((task) => `
+      <article class="project-task-card">
+        <div class="project-task-head">
+          <div>
+            <span class="mini-label">${escapeHtml(task.difficulty || "项目实战")} · ${Number(task.estimatedHours || 0)} 小时</span>
+            <h3>${escapeHtml(task.title)}</h3>
+            <p>${escapeHtml(task.scenario || "")}</p>
+          </div>
+          <button class="primary-button" type="button" data-download-project="${escapeHtml(task.id)}">下载任务包</button>
+        </div>
+        <div class="project-task-grid">
+          <section>
+            <h4>里程碑</h4>
+            ${(task.milestones || []).map((milestone, index) => `
+              <div class="project-row">
+                <span>${index + 1}</span>
+                <strong>${escapeHtml(milestone.title)}</strong>
+                <p>${escapeHtml(milestone.evidence)}</p>
+              </div>
+            `).join("")}
+          </section>
+          <section>
+            <h4>提交物</h4>
+            <ul class="plain-list">
+              ${(task.deliverables || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+            </ul>
+            <h4>验收测试</h4>
+            <ul class="plain-list">
+              ${(task.tests || []).map((item) => `<li><b>${escapeHtml(item.name)}</b>：${escapeHtml(item.command)}</li>`).join("")}
+            </ul>
+          </section>
+        </div>
+        <div class="project-task-grid">
+          <section>
+            <h4>工程架构</h4>
+            <ul class="plain-list">
+              ${(task.architecture || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+            </ul>
+          </section>
+          <section>
+            <h4>质量门禁</h4>
+            <ul class="plain-list">
+              ${(task.qualityGates || []).map((item) => `<li><b>${escapeHtml(item.name)}</b>：${escapeHtml(item.command)}</li>`).join("")}
+            </ul>
+            <h4>验收标准</h4>
+            <ul class="plain-list">
+              ${(task.acceptanceCriteria || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+            </ul>
+          </section>
+        </div>
+        <div class="starter-file-list">
+          ${(task.starterFiles || []).map((file) => `
+            <details>
+              <summary>${escapeHtml(file.filename)} <span>${escapeHtml(file.language || "text")}</span></summary>
+              <pre><code>${escapeHtml(file.content || "")}</code></pre>
+              <button class="ghost-button" type="button" data-download-starter="${escapeHtml(task.id)}::${escapeHtml(file.filename)}">下载文件</button>
+            </details>
+          `).join("")}
+        </div>
+        <div class="rubric-grid">
+          ${(task.rubric || []).map((item) => `
+            <article>
+              <span>${Number(item.weight || 0)}%</span>
+              <strong>${escapeHtml(item.label)}</strong>
+              <p>${escapeHtml(item.standard)}</p>
+            </article>
+          `).join("")}
+        </div>
+      </article>
+    `).join("")}
+  `;
+  els.projectPanel.querySelectorAll("[data-download-project]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const task = tasks.find((item) => item.id === button.dataset.downloadProject);
+      downloadBlob(`${safeFilename(task?.title)}-project-package.md`, projectTaskMarkdown(task), "text/markdown");
+    });
+  });
+  els.projectPanel.querySelectorAll("[data-download-starter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const [taskId, filename] = button.dataset.downloadStarter.split("::");
+      const task = tasks.find((item) => item.id === taskId);
+      const file = task?.starterFiles?.find((item) => item.filename === filename);
+      if (file) downloadBlob(file.filename, file.content || "", "text/plain");
+    });
+  });
+}
+
+function resourceArtifactsFor(plan) {
+  if (!plan?.data) return { ready: false };
+  const data = plan.data;
+  const studio = data.resourceStudio || {};
+  const packageData = data.resourcePackage || {};
+  const matrix = studio.matrix || packageData.resourceMatrix || [];
+  const basicResources = data.resources || [];
+  const readings = data.readingRecommendations || [];
+  return {
+    ready: Boolean(matrix.length || basicResources.length || readings.length),
+    studio,
+    package: packageData,
+    matrix,
+    basicResources,
+    readings
+  };
+}
+
+function renderOnlineReadingCard(item) {
+  const href = item.url || (item.doi ? `https://doi.org/${item.doi}` : "");
+  const authors = (item.authors || []).slice(0, 4).join("、");
+  return `
+    <article>
+      <span>${escapeHtml(item.provider || item.source || "online")}${item.year ? ` · ${Number(item.year)}` : ""}${item.citationCount ? ` · 引用 ${Number(item.citationCount)}` : ""}</span>
+      <strong>${href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a>` : escapeHtml(item.title)}</strong>
+      <p>${escapeHtml([authors, item.venue, item.publisher].filter(Boolean).join(" · "))}</p>
+      ${item.abstract ? `<p>${escapeHtml(item.abstract)}</p>` : ""}
+      <small>${escapeHtml(item.doi ? `DOI: ${item.doi}` : item.url || item.locator || "")}</small>
+    </article>
+  `;
+}
+
+function renderMindMapBranch(node, depth) {
+  const children = node.children || [];
+  const body = `
+    <div class="mindmap-branch depth-${Math.min(depth, 4)}">
+      <strong>${escapeHtml(node.title)}</strong>
+      ${node.summary ? `<p>${escapeHtml(node.summary)}</p>` : ""}
+      ${node.evidence ? `<small>${escapeHtml(node.evidence)}</small>` : ""}
+      ${(node.tasks || []).length ? `<ul>${node.tasks.map((task) => `<li>Day ${Number(task.day || 0)} · ${escapeHtml(task.title)}</li>`).join("")}</ul>` : ""}
+    </div>
+  `;
+  if (!children.length) return body;
+  return `
+    <details open>
+      <summary>${escapeHtml(node.title)}</summary>
+      ${depth === 0 ? "" : body}
+      <div class="mindmap-child-list">
+        ${children.map((child) => renderMindMapBranch(child, depth + 1)).join("")}
+      </div>
+    </details>
+  `;
+}
+
+function renderMindMapSvg(root, options = {}) {
+  const nodes = flattenMindMap(root);
+  const width = Math.max(760, ...nodes.map((node) => 80 + node.depth * 210 + 180));
+  const height = Math.max(420, nodes.length * 74 + 40);
+  const nodeById = new Map(nodes.map((item, index) => [item.node.id, {
+    ...item,
+    x: 40 + item.depth * 210,
+    y: 36 + index * 74
+  }]));
+  const edges = nodes.flatMap((item) => (item.node.children || []).map((child) => [item.node.id, child.id]));
+  const svg = `
+    <svg class="mindmap-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(root.title)} 思维导图" xmlns="http://www.w3.org/2000/svg">
+      ${edges.map(([sourceId, targetId]) => {
+        const source = nodeById.get(sourceId);
+        const target = nodeById.get(targetId);
+        if (!source || !target) return "";
+        return `<path class="mindmap-edge" d="M ${source.x + 168} ${source.y + 24} C ${source.x + 196} ${source.y + 24}, ${target.x - 26} ${target.y + 24}, ${target.x} ${target.y + 24}" />`;
+      }).join("")}
+      ${nodes.map((item) => {
+        const placed = nodeById.get(item.node.id);
+        return `
+          <g class="mindmap-node depth-${Math.min(item.depth, 4)}" transform="translate(${placed.x}, ${placed.y})">
+            <rect width="168" height="48" rx="8"></rect>
+            <text x="12" y="20">${escapeSvgText(item.node.title, 13)}</text>
+            <text x="12" y="37">${escapeSvgText(item.node.type || "node", 18)}</text>
+          </g>
+        `;
+      }).join("")}
+    </svg>
+  `;
+  return options.standalone ? svg.replace("class=\"mindmap-svg\"", "class=\"mindmap-svg\" style=\"font-family: Microsoft YaHei, Arial;\"") : svg;
+}
+
+function flattenMindMap(root, depth = 0, result = []) {
+  result.push({ node: root, depth });
+  (root.children || []).forEach((child) => flattenMindMap(child, depth + 1, result));
+  return result;
+}
+
+function mindMapOutline(node, depth = 0) {
+  const indent = "  ".repeat(depth);
+  const lines = [`${indent}- ${node.title}${node.summary ? `：${node.summary}` : ""}`];
+  (node.tasks || []).forEach((task) => lines.push(`${indent}  - Day ${task.day}：${task.title}`));
+  (node.children || []).forEach((child) => lines.push(mindMapOutline(child, depth + 1)));
+  return lines.join("\n");
+}
+
+function onlineReadingMarkdown(readings) {
+  return (readings || []).map((item, index) => [
+    `${index + 1}. ${item.title}`,
+    item.authors?.length ? `作者：${item.authors.join("、")}` : "",
+    item.year ? `年份：${item.year}` : "",
+    item.venue ? `来源：${item.venue}` : "",
+    item.doi ? `DOI：${item.doi}` : "",
+    item.url ? `URL：${item.url}` : "",
+    item.abstract ? `摘要摘录：${item.abstract}` : ""
+  ].filter(Boolean).join("\n")).join("\n\n");
+}
+
+function projectTaskMarkdown(task) {
+  if (!task) return "";
+  return [
+    `# ${task.title}`,
+    "",
+    `场景：${task.scenario || ""}`,
+    "",
+    "## 里程碑",
+    ...(task.milestones || []).map((item, index) => `${index + 1}. ${item.title}：${item.evidence}`),
+    "",
+    "## 提交物",
+    ...(task.deliverables || []).map((item) => `- ${item}`),
+    "",
+    "## 工程架构",
+    ...(task.architecture || []).map((item) => `- ${item}`),
+    "",
+    "## 验收测试",
+    ...(task.tests || []).map((item) => `- ${item.name}：${item.command}`),
+    "",
+    "## 质量门禁",
+    ...(task.qualityGates || []).map((item) => `- ${item.name}：${item.command}`),
+    "",
+    "## 验收标准",
+    ...(task.acceptanceCriteria || []).map((item) => `- ${item}`),
+    "",
+    "## Rubric",
+    ...(task.rubric || []).map((item) => `- ${item.label} (${item.weight}%)：${item.standard}`),
+    "",
+    "## 起始文件",
+    ...(task.starterFiles || []).map((file) => `### ${file.filename}\n\n\`\`\`${file.language || ""}\n${file.content || ""}\n\`\`\``)
+  ].join("\n");
+}
+
+function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(() => fallbackCopyText(text));
+    return;
+  }
+  fallbackCopyText(text);
+}
+
+function fallbackCopyText(text) {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
+}
+
+function printGeneratedHtml(title, body) {
+  const win = window.open("", "_blank");
+  if (!win) return;
+  win.document.write(`<!doctype html><html><head><meta charset="UTF-8"><title>${escapeHtml(title)}</title><style>body{font-family:Microsoft YaHei,Arial,sans-serif;padding:28px;line-height:1.6;color:#191817}.mindmap-svg{width:100%;height:auto}.mindmap-edge{fill:none;stroke:#d8cec0;stroke-width:2}.mindmap-node rect{fill:#fffdfa;stroke:#d8cec0}.mindmap-node text{font-size:12px;fill:#191817}pre{white-space:pre-wrap;background:#fbf8f2;border:1px solid #e6ded3;padding:16px;border-radius:8px}</style></head><body>${body}</body></html>`);
+  win.document.close();
+  win.focus();
+  win.print();
 }
 
 function renderNotes() {
@@ -2966,6 +3417,29 @@ function renderGovernance() {
       </ul>
       ${(report.requiredFixes || []).length ? `<p class="warning">待修正：${escapeHtml(report.requiredFixes.join("、"))}</p>` : "<p class=\"ok-text\">暂无必须修正项。</p>"}
     </article>
+    ${report.peerReview ? `
+      <article class="result-card full agent-peer-review">
+        <div class="section-title-row">
+          <div>
+            <span class="mini-label">质量门禁</span>
+            <h3>多智能体同行复核</h3>
+          </div>
+          <span class="score-badge muted">${Number(report.peerReview.summary?.approvedArtifacts || 0)}/${Number(report.peerReview.summary?.artifactCount || 0)}</span>
+        </div>
+        <p>${escapeHtml(report.peerReview.summary?.blockingIssues ? `存在 ${report.peerReview.summary.blockingIssues} 个阻断问题。` : "全部关键交付物已通过复核。")}</p>
+        <div class="peer-review-list">
+          ${(report.peerReview.artifacts || []).map((artifact) => `
+            <article>
+              <strong>${escapeHtml(artifact.title || artifact.artifactId)}</strong>
+              <span>${escapeHtml(artifact.owner || "协作智能体")} · ${escapeHtml(artifact.status || "pending")}</span>
+              <ul class="plain-list">
+                ${(artifact.checks || []).map((check) => `<li>${check.passed ? "通过" : "待修正"}：${escapeHtml(check.label)} · ${escapeHtml(check.evidence || "")}</li>`).join("")}
+              </ul>
+            </article>
+          `).join("")}
+        </div>
+      </article>
+    ` : ""}
   `;
 }
 
@@ -4610,6 +5084,29 @@ function renderAgentGraph(loop) {
         </article>
       `).join("")}
     </div>
+    ${loop.peerReview ? `
+      <section class="agent-peer-review">
+        <div class="section-title-row">
+          <div>
+            <span class="mini-label">发布前门禁</span>
+            <h3>同行复核门禁</h3>
+          </div>
+          <span class="score-badge muted">${Number(loop.peerReview.summary?.approvedArtifacts || 0)}/${Number(loop.peerReview.summary?.artifactCount || 0)}</span>
+        </div>
+        <p>${escapeHtml(loop.peerReview.summary?.blockingIssues ? `存在 ${loop.peerReview.summary.blockingIssues} 个阻断问题。` : "资源、测评、项目和报告均已完成跨角色复核。")}</p>
+        <div class="peer-review-list">
+          ${(loop.peerReview.artifacts || []).map((artifact) => `
+            <article>
+              <strong>${escapeHtml(artifact.title || artifact.artifactId)}</strong>
+              <span>${escapeHtml(artifact.owner || "协作智能体")} · ${escapeHtml((artifact.reviewers || []).join("、"))}</span>
+              <ul class="plain-list">
+                ${(artifact.checks || []).map((check) => `<li>${check.passed ? "通过" : "待修正"}：${escapeHtml(check.label)} · ${escapeHtml(check.evidence || "")}</li>`).join("")}
+              </ul>
+            </article>
+          `).join("")}
+        </div>
+      </section>
+    ` : ""}
   `;
 }
 
@@ -4802,7 +5299,8 @@ function serializeState() {
     knowledgeSources: state.knowledgeSources || [],
     selectedSourceIds: state.selectedSourceIds || [],
     activitySummary: state.activitySummary || null,
-    graphUi: state.graphUi || {}
+    graphUi: state.graphUi || {},
+    resourceUi: state.resourceUi || {}
   };
 }
 
@@ -4827,6 +5325,7 @@ function loadState() {
       selectedSourceIds: saved?.selectedSourceIds || [],
       activitySummary: saved?.activitySummary || null,
       graphUi: saved?.graphUi || {},
+      resourceUi: saved?.resourceUi || {},
       databaseReady: false
     };
   } catch {
@@ -4848,9 +5347,35 @@ function loadState() {
       selectedSourceIds: [],
       activitySummary: null,
       graphUi: {},
+      resourceUi: {},
       databaseReady: false
     };
   }
+}
+
+async function repairLegacyEncodingCache() {
+  let raw = null;
+  try {
+    raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw || !containsLegacyMojibakeClient(raw)) return;
+    const repaired = await request("/api/encoding/repair", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: raw
+    });
+    if (!repaired?.changed) return;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(repaired.value));
+    Object.assign(state, loadState());
+    renderAll();
+    els.serviceStatus.textContent = "已修复历史缓存乱码";
+    els.statusDot.classList.add("ok");
+  } catch (error) {
+    console.warn("legacy encoding repair skipped", error);
+  }
+}
+
+function containsLegacyMojibakeClient(value) {
+  return /瀛︿範|鐢熸垚|璇剧▼|鍙紪|澶х翰|鎬濈淮|椤圭洰|璧勬簮|绛夊緟|鍚庣|浠诲姟|瑙ｉ噴|妯″瀷|棰勬祴|�/.test(String(value || ""));
 }
 
 function reportPersistenceError(error) {

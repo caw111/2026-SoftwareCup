@@ -73,7 +73,7 @@ export async function testLargeModelConnection() {
   if (!MODEL_CONFIG.apiKey) {
     return {
       ok: false,
-      message: "未配置 OPENAI_API_KEY，当前仍是本地规则模式。",
+      message: `未配置 ${MODEL_CONFIG.displayName} 密钥，当前仍是本地规则模式。`,
       llm: publicModelConfig()
     };
   }

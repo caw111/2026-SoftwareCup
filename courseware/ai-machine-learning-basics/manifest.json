@@ -1,0 +1,32 @@
+{
+  "id": "ai-machine-learning-basics",
+  "title": "机器学习基础与入门预测项目",
+  "level": "本科低年级/跨专业入门",
+  "creditHours": 32,
+  "description": "围绕问题定义、数据集构造、特征工程、训练优化、评估泛化和项目复盘构建的一门完整高校入门课程。",
+  "sourceFiles": [
+    "syllabus.md",
+    "chapter-01-problem-data.md",
+    "chapter-02-features-split.md",
+    "chapter-03-linear-models.md",
+    "chapter-04-training-optimization.md",
+    "chapter-05-evaluation-generalization.md",
+    "lab-01-house-price-baseline.md",
+    "lab-02-classification-metrics.md",
+    "project-brief-campus-energy.md",
+    "quiz-bank.json",
+    "reading-list.json"
+  ],
+  "seedPlan": {
+    "topic": "机器学习基础",
+    "major": "计算机、电子信息、数据科学相关专业",
+    "goal": "理解监督学习的完整流程，并完成一个可复现的入门预测项目",
+    "level": "入门",
+    "duration": "2 周",
+    "dailyMinutes": "60 分钟",
+    "style": "项目实战",
+    "weaknesses": "对数据划分、训练流程、评估指标和过拟合判断不熟悉",
+    "learningHistory": "已学习 Python 基础语法，能阅读简单表格数据，但缺少端到端建模经验",
+    "outputType": "完整学习方案"
+  }
+}
