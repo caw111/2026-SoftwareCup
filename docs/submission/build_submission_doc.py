@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from docx.shared import Inches, Pt, RGBColor
 
 ROOT = Path(__file__).resolve().parent
 SOURCE = ROOT / "参赛软件系统文档.md"
-OUTPUT = ROOT / "参赛软件系统文档.docx"
+OUTPUT = Path(os.environ.get("SUBMISSION_DOCX_OUTPUT", ROOT / "参赛软件系统文档.docx"))
 ASSETS = ROOT / "assets"
 
 PAGE_WIDTH_DXA = 12240
@@ -178,6 +179,46 @@ def add_hyperlink(paragraph, text: str, url: str, color=BLUE) -> None:
     paragraph._p.append(hyperlink)
 
 
+def add_internal_hyperlink(paragraph, text: str, anchor: str, color=DEEP_BLUE, size=10, bold=False) -> None:
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("w:anchor"), anchor)
+    hyperlink.set(qn("w:history"), "1")
+    run = OxmlElement("w:r")
+    r_pr = OxmlElement("w:rPr")
+    c = OxmlElement("w:color")
+    c.set(qn("w:val"), color)
+    r_pr.append(c)
+    fonts = OxmlElement("w:rFonts")
+    fonts.set(qn("w:ascii"), "Calibri")
+    fonts.set(qn("w:hAnsi"), "Calibri")
+    fonts.set(qn("w:eastAsia"), "Microsoft YaHei")
+    r_pr.append(fonts)
+    font_size = OxmlElement("w:sz")
+    font_size.set(qn("w:val"), str(int(size * 2)))
+    r_pr.append(font_size)
+    font_size_cs = OxmlElement("w:szCs")
+    font_size_cs.set(qn("w:val"), str(int(size * 2)))
+    r_pr.append(font_size_cs)
+    if bold:
+        r_pr.append(OxmlElement("w:b"))
+    run.append(r_pr)
+    text_node = OxmlElement("w:t")
+    text_node.text = text
+    run.append(text_node)
+    hyperlink.append(run)
+    paragraph._p.append(hyperlink)
+
+
+def add_bookmark(paragraph, name: str, bookmark_id: int) -> None:
+    start = OxmlElement("w:bookmarkStart")
+    start.set(qn("w:id"), str(bookmark_id))
+    start.set(qn("w:name"), name)
+    end = OxmlElement("w:bookmarkEnd")
+    end.set(qn("w:id"), str(bookmark_id))
+    paragraph._p.insert(0, start)
+    paragraph._p.append(end)
+
+
 INLINE_PATTERN = re.compile(r"(`[^`]+`|https?://[^\s]+)")
 
 
@@ -242,6 +283,35 @@ def add_toc(paragraph) -> None:
     run._r.append(fld_sep)
     run._r.append(placeholder)
     run._r.append(fld_end)
+
+
+def markdown_headings(text: str) -> list[tuple[int, str, str]]:
+    entries = []
+    for line in text.splitlines():
+        match = re.match(r"^(#{1,3})\s+(.+)$", line.strip())
+        if match:
+            entries.append((len(match.group(1)), match.group(2), f"section_{len(entries) + 1:03d}"))
+    return entries
+
+
+def add_static_toc(doc: Document, source_text: str) -> None:
+    note = doc.add_paragraph()
+    note.paragraph_format.space_after = Pt(8)
+    add_inline_runs(note, "以下目录可直接点击跳转，不依赖 Word 手动更新域。", size=9, color=MUTED)
+    for level, title, anchor in markdown_headings(source_text):
+        paragraph = doc.add_paragraph()
+        paragraph.paragraph_format.left_indent = Inches({1: 0, 2: 0.24, 3: 0.48}[level])
+        paragraph.paragraph_format.space_before = Pt(0)
+        paragraph.paragraph_format.space_after = Pt(2 if level == 1 else 1)
+        paragraph.paragraph_format.keep_together = True
+        add_internal_hyperlink(
+            paragraph,
+            title,
+            anchor,
+            color=BLUE if level == 1 else DEEP_BLUE,
+            size={1: 10.5, 2: 9.5, 3: 9}[level],
+            bold=level == 1,
+        )
 
 
 def add_numbering_definition(doc: Document, kind: str) -> int:
@@ -454,20 +524,20 @@ def create_architecture_diagram() -> None:
     detail_font = ImageFont.truetype(fp, 21)
     small_font = ImageFont.truetype(fp, 18)
     draw.text((80, 50), "个性化学习多智能体系统总体架构", font=title_font, fill="#163B5C")
-    draw.text((80, 105), "本地优先 · 关系化存储 · 模型可选 · 判题受限", font=detail_font, fill="#667085")
+    draw.text((80, 105), "本地优先 · 证据驱动 · 关系化存储 · 模型可选 · 判题受限", font=detail_font, fill="#667085")
 
     layers = [
-        ((100, 175, 1500, 300), "桌面启动层", "启动软件.bat / 便携启动器 / 自动端口 / 健康检查 / Edge 应用模式", "#EAF2F8"),
-        ((100, 335, 1500, 460), "Web 表现层", "课程创建 · 学习路径 · 掌握度 · 测验复习 · 学习报告 · 学习陪练", "#F5F9FC"),
-        ((100, 495, 1500, 620), "应用服务层", "HTTP API · 会话服务 · 方案服务 · 应用状态服务 · 模型适配 · 错误边界", "#EEF4FF"),
-        ((100, 655, 1500, 780), "多智能体与领域层", "画像 · 诊断 · 图谱 · 前测 · 路径 · 资源 · 评分 · 治理 · 洞察 · 陪练", "#F0FDF9"),
+        ((100, 175, 1500, 300), "桌面启动层", "Start.vbs / 便携启动器 / 自动端口 / 健康检查 / Edge 应用模式", "#EAF2F8"),
+        ((100, 335, 1500, 460), "Web 表现层", "画像访谈 · 课程资料库 · 交互图谱 · 路径变更 · 测验复习 · 日历热力图", "#F5F9FC"),
+        ((100, 495, 1500, 620), "应用服务层", "HTTP API · 全文 RAG · 路径修订 · 图谱版本 · 活动聚合 · 模型适配", "#EEF4FF"),
+        ((100, 655, 1500, 780), "多智能体与领域层", "画像 · 诊断 · 图谱 · 路径 · 资源 · 评分 · 治理 · 洞察 · 陪练 · 本地降级", "#F0FDF9"),
     ]
     for box, title, detail, fill in layers:
         rounded_box(draw, box, fill, "#7CA9CC", title, detail, layer_font, detail_font)
     for y in (300, 460, 620):
         draw_arrow(draw, (800, y + 4), (800, y + 30), "#7CA9CC", 4)
 
-    rounded_box(draw, (100, 835, 575, 1015), "#F9FAFB", "#98A2B3", "SQLite 数据层", "方案 / 任务 / 测验 / 掌握度\n报告 / 应用状态", layer_font, small_font)
+    rounded_box(draw, (100, 835, 575, 1015), "#F9FAFB", "#98A2B3", "SQLite 数据层", "方案 / 资料 / 图谱 / 路径修订\n活动 / 测验 / 掌握度 / 状态", layer_font, small_font)
     rounded_box(draw, (625, 835, 1075, 1015), "#FFF7ED", "#F5A45D", "内置 Python 运行器", "CPython 3.13.14\n独立进程 / 资源与能力限制", layer_font, small_font)
     rounded_box(draw, (1125, 835, 1500, 1015), "#F5F3FF", "#9B8AFB", "外部模型（可选）", "OpenAI 兼容 HTTPS\n未配置时本地降级", layer_font, small_font)
     for x in (335, 850, 1312):
@@ -484,17 +554,17 @@ def create_learning_loop_diagram() -> None:
     box_font = ImageFont.truetype(fp, 26)
     detail_font = ImageFont.truetype(fp, 18)
     draw.text((80, 45), "个性化学习闭环", font=title_font, fill="#163B5C")
-    draw.text((80, 100), "学习证据持续回流，驱动掌握度、补救资源与后续路径更新", font=detail_font, fill="#667085")
+    draw.text((80, 100), "画像、资料引用与学习证据持续回流，驱动掌握度、补救资源和可撤销路径更新", font=detail_font, fill="#667085")
 
     boxes = [
-        ((80, 190, 400, 340), "课程输入", "主题 · 目标 · 基础\n周期 · 偏好", "#EAF2F8", "#7CA9CC"),
-        ((475, 190, 795, 340), "画像与知识图谱", "目标分解 · 概念依赖\n学习风险", "#EEF4FF", "#7CA9CC"),
+        ((80, 190, 400, 340), "画像访谈与资料", "自然语言需求 · 字段修正\n课程文件 · 引用范围", "#EAF2F8", "#7CA9CC"),
+        ((475, 190, 795, 340), "画像与知识图谱", "六维证据 · 概念依赖\n搜索筛选 · 先修路径", "#EEF4FF", "#7CA9CC"),
         ((870, 190, 1190, 340), "诊断前测", "覆盖关键概念\n识别薄弱点", "#F5F3FF", "#9B8AFB"),
-        ((1265, 190, 1520, 340), "路径与资源", "阶段 · 每日任务\n讲解 · 示例", "#F0FDF9", "#5FAE97"),
-        ((1265, 540, 1520, 690), "每日学习", "任务 · 笔记\n项目实践", "#F0FDF9", "#5FAE97"),
+        ((1265, 190, 1520, 340), "路径与引用资源", "阶段 · 每日任务\n全文依据 · 可核验引用", "#F0FDF9", "#5FAE97"),
+        ((1265, 540, 1520, 690), "每日学习", "任务 · 笔记\n真实活动事件", "#F0FDF9", "#5FAE97"),
         ((870, 540, 1190, 690), "练习与评分", "选择 · 简答 · 代码\n解析 · 错题", "#FFF7ED", "#F5A45D"),
-        ((475, 540, 795, 690), "掌握度与补救", "概念证据 · 薄弱项\n定向资源", "#FEF3F2", "#F97066"),
-        ((80, 540, 400, 690), "洞察与报告", "进度 · 优势 · 风险\n下一步建议", "#F9FAFB", "#98A2B3"),
+        ((475, 540, 795, 690), "掌握度与路径修订", "概念证据 · 薄弱项\n应用 / 拒绝 / 撤销", "#FEF3F2", "#F97066"),
+        ((80, 540, 400, 690), "日历、徽章与报告", "连续学习 · 热力图\n优势 · 风险 · 下一步", "#F9FAFB", "#98A2B3"),
     ]
     for box, title, detail, fill, border in boxes:
         rounded_box(draw, box, fill, border, title, detail, box_font, detail_font)
@@ -504,9 +574,9 @@ def create_learning_loop_diagram() -> None:
         draw_arrow(draw, a, b, "#7CA9CC", 5)
     draw.line([(240, 540), (240, 445), (1030, 445), (1030, 350)], fill="#7CA9CC", width=5)
     draw_arrow(draw, (1030, 445), (1030, 350), "#7CA9CC", 5)
-    draw.text((430, 405), "学习证据回流，重新诊断并调整后续路径", font=detail_font, fill="#475467")
+    draw.text((430, 405), "学习证据回流，重新诊断并生成不覆盖已完成任务的路径修订", font=detail_font, fill="#475467")
     draw.rounded_rectangle((80, 770, 1520, 865), radius=15, fill="#F5F9FC", outline="#B7CEE1", width=2)
-    draw.text((115, 795), "外部模型可增强内容表达；本地规则引擎保证核心结构与离线演示。所有状态通过方案标识写入 SQLite。", font=detail_font, fill="#344054")
+    draw.text((115, 795), "模型输出、资料引用和路径动作经服务端校验；本地降级保证核心结构。全部证据按用户和方案写入 SQLite。", font=detail_font, fill="#344054")
     image.save(ASSETS / "learning-loop.png", quality=95)
 
 
@@ -562,9 +632,9 @@ def add_cover(doc: Document) -> None:
     meta.style = "Table Grid"
     values = [
         ("文档编号", "PLS-MAS-DOC-001"),
-        ("软件 / 文档版本", "V0.1.0 / V1.0"),
-        ("基线分支", "Zip"),
-        ("编制日期", "2026-07-17"),
+        ("软件 / 文档版本", "V0.1.0 / V1.1"),
+        ("基线分支", "main（含便携构建）"),
+        ("编制日期", "2026-07-18"),
         ("文档状态", "参赛提交版"),
     ]
     for row, (key, value) in zip(meta.rows, values):
@@ -596,7 +666,7 @@ def configure_body_header_footer(section) -> None:
     right = table.cell(0, 1).paragraphs[0]
     right.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     right.paragraph_format.space_after = Pt(2)
-    add_inline_runs(right, "PLS-MAS-DOC-001 · V1.0", size=8.5, color=MUTED)
+    add_inline_runs(right, "PLS-MAS-DOC-001 · V1.1", size=8.5, color=MUTED)
     p = header.add_paragraph()
     p.paragraph_format.space_after = Pt(0)
     p_pr = p._p.get_or_add_pPr()
@@ -638,10 +708,12 @@ def add_unnumbered_title(doc: Document, text: str) -> None:
     set_run_font(run, size=18, color=BLUE, bold=True)
 
 
-def add_heading(doc: Document, text: str, level: int, page_break_before: bool = False) -> None:
+def add_heading(doc: Document, text: str, level: int, page_break_before: bool = False, bookmark_name: str | None = None, bookmark_id: int | None = None) -> None:
     p = doc.add_paragraph(style=f"Heading {level}")
     p.paragraph_format.page_break_before = page_break_before
     add_inline_runs(p, text, size={1: 16, 2: 13, 3: 12}[level], color=BLUE if level < 3 else DEEP_BLUE, bold=True)
+    if bookmark_name is not None and bookmark_id is not None:
+        add_bookmark(p, bookmark_name, bookmark_id)
     set_paragraph_widow_control(p)
 
 
@@ -726,7 +798,10 @@ def add_figure(doc: Document, alt: str, rel_path: str) -> None:
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p.paragraph_format.keep_with_next = True
     run = p.add_run()
-    run.add_picture(str(path), width=Inches(6.28))
+    picture = run.add_picture(str(path), width=Inches(6.28))
+    doc_pr = picture._inline.docPr
+    doc_pr.set("descr", alt)
+    doc_pr.set("title", alt)
     caption = doc.add_paragraph(style="Figure Caption")
     add_inline_runs(caption, alt, size=9, color=MUTED)
 
@@ -736,6 +811,7 @@ def parse_markdown(doc: Document, text: str) -> None:
     i = 0
     paragraph_buffer: list[str] = []
     first_heading = True
+    heading_index = 0
 
     def flush_paragraph() -> None:
         nonlocal paragraph_buffer
@@ -774,7 +850,15 @@ def parse_markdown(doc: Document, text: str) -> None:
         heading_match = re.match(r"^(#{1,3})\s+(.+)$", stripped)
         if heading_match:
             flush_paragraph()
-            add_heading(doc, heading_match.group(2), len(heading_match.group(1)), page_break_before=first_heading)
+            heading_index += 1
+            add_heading(
+                doc,
+                heading_match.group(2),
+                len(heading_match.group(1)),
+                page_break_before=first_heading,
+                bookmark_name=f"section_{heading_index:03d}",
+                bookmark_id=heading_index,
+            )
             first_heading = False
             i += 1
             continue
@@ -823,11 +907,10 @@ def build() -> Path:
     set_section_page(body_section)
     configure_body_header_footer(body_section)
     add_unnumbered_title(doc, "目录")
-    toc = doc.add_paragraph()
-    toc.paragraph_format.space_after = Pt(12)
-    add_toc(toc)
+    source_text = SOURCE.read_text(encoding="utf-8")
+    add_static_toc(doc, source_text)
 
-    parse_markdown(doc, SOURCE.read_text(encoding="utf-8"))
+    parse_markdown(doc, source_text)
     doc.save(OUTPUT)
     return OUTPUT
 

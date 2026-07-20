@@ -11,9 +11,8 @@ test("model requests can omit both output and client-side time limits", async ()
       capturedOptions = options;
       return {
         ok: true,
-        async json() {
-          return { output_text: "ok" };
-        }
+        headers: { get: () => "application/json" },
+        async text() { return JSON.stringify({ output_text: "ok" }); }
       };
     };
 
@@ -27,6 +26,7 @@ test("model requests can omit both output and client-side time limits", async ()
     assert.equal(capturedOptions.signal, undefined);
     assert.equal(body.max_output_tokens, undefined);
     assert.equal(body.max_tokens, undefined);
+    assert.equal(body.stream, false);
   } finally {
     global.fetch = originalFetch;
   }
@@ -40,6 +40,7 @@ test("streaming model responses are accumulated from SSE deltas", async () => {
       requestBody = JSON.parse(options.body);
       return {
         ok: true,
+        headers: { get: () => "text/event-stream" },
         async text() {
           return [
             'event: response.output_text.delta',
@@ -60,6 +61,54 @@ test("streaming model responses are accumulated from SSE deltas", async () => {
 
     assert.equal(requestBody.stream, true);
     assert.equal(result, "# 讲义\n详细内容");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("non-stream requests accept SSE returned by a compatible gateway", async () => {
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = async () => ({
+      ok: true,
+      headers: { get: () => "text/event-stream; charset=utf-8" },
+      async text() {
+        return [
+          "event: codex/response",
+          'data: {"type":"response.output_text.delta","delta":"大模型"}',
+          "",
+          "event: codex/response",
+          'data: {"type":"response.output_text.delta","delta":"连接成功"}',
+          "",
+          "data: [DONE]"
+        ].join("\n");
+      }
+    });
+
+    const result = await requestChatCompletion(
+      [{ role: "user", content: "connection test" }],
+      { stream: false }
+    );
+
+    assert.equal(result, "大模型连接成功");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("event-stream bodies are detected even when the gateway reports JSON", async () => {
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = async () => ({
+      ok: true,
+      headers: { get: () => "application/json" },
+      async text() {
+        return 'event: response.output_text.delta\ndata: {"delta":"兼容成功"}\n\ndata: [DONE]';
+      }
+    });
+
+    const result = await requestChatCompletion([{ role: "user", content: "test" }]);
+    assert.equal(result, "兼容成功");
   } finally {
     global.fetch = originalFetch;
   }
