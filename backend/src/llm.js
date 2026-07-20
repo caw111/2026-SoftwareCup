@@ -104,27 +104,22 @@ export async function requestChatCompletion(messages, options = {}) {
   const requestBody = buildModelRequestBody(messages, options);
 
   try {
-    const response = await fetch(url, {
-      method: "POST",
-      signal: controller?.signal,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${MODEL_CONFIG.apiKey}`
-      },
-      body: JSON.stringify(requestBody)
-    });
+    const response = await fetchModelResponse(url, requestBody, controller?.signal);
+    const responseText = await response.text();
+    const contentType = response.headers?.get?.("content-type") || "";
+    const isEventStream = contentType.toLowerCase().includes("text/event-stream")
+      || looksLikeEventStream(responseText);
 
-    if (!response.ok) {
-      const detail = await response.text();
-      throw new Error(`大模型接口返回 ${response.status}：${detail.slice(0, 500)}`);
+    if (options.stream || isEventStream) {
+      return extractStreamingModelText(responseText) || "大模型未返回有效内容。";
     }
 
-    if (options.stream) {
-      const streamContent = await response.text();
-      return extractStreamingModelText(streamContent) || "大模型未返回有效内容。";
+    let data;
+    try {
+      data = JSON.parse(responseText);
+    } catch (error) {
+      throw new Error(`大模型响应不是有效 JSON：${responseText.slice(0, 500)}`, { cause: error });
     }
-
-    const data = await response.json();
     return extractModelText(data) || "大模型未返回有效内容。";
   } catch (error) {
     if (error?.name === "AbortError") throw new Error(`大模型接口请求超时：${timeoutMs}ms`);
@@ -139,6 +134,38 @@ export async function requestChatCompletion(messages, options = {}) {
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+async function fetchModelResponse(url, requestBody, signal) {
+  const retryableStatuses = new Set([429, 500, 502, 503, 504]);
+  const maxAttempts = 3;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const response = await fetch(url, {
+      method: "POST",
+      signal,
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${MODEL_CONFIG.apiKey}`
+      },
+      body: JSON.stringify(requestBody)
+    });
+
+    if (response.ok) return response;
+
+    const detail = await response.text();
+    if (!retryableStatuses.has(response.status) || attempt === maxAttempts) {
+      throw new Error(`大模型接口返回 ${response.status}：${detail.slice(0, 500)}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 400 * (2 ** (attempt - 1))));
+  }
+
+  throw new Error("大模型接口请求失败。");
+}
+
+function looksLikeEventStream(content) {
+  return /^(?:event|data):/m.test(String(content || ""));
 }
 
 function isNetworkResetError(error) {
@@ -248,10 +275,22 @@ function extractStreamingModelText(content) {
         deltaText += event.delta.text;
         continue;
       }
-      const finalText = extractModelText(event.response || event);
+      const compatibleDelta = typeof event.delta === "string"
+        ? event.delta
+        : typeof event.text === "string"
+          ? event.text
+          : typeof event.content === "string"
+            ? event.content
+            : "";
+      if (compatibleDelta) {
+        deltaText += compatibleDelta;
+        continue;
+      }
+      const finalText = extractModelText(event.response || event.data || event);
       if (finalText) completedText = finalText;
     } catch {
-      // Ignore non-JSON SSE control lines from compatible providers.
+      // Some compatible gateways send plain text in data fields.
+      deltaText += payload;
     }
   }
   return deltaText || completedText;
@@ -273,7 +312,7 @@ function buildModelRequestBody(messages, options) {
       input,
       temperature: options.temperature ?? 0.7,
       max_output_tokens: options.maxTokens,
-      stream: options.stream || undefined
+      stream: Boolean(options.stream)
     });
   }
 
@@ -282,7 +321,7 @@ function buildModelRequestBody(messages, options) {
     messages,
     temperature: options.temperature ?? 0.7,
     max_tokens: options.maxTokens,
-    stream: options.stream || undefined
+    stream: Boolean(options.stream)
   });
 }
 

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { closeDatabasePool, getDatabasePool, isDatabaseConfigured } from "../backend/src/db/pool.js";
+import { closeDatabasePool, databaseDialect, getDatabasePool, isDatabaseConfigured } from "../backend/src/db/pool.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MIGRATION_DIR = path.join(ROOT, "database", "migrations");
@@ -11,6 +11,12 @@ const MIGRATION_DIR = path.join(ROOT, "database", "migrations");
 export async function migrateDatabase({ log = console.log } = {}) {
   if (!isDatabaseConfigured()) {
     throw new Error("MySQL 未配置，无法执行迁移");
+  }
+
+  if (databaseDialect() === "sqlite") {
+    getDatabasePool();
+    log("内置 SQLite 数据库结构已就绪");
+    return { ok: true, total: 1, applied: 1, dialect: "sqlite" };
   }
 
   const pool = getDatabasePool();
@@ -85,6 +91,15 @@ export async function migrateDatabase({ log = console.log } = {}) {
 }
 
 export async function databaseMigrationStatus() {
+  if (databaseDialect() === "sqlite") {
+    const [rows] = await getDatabasePool().query("PRAGMA user_version");
+    return [{
+      version: String(rows[0]?.user_version || 0),
+      filename: "sqlite-schema.sql",
+      checksum: "managed-by-user-version",
+      executed_at: null
+    }];
+  }
   const pool = getDatabasePool();
   const [rows] = await pool.query(
     `SELECT version, filename, checksum, executed_at

@@ -39,3 +39,25 @@ export async function createAnonymousUserSession(tokenHash, expiresAt) {
     return { sessionId, userId, expiresAt };
   });
 }
+
+export async function ensureLocalUserSession() {
+  const userId = "local-desktop-user";
+  const sessionId = "local-desktop-session";
+  const pool = getDatabasePool();
+  const [users] = await pool.execute("SELECT id FROM users WHERE id = ? LIMIT 1", [userId]);
+  if (!users.length) {
+    await withTransaction(async (connection) => {
+      await connection.execute(
+        "INSERT INTO users (id, user_type, display_name) VALUES (?, 'anonymous', ?)",
+        [userId, "本地用户"]
+      );
+      await connection.execute(
+        `INSERT INTO user_sessions (id, user_id, token_hash, expires_at)
+         VALUES (?, ?, ?, ?)`,
+        [sessionId, userId, "0".repeat(64), new Date("2099-12-31T23:59:59.000Z")]
+      );
+      await connection.execute("INSERT INTO user_workspaces (user_id) VALUES (?)", [userId]);
+    });
+  }
+  return { userId, sessionId };
+}

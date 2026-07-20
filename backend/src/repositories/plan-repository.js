@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 
-import { getDatabasePool, withTransaction } from "../db/pool.js";
+import { databaseDialect, getDatabasePool, withTransaction } from "../db/pool.js";
 
 export async function createPlanRecord(userId, plan) {
   return withTransaction(async (connection) => {
@@ -73,11 +73,7 @@ export async function createPlanRecord(userId, plan) {
     }
 
     await connection.execute(
-      `INSERT INTO user_workspaces (user_id, active_plan_id)
-       VALUES (?, ?)
-       ON DUPLICATE KEY UPDATE
-         active_plan_id = VALUES(active_plan_id),
-         version = version + 1`,
+      workspaceUpsertSql(),
       [userId, plan.id]
     );
     return plan;
@@ -187,11 +183,7 @@ export async function getWorkspaceRecord(userId) {
 export async function setActivePlanRecord(userId, planId) {
   if (planId !== null && !(await planExistsForUser(userId, planId))) return false;
   await getDatabasePool().execute(
-    `INSERT INTO user_workspaces (user_id, active_plan_id)
-     VALUES (?, ?)
-     ON DUPLICATE KEY UPDATE
-       active_plan_id = VALUES(active_plan_id),
-       version = version + 1`,
+    workspaceUpsertSql(),
     [userId, planId]
   );
   return true;
@@ -250,6 +242,22 @@ export async function updatePlanContentRecord(userId, planId, payload) {
 }
 
 export async function updateTaskProgressRecord(userId, planId, taskKey, completed) {
+  if (databaseDialect() === "sqlite") {
+    const [result] = await getDatabasePool().execute(
+      `UPDATE plan_tasks
+          SET completed = ?,
+              completed_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END,
+              updated_at = CURRENT_TIMESTAMP
+        WHERE plan_id = ? AND task_key = ?
+          AND EXISTS (
+            SELECT 1 FROM learning_plans p
+             WHERE p.id = plan_tasks.plan_id
+               AND p.user_id = ? AND p.deleted_at IS NULL
+          )`,
+      [completed, completed, planId, taskKey, userId]
+    );
+    return result.affectedRows > 0;
+  }
   const [result] = await getDatabasePool().execute(
     `UPDATE plan_tasks t
        JOIN learning_plans p ON p.id = t.plan_id
@@ -266,6 +274,20 @@ export async function updateTaskProgressRecord(userId, planId, taskKey, complete
 }
 
 export async function resetPlanProgressRecord(userId, planId) {
+  if (databaseDialect() === "sqlite") {
+    const [result] = await getDatabasePool().execute(
+      `UPDATE plan_tasks
+          SET completed = FALSE, completed_at = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE plan_id = ?
+          AND EXISTS (
+            SELECT 1 FROM learning_plans p
+             WHERE p.id = plan_tasks.plan_id
+               AND p.user_id = ? AND p.deleted_at IS NULL
+          )`,
+      [planId, userId]
+    );
+    return result.affectedRows;
+  }
   const [result] = await getDatabasePool().execute(
     `UPDATE plan_tasks t
        JOIN learning_plans p ON p.id = t.plan_id
@@ -279,15 +301,7 @@ export async function resetPlanProgressRecord(userId, planId) {
 async function upsertConceptMastery(connection, userId, planId, concepts) {
   for (const concept of concepts) {
     await connection.execute(
-      `INSERT INTO concept_mastery
-         (user_id, plan_id, concept_id, concept_name, dimension, mastery_score, evidence_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE
-         concept_name = VALUES(concept_name),
-         dimension = VALUES(dimension),
-         mastery_score = VALUES(mastery_score),
-         evidence_json = VALUES(evidence_json),
-         updated_at = CURRENT_TIMESTAMP(3)`,
+      conceptMasteryUpsertSql(),
       [
         userId,
         planId,
@@ -302,6 +316,45 @@ async function upsertConceptMastery(connection, userId, planId, concepts) {
       ]
     );
   }
+}
+
+function workspaceUpsertSql() {
+  if (databaseDialect() === "sqlite") {
+    return `INSERT INTO user_workspaces (user_id, active_plan_id)
+            VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+              active_plan_id = excluded.active_plan_id,
+              version = user_workspaces.version + 1,
+              updated_at = CURRENT_TIMESTAMP`;
+  }
+  return `INSERT INTO user_workspaces (user_id, active_plan_id)
+          VALUES (?, ?)
+          ON DUPLICATE KEY UPDATE
+            active_plan_id = VALUES(active_plan_id),
+            version = version + 1`;
+}
+
+function conceptMasteryUpsertSql() {
+  if (databaseDialect() === "sqlite") {
+    return `INSERT INTO concept_mastery
+              (user_id, plan_id, concept_id, concept_name, dimension, mastery_score, evidence_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(plan_id, concept_id) DO UPDATE SET
+              concept_name = excluded.concept_name,
+              dimension = excluded.dimension,
+              mastery_score = excluded.mastery_score,
+              evidence_json = excluded.evidence_json,
+              updated_at = CURRENT_TIMESTAMP`;
+  }
+  return `INSERT INTO concept_mastery
+            (user_id, plan_id, concept_id, concept_name, dimension, mastery_score, evidence_json)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE
+            concept_name = VALUES(concept_name),
+            dimension = VALUES(dimension),
+            mastery_score = VALUES(mastery_score),
+            evidence_json = VALUES(evidence_json),
+            updated_at = CURRENT_TIMESTAMP(3)`;
 }
 
 async function insertContentReview(connection, userId, planId, report) {

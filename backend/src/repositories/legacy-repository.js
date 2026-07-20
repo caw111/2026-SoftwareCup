@@ -1,8 +1,10 @@
-import { getDatabasePool } from "../db/pool.js";
+import { databaseDialect, getDatabasePool } from "../db/pool.js";
 
 export async function claimLegacyImportRecord(userId, sourceKey) {
   const [result] = await getDatabasePool().execute(
-    "INSERT IGNORE INTO legacy_imports (source_key, user_id) VALUES (?, ?)",
+    databaseDialect() === "sqlite"
+      ? "INSERT OR IGNORE INTO legacy_imports (source_key, user_id) VALUES (?, ?)"
+      : "INSERT IGNORE INTO legacy_imports (source_key, user_id) VALUES (?, ?)",
     [sourceKey, userId]
   );
   return result.affectedRows > 0;

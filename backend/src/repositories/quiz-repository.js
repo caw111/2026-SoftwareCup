@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 
-import { getDatabasePool, withTransaction } from "../db/pool.js";
+import { databaseDialect, getDatabasePool, withTransaction } from "../db/pool.js";
 
 export async function createQuizSessionRecord(userId, planId, payload) {
   return withTransaction(async (connection) => {
@@ -101,15 +101,7 @@ export async function getLatestQuizStateRecord(userId, planId) {
   if (!planId) return { quiz: [], quizResults: {} };
   const pool = getDatabasePool();
   const [sessions] = await pool.execute(
-    `SELECT id
-       FROM quiz_sessions
-      WHERE user_id = ? AND plan_id = ?
-        AND created_at >= COALESCE(
-          (SELECT MAX(updated_at) FROM plan_tasks WHERE plan_id = ?),
-          CAST('1970-01-01 00:00:00' AS DATETIME)
-        )
-      ORDER BY created_at DESC
-      LIMIT 1`,
+    latestQuizSessionSql(),
     [userId, planId, planId]
   );
   if (!sessions.length) return { quiz: [], quizResults: {} };
@@ -148,6 +140,21 @@ export async function getLatestQuizStateRecord(userId, planId) {
     if (result) quizResults[row.client_question_id] = result;
   }
   return { quiz, quizResults };
+}
+
+function latestQuizSessionSql() {
+  const fallback = databaseDialect() === "sqlite"
+    ? "'1970-01-01 00:00:00'"
+    : "CAST('1970-01-01 00:00:00' AS DATETIME)";
+  return `SELECT id
+            FROM quiz_sessions
+           WHERE user_id = ? AND plan_id = ?
+             AND created_at >= COALESCE(
+               (SELECT MAX(updated_at) FROM plan_tasks WHERE plan_id = ?),
+               ${fallback}
+             )
+           ORDER BY created_at DESC
+           LIMIT 1`;
 }
 
 export function publicQuestion(question, databaseId) {

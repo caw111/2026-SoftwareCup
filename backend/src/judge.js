@@ -1,8 +1,10 @@
 import { spawn } from "node:child_process";
 
+import fs from "node:fs";
+
 import path from "node:path";
 
-import { CONTAINER_CONFIG, JUDGE_BUILD_DIR, JUDGE_IMAGE, JUDGE_TIMEOUT_MS, MODEL_CONFIG } from "./config.js";
+import { CONTAINER_CONFIG, JUDGE_AUTO_BOOTSTRAP, JUDGE_BUILD_DIR, JUDGE_IMAGE, JUDGE_TIMEOUT_MS, MODEL_CONFIG, PROJECT_ROOT, PYTHON_EXECUTABLE } from "./config.js";
 
 import { clean, ensureArray, normalizeCodeLanguage } from "./utils.js";
 
@@ -132,6 +134,20 @@ async function evaluateCodeAnswer(question, code) {
         sandboxFallback: friendlyJudgeError(error)
       };
     } catch (localError) {
+      if (normalizeCodeLanguage(question.language || "python") === "python") {
+        const result = evaluatePythonFunctionLocally(question, code, tests);
+        const feedback = buildCodeFeedback("内置离线判题器", result);
+        return {
+          agent: "测评评分智能体",
+          mode: "builtin-python-code",
+          correct: result.passed === result.total,
+          score: result.total ? Math.round((result.passed / result.total) * maxScore) : 0,
+          maxScore,
+          feedback,
+          detail: result,
+          sandboxFallback: friendlyJudgeError(localError)
+        };
+      }
       return {
         agent: "测评评分智能体",
         mode: "judge-unavailable",
@@ -169,6 +185,34 @@ function stringifyCompact(value) {
 }
 
 export async function getJudgeStatus() {
+  if (!JUDGE_AUTO_BOOTSTRAP) {
+    try {
+      const result = await runCodeInLocalJudge("python", "def solve(x):\n    return x + 1\n", [
+        { function: "solve", args: [1], expected: 2 }
+      ]);
+      return {
+        ok: result.passed === 1,
+        mode: "local-runner",
+        runtime: "server-process",
+        message: "本地 Python 判题可用",
+        sample: result
+      };
+    } catch (localError) {
+      const result = evaluatePythonFunctionLocally(
+        { language: "python" },
+        "def solve(x):\n    return x + 1\n",
+        [{ function: "solve", args: [1], expected: 2 }]
+      );
+      return {
+        ok: result.passed === 1,
+        mode: "builtin-python",
+        runtime: "embedded",
+        message: "内置离线 Python 基础判题可用",
+        localFallbackReason: friendlyJudgeError(localError),
+        sample: result
+      };
+    }
+  }
   try {
     await bootstrapJudgeRuntime();
     const result = await runCodeInDockerJudge("python", "def solve(x):\n    return x + 1\n", [
@@ -202,6 +246,22 @@ export async function getJudgeStatus() {
         sample: result
       };
     } catch (localError) {
+      const result = evaluatePythonFunctionLocally(
+        { language: "python" },
+        "def solve(x):\n    return x + 1\n",
+        [{ function: "solve", args: [1], expected: 2 }]
+      );
+      if (result.passed === 1) {
+        return {
+          ok: true,
+          mode: "builtin-python",
+          runtime: "embedded",
+          message: "内置离线 Python 基础判题可用",
+          dockerFallbackReason: friendlyJudgeError(error),
+          localFallbackReason: friendlyJudgeError(localError),
+          sample: result
+        };
+      }
       return {
         ok: false,
         mode: "unavailable",
@@ -236,8 +296,8 @@ function evaluatePythonFunctionLocally(question, code, tests) {
   const known = evaluateKnownPythonFunction(functionName, code, tests);
   if (known) return known;
 
-  const expression = extractSimplePythonReturnExpression(code, functionName);
-  if (!expression) {
+  const simpleFunction = extractSimplePythonReturnExpression(code, functionName);
+  if (!simpleFunction) {
     return {
       total: tests.length,
       passed: 0,
@@ -249,11 +309,11 @@ function evaluatePythonFunctionLocally(question, code, tests) {
     };
   }
 
-  const jsExpression = translatePythonExpression(expression);
+  const jsExpression = translatePythonExpression(simpleFunction.expression);
   const results = tests.map((test, index) => {
     try {
       const args = test.args || [];
-      const actual = runTranslatedExpression(jsExpression, functionName, args);
+      const actual = runTranslatedExpression(jsExpression, simpleFunction.argNames, args);
       const passed = deepEqualWithTolerance(actual, test.expected);
       return { index: index + 1, passed, actual, expected: test.expected };
     } catch (error) {
@@ -329,7 +389,21 @@ function extractSimplePythonReturnExpression(code, functionName) {
   if (!match) return null;
   const body = match[2].split(/\r?\n/);
   const returnLine = body.map((line) => line.trim()).find((line) => line.startsWith("return "));
-  return returnLine ? returnLine.slice("return ".length).trim() : null;
+  if (!returnLine) return null;
+  const expression = returnLine.slice("return ".length).trim();
+  const argNames = match[1].split(",").map((value) => value.trim()).filter(Boolean);
+  const allowedNames = new Set([...argNames, "len", "sum", "zip", "True", "False", "and", "or", "not"]);
+  const identifiers = expression.match(/[A-Za-z_]\w*/g) || [];
+  if (
+    /[;'"`{}\\]/.test(expression)
+    || identifiers.some((identifier) => !allowedNames.has(identifier))
+  ) {
+    return null;
+  }
+  return {
+    expression,
+    argNames
+  };
 }
 
 function translatePythonExpression(expression) {
@@ -341,21 +415,13 @@ function translatePythonExpression(expression) {
     .replace(/\bFalse\b/g, "false");
 }
 
-function runTranslatedExpression(expression, functionName, args) {
+function runTranslatedExpression(expression, argNames, args) {
   const helpers = `
     const sum = (items) => Array.from(items).reduce((total, item) => total + Number(item), 0);
     const zip = (a, b) => a.slice(0, Math.min(a.length, b.length)).map((item, index) => [item, b[index]]);
   `;
-  const argNames = inferArgNames(functionName, expression, args.length);
   const fn = new Function(...argNames, `${helpers}; return (${expression});`);
   return fn(...args);
-}
-
-function inferArgNames(functionName, expression, count) {
-  if (functionName === "accuracy") return ["y_true", "y_pred"];
-  if (functionName === "normalize_scores") return ["scores"];
-  const candidates = ["a", "b", "c", "d"];
-  return candidates.slice(0, count || Math.max(1, expression.split(",").length));
 }
 
 function deepEqualWithTolerance(actual, expected) {
@@ -403,13 +469,31 @@ async function runCodeInLocalJudge(language, code, tests) {
     code,
     tests
   });
-  const { stdout } = await runCommand("python", [
-    path.join(JUDGE_BUILD_DIR, "run_python.py")
-  ], {
+  const normalizedLanguage = normalizeCodeLanguage(language);
+  const runner = normalizedLanguage === "python"
+    ? path.join(JUDGE_BUILD_DIR, "safe_python_runner.py")
+    : path.join(JUDGE_BUILD_DIR, "run_python.py");
+  const args = normalizedLanguage === "python"
+    ? ["-I", "-S", "-B", runner]
+    : [runner];
+  const { stdout } = await runCommand(resolvePythonExecutable(), args, {
     input: payload,
-    timeoutMs: JUDGE_TIMEOUT_MS
+    timeoutMs: JUDGE_TIMEOUT_MS,
+    env: {
+      PYTHONNOUSERSITE: "1",
+      PYTHONDONTWRITEBYTECODE: "1",
+      PYTHONUTF8: "1"
+    }
   });
   return JSON.parse(stdout);
+}
+
+function resolvePythonExecutable() {
+  const candidates = [
+    PYTHON_EXECUTABLE,
+    path.resolve(PROJECT_ROOT, "..", "runtime", "python", "python.exe")
+  ].filter(Boolean);
+  return candidates.find((candidate) => fs.existsSync(candidate)) || "python";
 }
 
 export async function bootstrapJudgeRuntime() {

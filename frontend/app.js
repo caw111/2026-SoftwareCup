@@ -1,4 +1,6 @@
-const API_BASE = `${location.protocol}//${location.hostname || "127.0.0.1"}:3000`;
+// The frontend server proxies /api to the backend. Keeping requests same-origin
+// lets desktop builds select free ports automatically and avoids CORS issues.
+const API_BASE = "";
 const STORAGE_KEY = "software-cup-learning-workspace-v2";
 
 const state = loadState();
@@ -846,6 +848,8 @@ async function loadDiskState() {
       });
       databaseState = await request("/api/workspace");
     }
+    const appState = await request("/api/app-state");
+    applyPersistentAppState(appState?.state);
     applyDatabaseState(databaseState);
     state.databaseReady = true;
     await loadKnowledgeSources();
@@ -854,6 +858,20 @@ async function loadDiskState() {
   } catch {
     state.databaseReady = false;
     renderSourceLibrary();
+  }
+}
+
+function applyPersistentAppState(saved) {
+  if (!saved || typeof saved !== "object") return;
+  for (const key of [
+    "tutorHistory",
+    "settings",
+    "behaviorEvents",
+    "exam",
+    "mistakeFilters",
+    "lastQuizOptions"
+  ]) {
+    if (Object.hasOwn(saved, key)) state[key] = saved[key];
   }
 }
 
@@ -5277,8 +5295,35 @@ async function request(path, options) {
   return response.json();
 }
 
+let appStateSyncTimer = null;
+
 function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeState()));
+  if (!state.databaseReady) return;
+  clearTimeout(appStateSyncTimer);
+  appStateSyncTimer = setTimeout(syncPersistentAppState, 150);
+}
+
+async function syncPersistentAppState() {
+  appStateSyncTimer = null;
+  const serialized = serializeState();
+  const persistentState = {
+    tutorHistory: serialized.tutorHistory,
+    settings: serialized.settings,
+    behaviorEvents: serialized.behaviorEvents,
+    exam: serialized.exam,
+    mistakeFilters: serialized.mistakeFilters,
+    lastQuizOptions: serialized.lastQuizOptions
+  };
+  try {
+    await request("/api/app-state", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state: persistentState })
+    });
+  } catch {
+    // localStorage remains a fallback if the local database is temporarily busy.
+  }
 }
 
 function serializeState() {

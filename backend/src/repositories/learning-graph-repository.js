@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 
-import { getDatabasePool } from "../db/pool.js";
+import { databaseDialect, getDatabasePool } from "../db/pool.js";
 
 export async function createKnowledgeGraphVersionRecord(userId, planId, graph, meta = {}) {
   const id = meta.id || crypto.randomUUID();
@@ -53,16 +53,29 @@ export async function upsertKnowledgeGraphLayoutRecord(userId, planId, value) {
   const graphVersionId = value?.graphVersionId || null;
   const layout = value?.layout && typeof value.layout === "object" ? value.layout : {};
   await getDatabasePool().execute(
-    `INSERT INTO knowledge_graph_layouts
-       (user_id, plan_id, graph_version_id, layout_json)
-     VALUES (?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE
-       graph_version_id = VALUES(graph_version_id),
-       layout_json = VALUES(layout_json),
-       updated_at = CURRENT_TIMESTAMP(3)`,
+    knowledgeGraphLayoutUpsertSql(),
     [userId, planId, graphVersionId, JSON.stringify(layout)]
   );
   return { graphVersionId, layout };
+}
+
+function knowledgeGraphLayoutUpsertSql() {
+  if (databaseDialect() === "sqlite") {
+    return `INSERT INTO knowledge_graph_layouts
+       (user_id, plan_id, graph_version_id, layout_json)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(user_id, plan_id) DO UPDATE SET
+       graph_version_id = excluded.graph_version_id,
+       layout_json = excluded.layout_json,
+       updated_at = CURRENT_TIMESTAMP`;
+  }
+  return `INSERT INTO knowledge_graph_layouts
+     (user_id, plan_id, graph_version_id, layout_json)
+   VALUES (?, ?, ?, ?)
+   ON DUPLICATE KEY UPDATE
+     graph_version_id = VALUES(graph_version_id),
+     layout_json = VALUES(layout_json),
+     updated_at = CURRENT_TIMESTAMP(3)`;
 }
 
 function publicGraphVersion(row) {
